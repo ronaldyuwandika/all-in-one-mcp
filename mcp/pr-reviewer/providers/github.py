@@ -15,7 +15,7 @@ class GitHubProvider:
         self.token = token
 
     def _headers(self) -> dict:
-        headers = {"Accept": "application/vnd.github.v3.diff"}
+        headers = {"Accept": "application/vnd.github.v3+json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         return headers
