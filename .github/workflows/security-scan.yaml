@@ -46,16 +46,17 @@ jobs:
           echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
           exit $exitcode
       - name: Post bandit report
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         if: always() && github.event_name == 'pull_request'
         with:
           script: |
             const fs = require('fs');
-            const output = fs.readFileSync('/tmp/bandit-output.txt', 'utf8').trim();
+            let output = '';
+            try { output = fs.readFileSync('/tmp/bandit-output.txt', 'utf8').trim(); } catch { output = ''; }
             const exitcode = parseInt('${{ steps.bandit.outputs.exitcode }}');
             const pass = exitcode === 0;
             const issues = [];
-            const lines = output.split('\n');
+            const lines = (output || '').split('\n');
             let current = null;
             for (const l of lines) {
               const m = l.match(/>> Issue: \[(\S+):(\w+)\]/);
@@ -118,16 +119,17 @@ jobs:
           echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
           exit $exitcode
       - name: Post gosec report
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         if: always() && github.event_name == 'pull_request'
         with:
           script: |
             const fs = require('fs');
-            const output = fs.readFileSync('/tmp/gosec-output.txt', 'utf8').trim();
+            let output = '';
+            try { output = fs.readFileSync('/tmp/gosec-output.txt', 'utf8').trim(); } catch { output = ''; }
             const exitcode = parseInt('${{ steps.gosec.outputs.exitcode }}');
             const pass = exitcode === 0;
             const issues = [];
-            const lines = output.split('\n');
+            const lines = (output || '').split('\n');
             for (const l of lines) {
               const m = l.match(/\[(.+?):(\d+)\]\s*-\s*(\S+)\s*\(CWE-(\d+)\):\s*(.+)/);
               if (m) {
@@ -160,39 +162,35 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Trivy
-        run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin v0.58.0
+      - uses: aquasecurity/setup-trivy@v0.3.1
       - name: Run Trivy
         id: trivy
-        continue-on-error: true
         run: |
           exitcode=0
           trivy fs --severity HIGH,CRITICAL --format table . > /tmp/trivy-output.txt 2>&1 || exitcode=$?
           echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
           exit $exitcode
       - name: Post trivy report
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         if: always() && github.event_name == 'pull_request'
         with:
           script: |
             const fs = require('fs');
-            const output = fs.readFileSync('/tmp/trivy-output.txt', 'utf8').trim();
+            const outputPath = '/tmp/trivy-output.txt';
+            let output = '';
+            try { output = fs.readFileSync(outputPath, 'utf8').trim(); } catch { output = 'No output captured'; }
             const exitcode = parseInt('${{ steps.trivy.outputs.exitcode }}');
             const pass = exitcode === 0;
             let body = `## 📦 Repository Scan (Trivy) ${pass ? '✅' : '❌'}\n\n**Result:** ${pass ? '✅ Pass' : '❌ Fail'}\n\n`;
-            if (!pass) {
-              const tableLines = output.split('\n').filter(l => l.includes('|') && (l.includes('HIGH') || l.includes('CRITICAL') || l.includes('Library') || l.includes('├') || l.includes('┼')));
-              if (tableLines.length > 0) {
-                body += '```\n' + output.split('\n').slice(0, 40).join('\n') + '\n```\n';
-              }
+            if (!pass && output) {
               const high = (output.match(/HIGH/g) || []).length;
               const critical = (output.match(/CRITICAL/g) || []).length;
-              body += `\n**Vulnerabilities:** ${critical} critical, ${high} high\n`;
+              body += `**Vulnerabilities:** ${critical} critical, ${high} high\n\n`;
+              body += '```\n' + output.split('\n').slice(0, 40).join('\n') + '\n```\n';
             } else {
               body += '✅ No HIGH or CRITICAL vulnerabilities found.\n';
             }
-            body += `\n<details><summary>Full output</summary>\n\n\`\`\`\n${output.slice(0, 3000)}\n\`\`\`\n</details>`;
+            body += `\n<details><summary>Full output</summary>\n\n\`\`\`\n${(output || 'N/A').slice(0, 3000)}\n\`\`\`\n</details>`;
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
