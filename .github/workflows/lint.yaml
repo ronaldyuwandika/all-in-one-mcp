@@ -55,26 +55,28 @@ jobs:
             try { output = fs.readFileSync('/tmp/ruff-output.txt', 'utf8').trim(); } catch { output = ''; }
             const exitcode = parseInt('${{ steps.ruff.outputs.exitcode }}');
             const pass = exitcode === 0;
-            let lines = (output || '').split('\n').filter(l => /^\S+:\d+:\d+:/.test(l));
-            let body = '## 🐍 Python Lint (ruff)\n\n';
-            body += `**Status:** ${pass ? '✅ Passing' : '❌ Failing'}\n`;
-            body += `**Issues Found:** ${lines.length}\n\n`;
+            const lines = (output || '').split('\n').filter(l => /^\S+:\d+:\d+:/.test(l));
+            const SeverityMap = { 'E': 'Error', 'W': 'Warning', 'F': 'Fatal', 'I': 'Info', 'N': 'Note', 'B': 'Error' };
+            const sevCounts = {};
+            lines.forEach(l => {
+              const m = l.match(/: \S+\s+(\S)/);
+              const sev = m ? (SeverityMap[m[1]] || 'Warning') : 'Warning';
+              sevCounts[sev] = (sevCounts[sev] || 0) + 1;
+            });
+            let body = pass
+              ? `## ✅ Ruff — Passing\n\nClean — no issues found.\n`
+              : `## ❌ Ruff — Failing\n\n**${lines.length}** issue${lines.length !== 1 ? 's' : ''} found.\n\n| Severity | Count |\n|----------|------|\n${Object.entries({Error:0,Warning:0,Info:0}).filter(([s]) => sevCounts[s]).map(([s]) => `| ${s} | ${sevCounts[s] || 0} |`).join('\n')}\n`;
             if (lines.length > 0) {
-              body += '### Findings\n';
-              body += '| # | File | Line | Rule | Detail |\n|---|------|------|------|--------|\n';
-              lines.slice(0, 25).forEach((l, i) => {
+              body += `\n<details>\n<summary>🔍 Findings</summary>\n\n`;
+              body += '| File | Line | Rule | Detail |\n|------|------|------|--------|\n';
+              lines.slice(0, 25).forEach((l) => {
                 const m = l.match(/^(.+?):(\d+):(\d+):\s*(\S+)\s*(.+)$/);
-                if (m) body += `| ${i+1} | \`${m[1].replace('mcp/', '')}\` | ${m[2]} | \`${m[4]}\` | ${m[5]} |\n`;
+                if (m) body += `| \`${m[1].replace('mcp/', '')}\` | ${m[2]} | \`${m[4]}\` | ${m[5]} |\n`;
               });
-              if (lines.length > 25) body += `| ... | *${lines.length - 25} more issues* | | | |\n`;
-              body += '\n### Summary\n';
-              const byRule = {};
-              lines.forEach(l => { const m = l.match(/: \S+\s+(\S+)/); if (m) byRule[m[1]] = (byRule[m[1]] || 0) + 1; });
-              Object.entries(byRule).sort((a,b) => b[1]-a[1]).forEach(([r, c]) => { body += `- \`${r}\`: ${c} occurrence${c !== 1 ? 's' : ''}\n`; });
-            } else {
-              body += '✅ No lint issues found. Code looks clean.\n';
+              if (lines.length > 25) body += `| ... | | | *${lines.length - 25} more* |\n`;
+              body += `</details>\n`;
             }
-            body += `\n<details><summary>📋 Raw Log</summary>\n\n\`\`\`\n${output.slice(0, 4000)}\n\`\`\`\n</details>\n\n---`;
+            body += `\n<details><summary>📋 Raw Log</summary>\n\n\`\`\`\n${output.slice(0, 3000)}\n\`\`\`\n</details>\n\n---`;
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
@@ -97,7 +99,6 @@ jobs:
         with:
           version: v1.64.8
           working-directory: mcp/reasoning-memory
-          args: --out-format=colored-line-number
       - name: Capture golangci-lint output
         id: golangci-capture
         if: always() && github.event_name == 'pull_request'
@@ -105,7 +106,7 @@ jobs:
         continue-on-error: true
         run: |
           golangci-lint run ./... --out-format=json > /tmp/golangci-output.json 2>/dev/null || true
-          cat /tmp/golangci-output.json 2>/dev/null | head -1 || echo '{"Issues":[]}' > /tmp/golangci-output.json
+          test -s /tmp/golangci-output.json || echo '{"Issues":[]}' > /tmp/golangci-output.json
       - name: Post golangci-lint report
         uses: actions/github-script@v9
         if: always() && github.event_name == 'pull_request'
@@ -114,30 +115,25 @@ jobs:
             const fs = require('fs');
             let issues = [];
             try {
-              const json = JSON.parse(fs.readFileSync('/tmp/golangci-output.json', 'utf8'));
-              issues = json.Issues || [];
+              issues = JSON.parse(fs.readFileSync('/tmp/golangci-output.json', 'utf8')).Issues || [];
             } catch { issues = []; }
             const pass = '${{ steps.golangci.outcome }}' === 'success';
-            let body = '## 🔷 Go Lint (golangci-lint)\n\n';
-            body += `**Status:** ${pass ? '✅ Passing' : '❌ Failing'}\n`;
-            body += `**Issues Found:** ${issues.length}\n\n`;
+            const sevCounts = {};
+            issues.forEach(iss => { const s = iss.Severity || 'Warning'; sevCounts[s] = (sevCounts[s] || 0) + 1; });
+            let body = pass
+              ? `## ✅ golangci-lint — Passing\n\nClean — no issues found.\n`
+              : `## ❌ golangci-lint — Failing\n\n**${issues.length}** issue${issues.length !== 1 ? 's' : ''} found.\n\n| Severity | Count |\n|----------|------|\n${Object.entries(sevCounts).map(([s,c]) => `| ${s} | ${c} |`).join('\n')}\n`;
             if (issues.length > 0) {
-              body += '### Findings\n';
-              body += '| # | File | Line | Linter | Detail |\n|---|------|------|--------|--------|\n';
-              issues.slice(0, 25).forEach((iss, i) => {
+              body += `\n<details>\n<summary>🔍 Findings</summary>\n\n`;
+              body += '| File | Line | Linter | Detail |\n|------|------|--------|--------|\n';
+              issues.slice(0, 25).forEach(iss => {
                 const file = iss.Pos ? iss.Pos.Filename.replace('mcp/reasoning-memory/', '') : '?';
-                const line = iss.Pos ? iss.Pos.Line : '?';
-                body += `| ${i+1} | \`${file}\` | ${line} | \`${iss.FromLinter}\` | ${iss.Text} |\n`;
+                body += `| \`${file}\` | ${iss.Pos ? iss.Pos.Line : '?'} | \`${iss.FromLinter}\` | ${iss.Text} |\n`;
               });
-              if (issues.length > 25) body += `| ... | *${issues.length - 25} more issues* | | | |\n`;
-              body += '\n### Summary\n';
-              const byLinter = {};
-              issues.forEach(iss => { byLinter[iss.FromLinter] = (byLinter[iss.FromLinter] || 0) + 1; });
-              Object.entries(byLinter).sort((a,b) => b[1]-a[1]).forEach(([l, c]) => { body += `- \`${l}\`: ${c} occurrence${c !== 1 ? 's' : ''}\n`; });
-            } else {
-              body += '✅ No lint issues found. Go code is clean.\n';
+              if (issues.length > 25) body += `| ... | | | *${issues.length - 25} more* |\n`;
+              body += `</details>\n`;
             }
-            body += '\n<details><summary>📋 Raw Log</summary>\n\n```json\n' + JSON.stringify(issues, null, 2).slice(0, 4000) + '\n```\n</details>\n\n---';
+            body += `\n<details><summary>📋 Raw Log</summary>\n\n\`\`\`json\n${JSON.stringify(issues, null, 2).slice(0, 3000)}\n\`\`\`\n</details>\n\n---`;
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,

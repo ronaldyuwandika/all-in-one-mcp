@@ -63,33 +63,27 @@ jobs:
               if (!current) continue;
               const sev = l.match(/Severity:\s*(\w+)/);
               if (sev) current.severity = sev[1];
-              const cwe = l.match(/CWE:\s*(\S+)/);
-              if (cwe) current.cwe = cwe[1];
               const loc = l.match(/Location:\s*(\S+):(\d+):(\d+)/);
               if (loc) { current.file = loc[1]; current.line = loc[2]; }
               const msg = l.match(/^\s{4}(.*\S)/);
               if (msg && !l.includes('>>') && !l.includes('Severity:') && !l.includes('CWE:') && !l.includes('Location:')) current.message = msg[1];
             }
-            let body = '## 🛡️ Python Security (bandit)\n\n';
-            body += `**Status:** ${pass ? '✅ Passing' : '❌ Failing'}\n`;
-            body += `**Issues Found:** ${issues.length}\n\n`;
+            const sevCounts = {};
+            issues.forEach(iss => { const s = iss.severity || 'Unknown'; sevCounts[s] = (sevCounts[s] || 0) + 1; });
+            let body = pass
+              ? `## ✅ bandit — Passing\n\nClean — no security issues found.\n`
+              : `## ❌ bandit — Failing\n\n**${issues.length}** issue${issues.length !== 1 ? 's' : ''} found.\n\n| Severity | Count |\n|----------|------|\n${Object.entries(sevCounts).map(([s,c]) => `| ${s} | ${c} |`).join('\n')}\n`;
             if (issues.length > 0) {
-              body += '### Findings\n';
-              body += '| # | File | Line | Severity | Rule | Detail |\n|---|------|------|----------|------|--------|\n';
-              issues.slice(0, 25).forEach((iss, i) => {
+              body += `\n<details>\n<summary>🔍 Findings</summary>\n\n`;
+              body += '| File | Line | Severity | Rule | Detail |\n|------|------|----------|------|--------|\n';
+              issues.slice(0, 25).forEach(iss => {
                 const file = (iss.file || '').replace('mcp/', '');
-                body += `| ${i+1} | \`${file}\` | ${iss.line || '-'} | ${iss.severity || 'N/A'} | \`${iss.rule}\` | ${iss.message || ''} |\n`;
+                body += `| \`${file}\` | ${iss.line || '-'} | ${iss.severity || 'N/A'} | \`${iss.rule}\` | ${iss.message || ''} |\n`;
               });
-              if (issues.length > 25) body += `| ... | *${issues.length - 25} more issues* | | | | |\n`;
-              body += '\n### Summary\n';
-              const bySev = {};
-              issues.forEach(iss => { const s = iss.severity || 'Unknown'; bySev[s] = (bySev[s] || 0) + 1; });
-              body += '**Severity breakdown:**\n';
-              Object.entries(bySev).sort((a,b) => b[1]-a[1]).forEach(([s, c]) => { body += `- **${s}**: ${c}\n`; });
-            } else {
-              body += '✅ No security issues found. Python code looks secure.\n';
+              if (issues.length > 25) body += `| ... | | | | *${issues.length - 25} more* |\n`;
+              body += `</details>\n`;
             }
-            body += `\n<details><summary>📋 Raw Log</summary>\n\n\`\`\`\n${(output || 'N/A').slice(0, 4000)}\n\`\`\`\n</details>\n\n---`;
+            body += `\n<details><summary>📋 Raw Log</summary>\n\n\`\`\`\n${(output || 'N/A').slice(0, 3000)}\n\`\`\`\n</details>\n\n---`;
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
@@ -131,32 +125,28 @@ jobs:
                 file: iss.file || iss.Filename || '',
                 line: iss.line || iss.Line || '',
                 rule: iss.rule_id || iss.RuleID || '',
-                cwe: iss.cwe || iss.CWE || '',
                 severity: iss.severity || iss.Severity || '',
                 message: iss.details || iss.Details || iss.Text || ''
               }));
             } catch { issues = []; }
             const exitcode = parseInt('${{ steps.gosec.outputs.exitcode }}');
             const pass = exitcode === 0;
-            let body = '## 🔒 Go Security (gosec)\n\n';
-            body += `**Status:** ${pass ? '✅ Passing' : '❌ Failing'}\n`;
-            body += `**Issues Found:** ${issues.length}\n\n`;
+            const sevCounts = {};
+            issues.forEach(iss => { const s = iss.severity || 'Unknown'; sevCounts[s] = (sevCounts[s] || 0) + 1; });
+            let body = pass
+              ? `## ✅ gosec — Passing\n\nClean — no security issues found.\n`
+              : `## ❌ gosec — Failing\n\n**${issues.length}** issue${issues.length !== 1 ? 's' : ''} found.\n\n| Severity | Count |\n|----------|------|\n${Object.entries(sevCounts).map(([s,c]) => `| ${s} | ${c} |`).join('\n')}\n`;
             if (issues.length > 0) {
-              body += '### Findings\n';
-              body += '| # | File | Line | Severity | Rule | CWE | Detail |\n|---|------|------|----------|------|-----|--------|\n';
-              issues.slice(0, 25).forEach((iss, i) => {
+              body += `\n<details>\n<summary>🔍 Findings</summary>\n\n`;
+              body += '| File | Line | Severity | Rule | Detail |\n|------|------|----------|------|--------|\n';
+              issues.slice(0, 25).forEach(iss => {
                 const file = iss.file.replace('mcp/reasoning-memory/', '');
-                body += `| ${i+1} | \`${file}\` | ${iss.line} | ${iss.severity || 'N/A'} | \`${iss.rule}\` | ${iss.cwe ? 'CWE-'+iss.cwe : '-'} | ${iss.message} |\n`;
+                body += `| \`${file}\` | ${iss.line} | ${iss.severity || 'N/A'} | \`${iss.rule}\` | ${iss.message} |\n`;
               });
-              if (issues.length > 25) body += `| ... | *${issues.length - 25} more issues* | | | | | |\n`;
-              body += '\n### Summary\n';
-              const bySev = {};
-              issues.forEach(iss => { const s = iss.severity || 'Unknown'; bySev[s] = (bySev[s] || 0) + 1; });
-              Object.entries(bySev).sort((a,b) => b[1]-a[1]).forEach(([s, c]) => { body += `- **${s}**: ${c}\n`; });
-            } else {
-              body += '✅ No security issues found. Go code looks secure.\n';
+              if (issues.length > 25) body += `| ... | | | | *${issues.length - 25} more* |\n`;
+              body += `</details>\n`;
             }
-            body += `\n<details><summary>📋 Raw Log</summary>\n\n\`\`\`json\n${rawLog.slice(0, 4000)}\n\`\`\`\n</details>\n\n---`;
+            body += `\n<details><summary>📋 Raw Log</summary>\n\n\`\`\`json\n${rawLog.slice(0, 3000)}\n\`\`\`\n</details>\n\n---`;
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
@@ -182,36 +172,32 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            let results = { Results: [] };
+            let vulns = [];
             let rawLog = '';
             try {
-              results = JSON.parse(fs.readFileSync('/tmp/trivy-output.json', 'utf8'));
+              const results = JSON.parse(fs.readFileSync('/tmp/trivy-output.json', 'utf8'));
               rawLog = fs.readFileSync('/tmp/trivy-raw.txt', 'utf8').trim();
-            } catch { results = { Results: [] }; rawLog = ''; }
+              (results.Results || []).forEach(r => (r.Vulnerabilities || []).forEach(v => {
+                vulns.push({ file: r.Target, pkg: v.PkgName, severity: v.Severity, vulnId: v.VulnerabilityID, title: v.Title });
+              }));
+            } catch { vulns = []; }
             const exitcode = parseInt('${{ steps.trivy.outputs.exitcode }}');
             const pass = exitcode === 0;
-            const vulns = [];
-            (results.Results || []).forEach(r => (r.Vulnerabilities || []).forEach(v => {
-              vulns.push({ file: r.Target, pkg: v.PkgName, severity: v.Severity, vulnId: v.VulnerabilityID, title: v.Title });
-            }));
-            let body = '## 📦 Repository Vulnerability Scan (Trivy)\n\n';
-            body += `**Status:** ${pass ? '✅ Passing' : '❌ Failing'}\n`;
-            body += `**Vulnerabilities Found:** ${vulns.length}\n\n`;
+            const sevCounts = {};
+            vulns.forEach(v => { sevCounts[v.severity] = (sevCounts[v.severity] || 0) + 1; });
+            let body = pass
+              ? `## ✅ Trivy — Passing\n\nNo HIGH or CRITICAL vulnerabilities found.\n`
+              : `## ❌ Trivy — Failing\n\n**${vulns.length}** vulnerabilit${vulns.length !== 1 ? 'ies' : 'y'} found.\n\n| Severity | Count |\n|----------|------|\n${Object.entries(sevCounts).map(([s,c]) => `| ${s} | ${c} |`).join('\n')}\n`;
             if (vulns.length > 0) {
-              body += '### Findings\n';
-              body += '| # | Package | Severity | CVE | Target |\n|---|---------|----------|-----|--------|\n';
-              vulns.slice(0, 25).forEach((v, i) => {
-                body += `| ${i+1} | \`${v.pkg}\` | **${v.severity}** | \`${v.vulnId}\` | ${v.file} |\n`;
+              body += `\n<details>\n<summary>🔍 Findings</summary>\n\n`;
+              body += '| Package | Severity | CVE | Target |\n|---------|----------|-----|--------|\n';
+              vulns.slice(0, 25).forEach(v => {
+                body += `| \`${v.pkg}\` | **${v.severity}** | \`${v.vulnId}\` | ${v.file} |\n`;
               });
-              if (vulns.length > 25) body += `| ... | *${vulns.length - 25} more* | | |\n`;
-              body += '\n### Summary\n';
-              const bySev = {};
-              vulns.forEach(v => { bySev[v.severity] = (bySev[v.severity] || 0) + 1; });
-              Object.entries(bySev).sort((a,b) => b[1]-a[1]).forEach(([s, c]) => { body += `- **${s}**: ${c}\n`; });
-            } else {
-              body += '✅ No HIGH or CRITICAL vulnerabilities found.\n';
+              if (vulns.length > 25) body += `| ... | | | *${vulns.length - 25} more* |\n`;
+              body += `</details>\n`;
             }
-            body += `\n<details><summary>📋 Raw Log</summary>\n\n\`\`\`\n${(rawLog || 'No output').slice(0, 4000)}\n\`\`\`\n</details>\n\n---`;
+            body += `\n<details><summary>📋 Raw Log</summary>\n\n\`\`\`\n${(rawLog || 'No output').slice(0, 3000)}\n\`\`\`\n</details>\n\n---`;
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
