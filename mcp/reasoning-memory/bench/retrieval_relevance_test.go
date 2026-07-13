@@ -115,8 +115,6 @@ func loadLabeledQueries(t *testing.T, path string) []LabeledQuery {
 	return queries
 }
 
-
-
 func computeNDCG10(results []models.EpisodeSummary, groundTruth map[string]int) float64 {
 	if len(results) == 0 {
 		return 0.0

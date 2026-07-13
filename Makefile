@@ -71,7 +71,7 @@ lint:
 
 lint-check:
 	@echo "→ Running lint checks (no fixes)..."
-	cd $(REPO_ROOT)/mcp/reasoning-memory && golangci-lint run ./... || true
+	cd $(REPO_ROOT)/mcp/reasoning-memory && golangci-lint run ./...
 	$(RUFF) check $(REPO_ROOT)/mcp/credential-vault $(REPO_ROOT)/mcp/pr-reviewer
 	@echo "✓ Lint check complete"
 

@@ -82,12 +82,12 @@ func TestConsolidationQuality(t *testing.T) {
 	report.WriteString("## Patterns for Review\n\n")
 
 	for i, pat := range patterns {
-		report.WriteString(fmt.Sprintf("### Pattern %d: %s\n\n", i+1, pat.ID))
-		report.WriteString(fmt.Sprintf("- **Merge Score**: %.3f\n", pat.Score))
-		report.WriteString(fmt.Sprintf("- **Source Episode A**: \"%s\"\n", pat.AProblem))
-		report.WriteString(fmt.Sprintf("- **Source Episode B**: \"%s\"\n", pat.BProblem))
-		report.WriteString(fmt.Sprintf("- **Consolidated Prompt**:\n  ```\n  %s\n  ```\n", pat.ConsolidatedPrompt))
-		report.WriteString(fmt.Sprintf("- **Master Thinking Path Excerpt**:\n  ```\n  %s\n  ```\n", pat.MasterThinkingPath))
+		fmt.Fprintf(&report, "### Pattern %d: %s\n\n", i+1, pat.ID)
+		fmt.Fprintf(&report, "- **Merge Score**: %.3f\n", pat.Score)
+		fmt.Fprintf(&report, "- **Source Episode A**: \"%s\"\n", pat.AProblem)
+		fmt.Fprintf(&report, "- **Source Episode B**: \"%s\"\n", pat.BProblem)
+		fmt.Fprintf(&report, "- **Consolidated Prompt**:\n  ```\n  %s\n  ```\n", pat.ConsolidatedPrompt)
+		fmt.Fprintf(&report, "- **Master Thinking Path Excerpt**:\n  ```\n  %s\n  ```\n", pat.MasterThinkingPath)
 		report.WriteString("- **Human Rating (1-5)**: `[ ]` (refer to eval-protocol.md for grading criteria)\n")
 		report.WriteString("- **Notes**: `________________________________________________`\n\n")
 		report.WriteString("---\n\n")
