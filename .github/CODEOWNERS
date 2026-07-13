@@ -1,0 +1,11 @@
+# Global owners
+* @ronaldyuwandika
+
+# MCP modules
+/mcp/reasoning-memory/ @ronaldyuwandika
+/mcp/credential-vault/ @ronaldyuwandika
+/mcp/pr-reviewer/ @ronaldyuwandika
+
+# Infrastructure
+/Makefile @ronaldyuwandika
+/.github/ @ronaldyuwandika
