@@ -40,7 +40,7 @@ type SkillData struct {
 func LoadSkill(skillName string) (*SkillData, error) {
 	for _, base := range SkillSearchPaths {
 		path := filepath.Join(base, skillName, "SKILL.md")
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) // #nosec G304 -- path constructed from predefined search paths
 		if err != nil {
 			continue
 		}

@@ -5,7 +5,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   changes:
@@ -39,7 +39,50 @@ jobs:
       - name: Install ruff
         run: pip install ruff
       - name: Run ruff
-        run: ruff check mcp/credential-vault mcp/pr-reviewer
+        id: ruff
+        run: |
+          exitcode=0
+          ruff check mcp/credential-vault mcp/pr-reviewer --exclude mcp/pr-reviewer/.venv > /tmp/ruff-output.txt 2>&1 || exitcode=$?
+          echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
+          exit $exitcode
+      - name: Post ruff report
+        uses: actions/github-script@v9
+        if: always() && github.event_name == 'pull_request'
+        with:
+          script: |
+            const fs = require('fs');
+            let output = '';
+            try { output = fs.readFileSync('/tmp/ruff-output.txt', 'utf8').trim(); } catch { output = ''; }
+            const exitcode = parseInt('${{ steps.ruff.outputs.exitcode }}');
+            const pass = exitcode === 0;
+            const lines = (output || '').split('\n').filter(l => /^\S+:\d+:\d+:/.test(l));
+            const SeverityMap = { 'E': 'Error', 'W': 'Warning', 'F': 'Fatal', 'I': 'Info', 'N': 'Note', 'B': 'Error' };
+            const sevCounts = {};
+            lines.forEach(l => {
+              const m = l.match(/: \S+\s+(\S)/);
+              const sev = m ? (SeverityMap[m[1]] || 'Warning') : 'Warning';
+              sevCounts[sev] = (sevCounts[sev] || 0) + 1;
+            });
+            let body = pass
+              ? `## ✅ Ruff — Passing\n\nClean — no issues found.\n`
+              : `## ❌ Ruff — Failing\n\n**${lines.length}** issue${lines.length !== 1 ? 's' : ''} found.\n\n| Severity | Count |\n|----------|------|\n${Object.entries({Error:0,Warning:0,Info:0}).filter(([s]) => sevCounts[s]).map(([s]) => `| ${s} | ${sevCounts[s] || 0} |`).join('\n')}\n`;
+            if (lines.length > 0) {
+              body += `\n<details>\n<summary>🔍 Findings</summary>\n\n`;
+              body += '| File | Line | Rule | Detail |\n|------|------|------|--------|\n';
+              lines.slice(0, 25).forEach((l) => {
+                const m = l.match(/^(.+?):(\d+):(\d+):\s*(\S+)\s*(.+)$/);
+                if (m) body += `| \`${m[1].replace('mcp/', '')}\` | ${m[2]} | \`${m[4]}\` | ${m[5]} |\n`;
+              });
+              if (lines.length > 25) body += `| ... | | | *${lines.length - 25} more* |\n`;
+              body += `</details>\n`;
+            }
+            body += `\n<details><summary>📋 Raw Log</summary>\n\n\`\`\`\n${output.slice(0, 3000)}\n\`\`\`\n</details>\n\n---`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
 
   go-lint:
     needs: changes
@@ -51,6 +94,49 @@ jobs:
         with:
           go-version-file: mcp/reasoning-memory/go.mod
       - name: Run golangci-lint
+        id: golangci
         uses: golangci/golangci-lint-action@v6
         with:
+          version: v1.64.8
           working-directory: mcp/reasoning-memory
+      - name: Capture golangci-lint output
+        id: golangci-capture
+        if: always() && github.event_name == 'pull_request'
+        working-directory: mcp/reasoning-memory
+        continue-on-error: true
+        run: |
+          golangci-lint run ./... --out-format=json > /tmp/golangci-output.json 2>/dev/null || true
+          test -s /tmp/golangci-output.json || echo '{"Issues":[]}' > /tmp/golangci-output.json
+      - name: Post golangci-lint report
+        uses: actions/github-script@v9
+        if: always() && github.event_name == 'pull_request'
+        with:
+          script: |
+            const fs = require('fs');
+            let issues = [];
+            try {
+              issues = JSON.parse(fs.readFileSync('/tmp/golangci-output.json', 'utf8')).Issues || [];
+            } catch { issues = []; }
+            const pass = '${{ steps.golangci.outcome }}' === 'success';
+            const sevCounts = {};
+            issues.forEach(iss => { const s = iss.Severity || 'Warning'; sevCounts[s] = (sevCounts[s] || 0) + 1; });
+            let body = pass
+              ? `## ✅ golangci-lint — Passing\n\nClean — no issues found.\n`
+              : `## ❌ golangci-lint — Failing\n\n**${issues.length}** issue${issues.length !== 1 ? 's' : ''} found.\n\n| Severity | Count |\n|----------|------|\n${Object.entries(sevCounts).map(([s,c]) => `| ${s} | ${c} |`).join('\n')}\n`;
+            if (issues.length > 0) {
+              body += `\n<details>\n<summary>🔍 Findings</summary>\n\n`;
+              body += '| File | Line | Linter | Detail |\n|------|------|--------|--------|\n';
+              issues.slice(0, 25).forEach(iss => {
+                const file = iss.Pos ? iss.Pos.Filename.replace('mcp/reasoning-memory/', '') : '?';
+                body += `| \`${file}\` | ${iss.Pos ? iss.Pos.Line : '?'} | \`${iss.FromLinter}\` | ${iss.Text} |\n`;
+              });
+              if (issues.length > 25) body += `| ... | | | *${issues.length - 25} more* |\n`;
+              body += `</details>\n`;
+            }
+            body += `\n<details><summary>📋 Raw Log</summary>\n\n\`\`\`json\n${JSON.stringify(issues, null, 2).slice(0, 3000)}\n\`\`\`\n</details>\n\n---`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });

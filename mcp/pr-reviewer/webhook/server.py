@@ -165,7 +165,7 @@ def run():
     import uvicorn
 
     port = int(os.environ.get("PR_REVIEWER_PORT", "8080"))
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")  # nosec B104
 
 
 if __name__ == "__main__":

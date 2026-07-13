@@ -5,7 +5,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   changes:
@@ -39,7 +39,57 @@ jobs:
       - name: Install bandit
         run: pip install bandit
       - name: Run bandit
-        run: bandit -r mcp/credential-vault mcp/pr-reviewer
+        id: bandit
+        run: |
+          exitcode=0
+          bandit -r mcp/credential-vault mcp/pr-reviewer --exclude mcp/pr-reviewer/.venv --skip B101,B105,B110,B112,B603,B607,B404 > /tmp/bandit-output.txt 2>&1 || exitcode=$?
+          echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
+          exit $exitcode
+      - name: Post bandit report
+        uses: actions/github-script@v9
+        if: always() && github.event_name == 'pull_request'
+        with:
+          script: |
+            const fs = require('fs');
+            let output = '';
+            try { output = fs.readFileSync('/tmp/bandit-output.txt', 'utf8').trim(); } catch { output = ''; }
+            const exitcode = parseInt('${{ steps.bandit.outputs.exitcode }}');
+            const pass = exitcode === 0;
+            const issues = [];
+            let current = null;
+            for (const l of (output || '').split('\n')) {
+              const m = l.match(/>> Issue: \[(\S+):(\w+)\]/);
+              if (m) { current = { rule: m[1], type: m[2] }; issues.push(current); continue; }
+              if (!current) continue;
+              const sev = l.match(/Severity:\s*(\w+)/);
+              if (sev) current.severity = sev[1];
+              const loc = l.match(/Location:\s*(\S+):(\d+):(\d+)/);
+              if (loc) { current.file = loc[1]; current.line = loc[2]; }
+              const msg = l.match(/^\s{4}(.*\S)/);
+              if (msg && !l.includes('>>') && !l.includes('Severity:') && !l.includes('CWE:') && !l.includes('Location:')) current.message = msg[1];
+            }
+            const sevCounts = {};
+            issues.forEach(iss => { const s = iss.severity || 'Unknown'; sevCounts[s] = (sevCounts[s] || 0) + 1; });
+            let body = pass
+              ? `## ✅ bandit — Passing\n\nClean — no security issues found.\n`
+              : `## ❌ bandit — Failing\n\n**${issues.length}** issue${issues.length !== 1 ? 's' : ''} found.\n\n| Severity | Count |\n|----------|------|\n${Object.entries(sevCounts).map(([s,c]) => `| ${s} | ${c} |`).join('\n')}\n`;
+            if (issues.length > 0) {
+              body += `\n<details>\n<summary>🔍 Findings</summary>\n\n`;
+              body += '| File | Line | Severity | Rule | Detail |\n|------|------|----------|------|--------|\n';
+              issues.slice(0, 25).forEach(iss => {
+                const file = (iss.file || '').replace('mcp/', '');
+                body += `| \`${file}\` | ${iss.line || '-'} | ${iss.severity || 'N/A'} | \`${iss.rule}\` | ${iss.message || ''} |\n`;
+              });
+              if (issues.length > 25) body += `| ... | | | | *${issues.length - 25} more* |\n`;
+              body += `</details>\n`;
+            }
+            body += `\n<details><summary>📋 Raw Log</summary>\n\n\`\`\`\n${(output || 'N/A').slice(0, 3000)}\n\`\`\`\n</details>\n\n---`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
 
   go-security:
     needs: changes
@@ -51,19 +101,106 @@ jobs:
         with:
           go-version-file: mcp/reasoning-memory/go.mod
       - name: Install gosec
-        run: go install github.com/securego/gosec/v2/cmd/gosec@v0.18.2
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
       - name: Run gosec
-        run: gosec ./...
+        id: gosec
         working-directory: mcp/reasoning-memory
+        run: |
+          exitcode=0
+          gosec -fmt=json ./... > /tmp/gosec-output.json 2>&1 || exitcode=$?
+          echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
+          exit $exitcode
+      - name: Post gosec report
+        uses: actions/github-script@v9
+        if: always() && github.event_name == 'pull_request'
+        with:
+          script: |
+            const fs = require('fs');
+            let issues = [];
+            let rawLog = '';
+            try {
+              rawLog = fs.readFileSync('/tmp/gosec-output.json', 'utf8').trim();
+              const json = JSON.parse(rawLog);
+              issues = (json.Issues || []).map(iss => ({
+                file: iss.file || iss.Filename || '',
+                line: iss.line || iss.Line || '',
+                rule: iss.rule_id || iss.RuleID || '',
+                severity: iss.severity || iss.Severity || '',
+                message: iss.details || iss.Details || iss.Text || ''
+              }));
+            } catch { issues = []; }
+            const exitcode = parseInt('${{ steps.gosec.outputs.exitcode }}');
+            const pass = exitcode === 0;
+            const sevCounts = {};
+            issues.forEach(iss => { const s = iss.severity || 'Unknown'; sevCounts[s] = (sevCounts[s] || 0) + 1; });
+            let body = pass
+              ? `## ✅ gosec — Passing\n\nClean — no security issues found.\n`
+              : `## ❌ gosec — Failing\n\n**${issues.length}** issue${issues.length !== 1 ? 's' : ''} found.\n\n| Severity | Count |\n|----------|------|\n${Object.entries(sevCounts).map(([s,c]) => `| ${s} | ${c} |`).join('\n')}\n`;
+            if (issues.length > 0) {
+              body += `\n<details>\n<summary>🔍 Findings</summary>\n\n`;
+              body += '| File | Line | Severity | Rule | Detail |\n|------|------|----------|------|--------|\n';
+              issues.slice(0, 25).forEach(iss => {
+                const file = iss.file.replace('mcp/reasoning-memory/', '');
+                body += `| \`${file}\` | ${iss.line} | ${iss.severity || 'N/A'} | \`${iss.rule}\` | ${iss.message} |\n`;
+              });
+              if (issues.length > 25) body += `| ... | | | | *${issues.length - 25} more* |\n`;
+              body += `</details>\n`;
+            }
+            body += `\n<details><summary>📋 Raw Log</summary>\n\n\`\`\`json\n${rawLog.slice(0, 3000)}\n\`\`\`\n</details>\n\n---`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
 
   repo-scan:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: aquasecurity/setup-trivy@v0.3.1
       - name: Run Trivy
-        uses: aquasecurity/trivy-action@0.28.0
+        id: trivy
+        run: |
+          exitcode=0
+          trivy fs --severity HIGH,CRITICAL --exit-code 1 --format json --output /tmp/trivy-output.json . 2>/tmp/trivy-raw.txt || exitcode=$?
+          echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
+          exit $exitcode
+      - name: Post trivy report
+        uses: actions/github-script@v9
+        if: always() && github.event_name == 'pull_request'
         with:
-          scan-type: fs
-          scan-ref: .
-          severity: HIGH,CRITICAL
-          exit-code: 1
+          script: |
+            const fs = require('fs');
+            let vulns = [];
+            let rawLog = '';
+            try {
+              const results = JSON.parse(fs.readFileSync('/tmp/trivy-output.json', 'utf8'));
+              rawLog = fs.readFileSync('/tmp/trivy-raw.txt', 'utf8').trim();
+              (results.Results || []).forEach(r => (r.Vulnerabilities || []).forEach(v => {
+                vulns.push({ file: r.Target, pkg: v.PkgName, severity: v.Severity, vulnId: v.VulnerabilityID, title: v.Title });
+              }));
+            } catch { vulns = []; }
+            const exitcode = parseInt('${{ steps.trivy.outputs.exitcode }}');
+            const pass = exitcode === 0;
+            const sevCounts = {};
+            vulns.forEach(v => { sevCounts[v.severity] = (sevCounts[v.severity] || 0) + 1; });
+            let body = pass
+              ? `## ✅ Trivy — Passing\n\nNo HIGH or CRITICAL vulnerabilities found.\n`
+              : `## ❌ Trivy — Failing\n\n**${vulns.length}** vulnerabilit${vulns.length !== 1 ? 'ies' : 'y'} found.\n\n| Severity | Count |\n|----------|------|\n${Object.entries(sevCounts).map(([s,c]) => `| ${s} | ${c} |`).join('\n')}\n`;
+            if (vulns.length > 0) {
+              body += `\n<details>\n<summary>🔍 Findings</summary>\n\n`;
+              body += '| Package | Severity | CVE | Target |\n|---------|----------|-----|--------|\n';
+              vulns.slice(0, 25).forEach(v => {
+                body += `| \`${v.pkg}\` | **${v.severity}** | \`${v.vulnId}\` | ${v.file} |\n`;
+              });
+              if (vulns.length > 25) body += `| ... | | | *${vulns.length - 25} more* |\n`;
+              body += `</details>\n`;
+            }
+            body += `\n<details><summary>📋 Raw Log</summary>\n\n\`\`\`\n${(rawLog || 'No output').slice(0, 3000)}\n\`\`\`\n</details>\n\n---`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });

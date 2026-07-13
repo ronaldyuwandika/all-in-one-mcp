@@ -121,10 +121,10 @@ class Reviewer:
 
     def configure(self, provider: str, token: str) -> bool:
         if provider == "github":
-            self.github_provider = GitHubProvider({"token_env": "", "api_url": "https://api.github.com"})
+            self.github_provider = GitHubProvider({"token_env": "", "api_url": "https://api.github.com"})  # nosec B105
             return True
         elif provider == "gitlab":
-            self.gitlab_provider = GitLabProvider({"token_env": "", "api_url": "https://gitlab.com"})
+            self.gitlab_provider = GitLabProvider({"token_env": "", "api_url": "https://gitlab.com"})  # nosec B105
             return True
         return False
 

@@ -1,0 +1,52 @@
+name: Setup Branch Protection
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  administration: write
+
+jobs:
+  protect-main:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Protect main branch
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const rules = {
+              required_status_checks: {
+                strict: true,
+                checks: [
+                  { context: 'python-lint' },
+                  { context: 'go-lint' },
+                  { context: 'python-security' },
+                  { context: 'go-security' },
+                  { context: 'repo-scan' },
+                ]
+              },
+              enforce_admins: true,
+              required_pull_request_reviews: null,
+              restrictions: null,
+            };
+            try {
+              await github.rest.repos.updateBranchProtection({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                branch: 'main',
+                ...rules,
+              });
+              console.log('Branch protection applied to main');
+            } catch (e) {
+              // Try updating existing rules first, then create
+              try {
+                await github.rest.repos.updateBranchProtection({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  branch: 'main',
+                  ...rules,
+                });
+              } catch (e2) {
+                core.setFailed(`Failed to set branch protection: ${e2.message}`);
+              }
+            }
