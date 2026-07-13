@@ -10,6 +10,7 @@ from providers.gitlab import GitLabProvider
 from llm.base import BaseLLM
 from llm.gemini import GeminiLLM
 from llm.claude import ClaudeLLM
+from llm.openai import OpenAILLM
 
 logger = logging.getLogger("pr-reviewer.reviewer")
 
@@ -27,6 +28,8 @@ class Reviewer:
         provider = llm_config.get("provider", "gemini")
         if provider == "claude":
             self._llm = ClaudeLLM(llm_config.get("claude", {}))
+        elif provider == "openai":
+            self._llm = OpenAILLM(llm_config.get("openai", {}))
         else:
             self._llm = GeminiLLM(llm_config.get("gemini", {}))
 
@@ -70,6 +73,13 @@ class Reviewer:
 
         return self.review_request(req)
 
+    def review_and_post(self, url: str) -> ReviewResult:
+        result = self.review(url)
+        source, owner, repo, number = self._parse_url(url)
+        provider = self._get_provider(source)
+        provider.post_review(owner, repo, number, result.summary, result.verdict, result.comments)
+        return result
+
     def review_request(self, req: ReviewRequest) -> ReviewResult:
         start = time.time()
 
@@ -102,6 +112,11 @@ class Reviewer:
             return True
         elif provider == "claude":
             self._llm = ClaudeLLM({"model": model, "api_key_env": "ANTHROPIC_API_KEY"})
+            return True
+        elif provider == "openai":
+            self._llm = OpenAILLM(
+                {"model": model, "api_key_env": "OPENAI_API_KEY", "base_url": "https://api.openai.com/v1"}
+            )
             return True
         return False
 

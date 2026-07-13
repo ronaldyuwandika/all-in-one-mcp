@@ -1,11 +1,15 @@
 llm:
-  provider: gemini  # gemini | claude
+  provider: openai  # gemini | claude | openai
   gemini:
     model: gemini-2.0-flash
     api_key_env: GEMINI_API_KEY
   claude:
     model: claude-sonnet-4-20260514
     api_key_env: ANTHROPIC_API_KEY
+  openai:
+    model: deepseek-v4-pro
+    api_key_env: OPENAI_API_KEY
+    base_url: https://api.deepseek.com/v1
 
 github:
   api_url: https://api.github.com
@@ -19,6 +23,7 @@ review:
   min_confidence: 0.7
   max_comments: 10
   auto_review_on_webhook: true
+  auto_post_comment: true
   rules:
     - security
     - performance

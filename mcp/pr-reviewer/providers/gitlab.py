@@ -54,6 +54,28 @@ class GitLabProvider:
             pr_url=mr_data.get("web_url", f"https://gitlab.com/{owner}/{repo}/-/merge_requests/{number}"),
         )
 
+    def post_review(self, owner: str, repo: str, number: int, summary: str, verdict: str, comments: list) -> bool:
+        import httpx
+
+        project = self._project_path(owner, repo)
+        base_url = f"{self.api_url}/api/v4/projects/{project}/merge_requests/{number}/notes"
+
+        body = f"## MR Review ({verdict})\n\n{summary}\n\n"
+        body += "\n".join(f"- **{c.severity}** `{c.file}:{c.line}` — {c.message}" for c in comments[:10])
+
+        headers = {"Content-Type": "application/json"}
+        if self.token:
+            headers["PRIVATE-TOKEN"] = self.token
+
+        try:
+            resp = httpx.post(base_url, json={"body": body}, headers=headers, timeout=30)
+            resp.raise_for_status()
+            logger.info("Posted review comment to MR#%s", number)
+            return True
+        except Exception as e:
+            logger.warning("Failed to post review comment: %s", e)
+            return False
+
     def list_pending(self, owner: str, repo: str) -> list[PendingReview]:
         import httpx
 

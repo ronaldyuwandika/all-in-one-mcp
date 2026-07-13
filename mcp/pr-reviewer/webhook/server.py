@@ -37,7 +37,7 @@ async def github_webhook(request: Request):
     if not html_url:
         return {"status": "error", "message": "No PR URL"}
 
-    result = reviewer.review(html_url)
+    result = reviewer.review_and_post(html_url)
     logger.info("Auto-reviewed %s: %s", html_url, result.verdict)
 
     return {"status": "ok", "url": html_url, "verdict": result.verdict, "comments": len(result.comments)}
@@ -60,7 +60,7 @@ async def gitlab_webhook(request: Request):
     if not url:
         return {"status": "error", "message": "No MR URL"}
 
-    result = reviewer.review(url)
+    result = reviewer.review_and_post(url)
     logger.info("Auto-reviewed %s: %s", url, result.verdict)
 
     return {"status": "ok", "url": url, "verdict": result.verdict, "comments": len(result.comments)}
