@@ -51,7 +51,7 @@ jobs:
         with:
           go-version-file: mcp/reasoning-memory/go.mod
       - name: Install gosec
-        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+        run: go install github.com/securego/gosec/v2/cmd/gosec@v0.18.2
       - name: Run gosec
         run: gosec ./...
         working-directory: mcp/reasoning-memory
@@ -61,7 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run Trivy
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.28.0
         with:
           scan-type: fs
           scan-ref: .
