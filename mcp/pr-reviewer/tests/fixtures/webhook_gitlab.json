@@ -1,0 +1,21 @@
+{
+  "event_type": "Merge Request Hook",
+  "object_attributes": {
+    "url": "https://gitlab.com/test-owner/test-repo/-/merge_requests/99",
+    "action": "open",
+    "title": "Add retry logic to external API calls",
+    "description": "Adds exponential backoff with max retries.",
+    "source_branch": "feature/retry",
+    "target_branch": "main",
+    "last_commit": {
+      "id": "def456789012345678901234567890abcdef0123"
+    }
+  },
+  "user": {
+    "username": "test-dev"
+  },
+  "repository": {
+    "name": "test-repo",
+    "path_with_namespace": "test-owner/test-repo"
+  }
+}

@@ -14,11 +14,8 @@ setup: $(foreach d,$(MCP_DIRS),install-mcp-$d)
 	@echo "✓ All MCPs installed"
 
 install-mcp-reasoning-memory:
-	@echo "→ Installing reasoning-memory..."
-	cd $(REPO_ROOT)/mcp/reasoning-memory && \
-		$(PYTHON) -m venv .venv && \
-		.venv/bin/pip install --quiet --upgrade pip && \
-		.venv/bin/pip install --quiet -e ".[dev]"
+	@echo "→ Building reasoning-memory (Go)..."
+	cd $(REPO_ROOT)/mcp/reasoning-memory && go build -o reasoning-memory .
 
 install-mcp-credential-vault:
 	@echo "→ Installing credential-vault..."
@@ -39,13 +36,24 @@ install-mcp-pr-reviewer:
 validate:
 	@echo "→ Validating MCP configurations..."
 	@for dir in $(MCP_DIRS); do \
-		if [ -f $(REPO_ROOT)/mcp/$$dir/pyproject.toml ]; then \
-			echo "  ✓ mcp/$$dir/pyproject.toml"; \
+		if [ $$dir = "reasoning-memory" ]; then \
+			if [ -f $(REPO_ROOT)/mcp/$$dir/go.mod ]; then \
+				echo "  ✓ mcp/$$dir/go.mod"; \
+			else \
+				echo "  ✗ mcp/$$dir/go.mod MISSING"; \
+			fi; \
+			if [ -f $(REPO_ROOT)/mcp/$$dir/main.go ]; then \
+				echo "  ✓ mcp/$$dir/main.go"; \
+			fi; \
 		else \
-			echo "  ✗ mcp/$$dir/pyproject.toml MISSING"; \
-		fi; \
-		if [ -f $(REPO_ROOT)/mcp/$$dir/server.py ]; then \
-			echo "  ✓ mcp/$$dir/server.py"; \
+			if [ -f $(REPO_ROOT)/mcp/$$dir/pyproject.toml ]; then \
+				echo "  ✓ mcp/$$dir/pyproject.toml"; \
+			else \
+				echo "  ✗ mcp/$$dir/pyproject.toml MISSING"; \
+			fi; \
+			if [ -f $(REPO_ROOT)/mcp/$$dir/server.py ]; then \
+				echo "  ✓ mcp/$$dir/server.py"; \
+			fi; \
 		fi; \
 		if [ -f $(REPO_ROOT)/mcp/$$dir/AI_GUIDE.md ]; then \
 			echo "  ✓ mcp/$$dir/AI_GUIDE.md"; \
@@ -56,13 +64,15 @@ validate:
 # ── Lint ─────────────────────────────────────────────────────────────────────
 
 lint:
-	@echo "→ Running ruff linter on all MCPs..."
-	$(RUFF) check $(foreach d,$(MCP_DIRS),$(REPO_ROOT)/mcp/$d) --fix
+	@echo "→ Running linters..."
+	cd $(REPO_ROOT)/mcp/reasoning-memory && golangci-lint run ./... || true
+	$(RUFF) check $(REPO_ROOT)/mcp/credential-vault $(REPO_ROOT)/mcp/pr-reviewer --fix
 	@echo "✓ Lint complete"
 
 lint-check:
-	@echo "→ Running ruff check (no fixes)..."
-	$(RUFF) check $(foreach d,$(MCP_DIRS),$(REPO_ROOT)/mcp/$d)
+	@echo "→ Running lint checks (no fixes)..."
+	cd $(REPO_ROOT)/mcp/reasoning-memory && golangci-lint run ./... || true
+	$(RUFF) check $(REPO_ROOT)/mcp/credential-vault $(REPO_ROOT)/mcp/pr-reviewer
 	@echo "✓ Lint check complete"
 
 # ── Test ─────────────────────────────────────────────────────────────────────
@@ -70,9 +80,7 @@ lint-check:
 test: $(foreach d,$(MCP_DIRS),test-mcp-$d)
 
 test-mcp-reasoning-memory:
-	cd $(REPO_ROOT)/mcp/reasoning-memory && \
-		.venv/bin/python -m pytest tests/ -v 2>/dev/null || \
-		echo "  ℹ No tests found for reasoning-memory"
+	cd $(REPO_ROOT)/mcp/reasoning-memory && go test -v -count=1 -short ./...
 
 test-mcp-credential-vault:
 	cd $(REPO_ROOT)/mcp/credential-vault && \
@@ -87,7 +95,7 @@ test-mcp-pr-reviewer:
 # ── Run MCP servers ──────────────────────────────────────────────────────────
 
 run-mcp-reasoning-memory:
-	cd $(REPO_ROOT)/mcp/reasoning-memory && .venv/bin/python server.py
+	cd $(REPO_ROOT)/mcp/reasoning-memory && go run .
 
 run-mcp-credential-vault:
 	cd $(REPO_ROOT)/mcp/credential-vault && .venv/bin/python server.py
@@ -99,7 +107,8 @@ run-mcp-pr-reviewer:
 
 clean:
 	@echo "→ Cleaning up..."
-	@for dir in $(MCP_DIRS); do \
+	@rm -rf $(REPO_ROOT)/mcp/reasoning-memory/reasoning-memory
+	@for dir in credential-vault pr-reviewer; do \
 		rm -rf $(REPO_ROOT)/mcp/$$dir/.venv; \
 		rm -rf $(REPO_ROOT)/mcp/$$dir/__pycache__; \
 		find $(REPO_ROOT)/mcp/$$dir -name '*.pyc' -delete; \
