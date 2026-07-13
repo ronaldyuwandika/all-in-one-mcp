@@ -46,6 +46,36 @@ class GitHubProvider:
             pr_url=pr_data.get("html_url", f"https://github.com/{owner}/{repo}/pull/{number}"),
         )
 
+    def post_review(self, owner: str, repo: str, number: int, summary: str, verdict: str, comments: list) -> bool:
+        import httpx
+
+        base_url = f"{self.api_url}/repos/{owner}/{repo}"
+        headers = {
+            "Accept": "application/vnd.github.v3+json",
+            "Content-Type": "application/json",
+        }
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+
+        body = ", ".join(f"- **{c.severity}** `{c.file}:{c.line}` — {c.message}" for c in comments[:10])
+        comment_body = (
+            f"## PR Review ({verdict})\n\n{summary}\n\n{body}" if body else f"## PR Review ({verdict})\n\n{summary}"
+        )
+
+        try:
+            resp = httpx.post(
+                f"{base_url}/issues/{number}/comments",
+                json={"body": comment_body},
+                headers=headers,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            logger.info("Posted review comment to PR#%s", number)
+            return True
+        except Exception as e:
+            logger.warning("Failed to post review comment: %s", e)
+            return False
+
     def list_pending(self, owner: str, repo: str) -> list[PendingReview]:
         import httpx
 

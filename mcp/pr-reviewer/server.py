@@ -76,6 +76,27 @@ def review_pr(url: str) -> str:
 
 
 @mcp.tool()
+def review_and_post(url: str) -> str:
+    """Review a pull request or merge request and post the result as a PR comment.
+
+    Fetches the diff, analyzes it with the configured LLM, and posts
+    the structured review as a comment on the PR/MR.
+
+    Args:
+        url: Full URL to the pull request or merge request.
+    """
+    if not url or not url.strip():
+        return _err("url is required")
+
+    try:
+        result = reviewer.review_and_post(url.strip())
+        return json.dumps({"posted": True, **result.to_dict()}, indent=2, default=str)
+    except Exception as e:
+        logger.exception("Review + post failed")
+        return _err(f"review + post failed: {e}")
+
+
+@mcp.tool()
 def review_draft(title: str, description: str, diff: str, repo_url: str = "") -> str:
     """Review a draft change without a live PR.
 
@@ -158,6 +179,7 @@ def configure_llm(provider: str, model: str, api_key: str = "") -> str:
         env_key = {
             "gemini": "GEMINI_API_KEY",
             "claude": "ANTHROPIC_API_KEY",
+            "openai": "OPENAI_API_KEY",
         }.get(provider)
         if env_key:
             os.environ[env_key] = api_key
