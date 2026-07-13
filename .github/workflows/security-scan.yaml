@@ -66,7 +66,7 @@ jobs:
         with:
           go-version-file: mcp/reasoning-memory/go.mod
       - name: Install gosec
-        run: go install github.com/securego/gosec/v2/cmd/gosec@v0.18.2
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
       - name: Run gosec
         id: gosec
         continue-on-error: true
