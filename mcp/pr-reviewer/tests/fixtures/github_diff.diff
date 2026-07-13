@@ -1,0 +1,18 @@
+diff --git a/server.py b/server.py
+index 1234567..abcdefg 100644
+--- a/server.py
++++ b/server.py
+@@ -10,7 +10,9 @@ def search_users(query: str) -> list[dict]:
+     """Search users by name or email."""
+     cursor = db.cursor()
+     # OLD: vulnerable to SQL injection
+-    cursor.execute(f"SELECT * FROM users WHERE name LIKE '%{query}%'")
++    cursor.execute("SELECT * FROM users WHERE name LIKE ?", ('%' + query + '%',))
+     rows = cursor.fetchall()
+     return [dict(r) for r in rows]
+@@ -20,5 +22,6 @@ def get_user(user_id: int) -> dict:
+     cursor = db.cursor()
+-    cursor.execute(f"SELECT * FROM users WHERE id = {user_id}")
++    cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+     row = cursor.fetchone()
+     return dict(row) if row else {}

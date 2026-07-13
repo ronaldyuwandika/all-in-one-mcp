@@ -1,0 +1,13 @@
+{
+  "title": "Add retry logic to external API calls",
+  "description": "Adds exponential backoff with max retries to all external API client calls to improve resilience.",
+  "object_attributes": {
+    "url": "https://gitlab.com/test-owner/test-repo/-/merge_requests/99",
+    "action": "open",
+    "source_branch": "feature/retry",
+    "target_branch": "main"
+  },
+  "user": {
+    "username": "test-dev"
+  }
+}
