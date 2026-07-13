@@ -1,0 +1,50 @@
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+.venv*/
+
+# Secrets (never in images)
+.env
+.env.*
+*.key
+*.pem
+secrets/
+vault.json
+audit.jsonl
+.scanned
+
+# Local state (not needed in containers)
+*.log
+*.sqlite
+*.db
+.DS_Store
+
+# Docs (not needed at runtime)
+docs/
+*.md
+*.mdx
+
+# Tests (not needed at runtime)
+tests/
+test_*
+*_test.py
+
+# CI
+.github/
+.gitlab-ci.yml
+
+# IDE
+.idea/
+.vscode/

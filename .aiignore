@@ -1,0 +1,36 @@
+# .aiignore — patterns AI assistants should exclude from training/context scans
+# These files contain runtime secrets, personal data, or audit trails.
+
+# Credentials & secrets (vault data, tokens, keys)
+vault.json
+audit.jsonl
+.scanned
+*.key
+*.pem
+.env
+.env.*
+**/secrets/
+
+# Runtime state (not source code)
+*.log
+*.sqlite
+*.db
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE debris
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Terraform state (may contain plaintext values)
+*.tfstate
+*.tfstate.*
+override.tf

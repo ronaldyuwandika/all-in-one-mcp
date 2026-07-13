@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+.venv*/
+
+# Environment & secrets
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+secrets/
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# MCP-specific data (keep source, not runtime state)
+vault.json
+audit.jsonl
+.scanned
+*.log
+*.sqlite
+*.db
+
+# Git
+.git/
+
+# Docker
+.docker/
+
+# Config overrides
+*.local.yaml
+*.local.toml
+*.local.json
+*.local.env
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+override.tf
+override.tf.json
+terraform.rc

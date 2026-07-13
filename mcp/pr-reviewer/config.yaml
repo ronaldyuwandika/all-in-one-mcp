@@ -1,0 +1,27 @@
+llm:
+  provider: gemini  # gemini | claude
+  gemini:
+    model: gemini-2.0-flash
+    api_key_env: GEMINI_API_KEY
+  claude:
+    model: claude-sonnet-4-20260514
+    api_key_env: ANTHROPIC_API_KEY
+
+github:
+  api_url: https://api.github.com
+  token_env: GITHUB_TOKEN
+
+gitlab:
+  api_url: https://gitlab.com
+  token_env: GITLAB_TOKEN
+
+review:
+  min_confidence: 0.7
+  max_comments: 10
+  auto_review_on_webhook: true
+  rules:
+    - security
+    - performance
+    - style
+    - correctness
+    - error_handling

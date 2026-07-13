@@ -1,0 +1,12 @@
+version: 1
+episodes_dir: episodes
+index_dir: index
+patterns_dir: patterns
+retrieval:
+  top_k_default: 3
+  min_similarity: 0.15
+  hybrid_weight: 0.5
+consolidation:
+  prune_after_days: 90
+  min_episodes_for_pattern: 3
+  auto_run: true

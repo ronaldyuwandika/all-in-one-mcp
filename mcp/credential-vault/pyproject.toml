@@ -1,0 +1,21 @@
+[project]
+name = "credential-vault"
+version = "0.1.0"
+description = "Credential Vault MCP server - encrypted credential management with MCP, CLI, and TUI interfaces"
+requires-python = ">=3.12"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "cryptography>=41.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.5.0",
+    "pytest>=8.0",
+    "textual>=0.52.0",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
