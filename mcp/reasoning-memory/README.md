@@ -1,31 +1,37 @@
-# Reasoning Memory Network
+# Reasoning Memory Network — MCP Server
 
-MCP server that captures, stores, and retrieves LLM reasoning traces. Augments lite models with past reasoning context and polishes raw prompts with domain-specific architectural rules and skill injection.
+MCP server that captures, stores, searches, and consolidates LLM reasoning traces.
 
-## Usage
+Written in **Go** using `modernc.org/sqlite` (SQLite FTS5) and `mark3labs/mcp-go` (stdio transport).
+
+## Quick Start
 
 ```bash
-# Server mode (stdio transport)
-python server.py
-
-# Seed episodes from installed skills
-python seed.py --all
-
-# Benchmark polish_prompt token overhead
-python benchmark.py
+go run .
 ```
 
-## MCP Tools
+Or via Makefile:
+
+```bash
+make run-mcp-reasoning-memory
+```
+
+## Tools
 
 | Tool | Description |
 |---|---|
-| `capture_reasoning_episode` | Store a completed reasoning trace |
-| `inject_reasoning_context` | Retrieve past episodes for context injection |
-| `retrieve_reasoning` | Search episodes by keyword, domain, tags |
-| `consolidate_reasoning` | Cluster, merge, prune, and re-index episodes |
-| `polish_prompt` | Structure raw prompts with domain rules + skills |
+| `capture_reasoning_episode` | Store reasoning trace at task end |
+| `retrieve_reasoning` | Search episodes by keyword + metadata |
+| `inject_reasoning_context` | Get formatted `<reasoning_memory>` XML for prompt injection |
+| `consolidate_reasoning` | Cluster, merge, prune, rebuild index |
+| `polish_prompt` | Structure raw prompts with domain rules + skill injection |
 
-## Dependencies
+## Configuration
 
-- Python >=3.12
-- `mcp[cli]`, `pyyaml`
+See `config.yaml` for retrieval thresholds and consolidation settings.
+
+## Testing
+
+```bash
+go test -v ./...
+```

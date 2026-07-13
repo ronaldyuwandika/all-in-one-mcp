@@ -2,6 +2,12 @@ version: 1
 episodes_dir: episodes
 index_dir: index
 patterns_dir: patterns
+vector_dir: vector
+embedding:
+  provider: ollama
+  model: nomic-embed-text
+  base_url: http://localhost:11434
+  enabled: false
 retrieval:
   top_k_default: 3
   min_similarity: 0.15
