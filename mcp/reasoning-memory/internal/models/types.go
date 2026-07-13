@@ -1,0 +1,99 @@
+package models
+
+import "time"
+
+type ToolCall struct {
+	Tool          string `json:"tool" yaml:"tool"`
+	Args          any    `json:"args" yaml:"args"`
+	ResultExcerpt string `json:"result_excerpt" yaml:"result_excerpt"`
+	Outcome       string `json:"outcome" yaml:"outcome"`
+}
+
+type Step struct {
+	ID      string `json:"id" yaml:"id"`
+	Type    string `json:"type" yaml:"type"`
+	Content string `json:"content" yaml:"content"`
+}
+
+type Episode struct {
+	ID              string     `json:"id" yaml:"id"`
+	CreatedAt       time.Time  `json:"created_at" yaml:"created_at"`
+	Domain          string     `json:"domain" yaml:"domain"`
+	Outcome         string     `json:"outcome" yaml:"outcome"`
+	Tags            []string   `json:"tags" yaml:"tags"`
+	Problem         string     `json:"problem" yaml:"problem"`
+	ThinkingTrace   string     `json:"thinking_trace" yaml:"thinking_trace"`
+	Steps           []Step     `json:"steps" yaml:"steps"`
+	ToolCalls       []ToolCall `json:"tool_calls" yaml:"tool_calls"`
+	ModelID         string     `json:"model_id" yaml:"model_id"`
+	DurationSeconds int        `json:"duration_seconds" yaml:"duration_seconds"`
+}
+
+type EpisodeSummary struct {
+	ID              string   `json:"id" yaml:"id"`
+	CreatedAt       string   `json:"created_at" yaml:"created_at"`
+	Problem         string   `json:"problem" yaml:"problem"`
+	Domain          string   `json:"domain" yaml:"domain"`
+	Outcome         string   `json:"outcome" yaml:"outcome"`
+	Tags            []string `json:"tags" yaml:"tags"`
+	StepCount       int      `json:"step_count" yaml:"step_count"`
+	ToolCount       int      `json:"tool_count" yaml:"tool_count"`
+	StepTypes       []string `json:"step_types" yaml:"step_types"`
+	ModelID         string   `json:"model_id" yaml:"model_id"`
+	DurationSeconds int      `json:"duration_seconds" yaml:"duration_seconds"`
+	LocalScore      float64  `json:"_local_score,omitempty" yaml:"_local_score,omitempty"`
+	VectorScore     float64  `json:"_vector_score,omitempty" yaml:"_vector_score,omitempty"`
+}
+
+type Pattern struct {
+	ID                 string     `json:"id" yaml:"id"`
+	CreatedAt          string     `json:"created_at" yaml:"created_at"`
+	Domain             string     `json:"domain" yaml:"domain"`
+	MergeScore         float64    `json:"merge_score" yaml:"merge_score"`
+	Sources            []string   `json:"sources" yaml:"sources"`
+	ConsolidatedPrompt string     `json:"consolidated_prompt" yaml:"consolidated_prompt"`
+	MasterThinkingPath string     `json:"master_thinking_path" yaml:"master_thinking_path"`
+	MasterToolCalls    []ToolCall `json:"master_tool_calls" yaml:"master_tool_calls"`
+	Tags               []string   `json:"tags" yaml:"tags"`
+}
+
+type Config struct {
+	Version       string              `yaml:"version"`
+	EpisodesDir   string              `yaml:"episodes_dir"`
+	IndexDir      string              `yaml:"index_dir"`
+	PatternsDir   string              `yaml:"patterns_dir"`
+	VectorDir     string              `yaml:"vector_dir"`
+	Embedding     EmbeddingConfig     `yaml:"embedding"`
+	Retrieval     RetrievalConfig     `yaml:"retrieval"`
+	Consolidation ConsolidationConfig `yaml:"consolidation"`
+}
+
+type EmbeddingConfig struct {
+	Provider string `yaml:"provider"`
+	Model    string `yaml:"model"`
+	BaseURL  string `yaml:"base_url"`
+	APIKey   string `yaml:"api_key"`
+	Enabled  bool   `yaml:"enabled"`
+}
+
+type RetrievalConfig struct {
+	TopKDefault   int     `yaml:"top_k_default"`
+	MinSimilarity float64 `yaml:"min_similarity"`
+	HybridWeight  float64 `yaml:"hybrid_weight"`
+}
+
+type ConsolidationConfig struct {
+	PruneAfterDays        int  `yaml:"prune_after_days"`
+	MinEpisodesForPattern int  `yaml:"min_episodes_for_pattern"`
+	AutoRun               bool `yaml:"auto_run"`
+}
+
+type PolishResult struct {
+	PolishedPrompt string `json:"polished_prompt"`
+	TaskType       string `json:"task_type"`
+	Language       string `json:"language,omitempty"`
+	Domain         string `json:"domain"`
+	SkillInjected  bool   `json:"skill_injected"`
+	SkillName      string `json:"skill_name,omitempty"`
+	ContextCount   int    `json:"context_count"`
+}
