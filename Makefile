@@ -1,17 +1,52 @@
 REPO_ROOT := $(shell git rev-parse --show-toplevel 2>/dev/null || echo ".")
 PYTHON := python3
 RUFF := ruff
+GO := go
+GOLANGCI_LINT := golangci-lint
 
 MCP_DIRS := reasoning-memory credential-vault pr-reviewer
+GO_MCP_DIRS := $(REPO_ROOT)/mcp/reasoning-memory
 
-.PHONY: all setup install-mcp-% validate lint test clean
+.PHONY: all setup install-mcp-% validate lint test clean setup-go go-build-all go-test-all go-lint-all go-vet-all
 
 all: setup
 
 # ── Setup ────────────────────────────────────────────────────────────────────
 
-setup: $(foreach d,$(MCP_DIRS),install-mcp-$d)
+setup: setup-go $(foreach d,$(MCP_DIRS),install-mcp-$d)
 	@echo "✓ All MCPs installed"
+
+##@ Go Workspace
+setup-go: ## Sync Go workspace and tidy all modules
+	go work sync
+	@for dir in $(GO_MCP_DIRS); do \
+		echo "Tidying $$dir..."; \
+		cd $$dir && $(GO) mod tidy && cd -; \
+	done
+
+go-build-all: ## Build all Go modules from workspace root
+	@for dir in $(GO_MCP_DIRS); do \
+		echo "Building $$dir..."; \
+		$(GO) build -v $$dir/...; \
+	done
+
+go-test-all: ## Test all Go modules from workspace root
+	@for dir in $(GO_MCP_DIRS); do \
+		echo "Testing $$dir..."; \
+		$(GO) test -race -v $$dir/...; \
+	done
+
+go-lint-all: ## Lint all Go modules from workspace root
+	@for dir in $(GO_MCP_DIRS); do \
+		echo "Linting $$dir..."; \
+		cd $$dir && $(GOLANGCI_LINT) run && cd -; \
+	done
+
+go-vet-all: ## Vet all Go modules from workspace root
+	@for dir in $(GO_MCP_DIRS); do \
+		echo "Vetting $$dir..."; \
+		$(GO) vet $$dir/...; \
+	done
 
 install-mcp-reasoning-memory:
 	@echo "→ Building reasoning-memory (Go)..."
