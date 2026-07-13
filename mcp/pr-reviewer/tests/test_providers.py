@@ -1,6 +1,5 @@
 """Tests for providers."""
 
-import pytest
 from providers.github import GitHubProvider
 from providers.gitlab import GitLabProvider
 

@@ -10,7 +10,6 @@ Idempotent: episodes tagged with skill + "seed" are skipped.
 """
 
 import argparse
-import re
 import sys
 from pathlib import Path
 from store import EpisodeStore
@@ -110,7 +109,7 @@ def guess_language(skill: dict) -> str | None:
 
 def generate_problem(skill: dict) -> str:
     name = skill["name"]
-    desc = skill["description"][:120] if skill["description"] else name
+    _ = skill["description"][:120] if skill["description"] else name
 
     templates = {
         "coding": [
@@ -178,9 +177,7 @@ def generate_thinking_trace(skill: dict) -> str:
 
     if lang == "go":
         generic_reasoning.append("")
-        generic_reasoning.append(
-            "Go-specific: explicit error propagation, goroutine lifecycle, channel safety."
-        )
+        generic_reasoning.append("Go-specific: explicit error propagation, goroutine lifecycle, channel safety.")
 
     return "\n".join(generic_reasoning)
 
@@ -247,22 +244,14 @@ def list_all_skills() -> list[dict]:
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Seed reasoning memory from installed skills"
-    )
+    parser = argparse.ArgumentParser(description="Seed reasoning memory from installed skills")
     parser.add_argument(
         "--skills",
         help="Comma-separated skill names (e.g. docker-expert,terraform-iac)",
     )
-    parser.add_argument(
-        "--all", action="store_true", help="Seed from ALL installed skills"
-    )
-    parser.add_argument(
-        "--dry-run", action="store_true", help="Preview only, don't write"
-    )
-    parser.add_argument(
-        "--tag", default="skill-seed", help="Tag for idempotency (default: skill-seed)"
-    )
+    parser.add_argument("--all", action="store_true", help="Seed from ALL installed skills")
+    parser.add_argument("--dry-run", action="store_true", help="Preview only, don't write")
+    parser.add_argument("--tag", default="skill-seed", help="Tag for idempotency (default: skill-seed)")
     args = parser.parse_args()
 
     if not args.skills and not args.all:
@@ -281,19 +270,13 @@ def main():
                 targets.append(skill)
             else:
                 print(f"  [SKIP] Skill not found: {name}")
-                print(
-                    f"         Scanned: {', '.join(str(p) for p in SKILL_DIRS.values())}"
-                )
+                print(f"         Scanned: {', '.join(str(p) for p in SKILL_DIRS.values())}")
 
     if not targets:
         print("No skills found. Aborting.")
         sys.exit(1)
 
-    existing = [
-        s["id"]
-        for s in store.list_episodes(limit=1000)
-        if args.tag in s.get("tags", [])
-    ]
+    existing = [s["id"] for s in store.list_episodes(limit=1000) if args.tag in s.get("tags", [])]
     existing_skills = set()
     for eid in existing:
         ep = store.get_episode(eid)
@@ -304,12 +287,10 @@ def main():
                     existing_skills.add(sk["name"])
 
     if existing_skills:
-        print(
-            f"Already seeded ({len(existing_skills)} skills found with tag '{args.tag}'):"
-        )
+        print(f"Already seeded ({len(existing_skills)} skills found with tag '{args.tag}'):")
         for s in sorted(existing_skills):
             print(f"  - {s}")
-        print(f"\nUse --tag <other> to seed fresh, or delete existing seed episodes.")
+        print("\nUse --tag <other> to seed fresh, or delete existing seed episodes.")
         if set(s["name"] for s in targets).issubset(existing_skills):
             print("All requested skills already seeded. Nothing to do.")
             return
@@ -325,11 +306,10 @@ def main():
         return
 
     created = []
-    import json
 
     for skill in to_seed:
         domain = guess_domain(skill)
-        lang = guess_language(skill)
+        _ = guess_language(skill)
         episode = {
             "problem": generate_problem(skill),
             "thinking_trace": generate_thinking_trace(skill),
@@ -349,7 +329,7 @@ def main():
         print(line)
 
     print(f"\nEpisodes: {store.episodes_dir}")
-    print(f"\nNow run: reasoning-memory.consolidate_reasoning(strategy='auto')")
+    print("\nNow run: reasoning-memory.consolidate_reasoning(strategy='auto')")
 
 
 if __name__ == "__main__":

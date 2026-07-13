@@ -1,7 +1,6 @@
 """Review orchestrator: fetch diff, analyze with LLM, return structured comments."""
 
 import logging
-import os
 import time
 from typing import Optional
 

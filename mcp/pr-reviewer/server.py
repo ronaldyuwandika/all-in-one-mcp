@@ -10,13 +10,12 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Optional
 
 import yaml
 from mcp.server.fastmcp import FastMCP
 
 from core.reviewer import Reviewer
-from core.models import ReviewRequest, ReviewResult
+from core.models import ReviewRequest
 
 BASE_DIR = Path(__file__).parent
 CONFIG_PATH = BASE_DIR / "config.yaml"

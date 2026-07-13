@@ -1,6 +1,5 @@
 """Tests for core/models.py"""
 
-import pytest
 from core.models import Comment, ReviewRequest, ReviewResult, PendingReview
 
 

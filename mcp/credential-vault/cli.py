@@ -14,12 +14,8 @@ Usage:
 """
 
 import argparse
-import getpass
-import json
 import os
 import sys
-import time
-from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import server as sv
@@ -33,7 +29,7 @@ def cmd_status(args):
     chat_creds = [n for n in names if n.startswith("chat.")]
     scanned = sv.SCANNED_FLAG.exists()
 
-    print(f"Credential Vault")
+    print("Credential Vault")
     print(f"{'=' * 50}")
     print(f"  Status:      {'scanned' if scanned else 'not scanned'}")
     print(f"  Total:       {len(names)} credentials")
@@ -42,7 +38,7 @@ def cmd_status(args):
     print(f"  Created:     {vault.get('created_at', 'never')}")
     print(f"  Last scan:   {vault.get('last_scanned', 'never')}")
     if args.verbose:
-        print(f"\n  All credentials:")
+        print("\n  All credentials:")
         for n in names:
             tag = " [chat]" if n.startswith("chat.") else ""
             print(f"    {n}{tag}")
@@ -62,7 +58,7 @@ def cmd_get(args):
 
     if name not in creds:
         print(f"Error: credential '{name}' not found", file=sys.stderr)
-        print(f"Use 'vault status' to list available credentials", file=sys.stderr)
+        print("Use 'vault status' to list available credentials", file=sys.stderr)
         sys.exit(1)
 
     purpose = args.purpose or input("Purpose for accessing this credential: ").strip()
@@ -95,9 +91,9 @@ def cmd_scan(args):
     print(f"  Found {len(discovered)} credentials")
 
     if args.redact is not False:
-        print(f"Redacting files...")
+        print("Redacting files...")
         sv.redact_credential_files()
-        print(f"  Done")
+        print("  Done")
 
     for k in sorted(discovered.keys()):
         print(f"  \u2713 {k}")
@@ -159,9 +155,7 @@ def cmd_watch(args):
     try:
         from tui import run_tui
     except ImportError:
-        print(
-            "TUI requires 'textual'. Install with: pip install textual", file=sys.stderr
-        )
+        print("TUI requires 'textual'. Install with: pip install textual", file=sys.stderr)
         sys.exit(1)
     run_tui(interval=args.interval, show_audit=not args.no_audit)
 
@@ -173,16 +167,12 @@ def main():
     sub = parser.add_subparsers(dest="cmd")
 
     p_status = sub.add_parser("status", help="List stored credentials")
-    p_status.add_argument(
-        "-v", "--verbose", action="store_true", help="Show all credential names"
-    )
+    p_status.add_argument("-v", "--verbose", action="store_true", help="Show all credential names")
 
     p_get = sub.add_parser("get", help="Get a credential value")
     p_get.add_argument("name", help="Credential name (from vault status)")
     p_get.add_argument("--purpose", "-p", help="Why you need this (skips prompt)")
-    p_get.add_argument(
-        "--quiet", "-q", action="store_true", help="Output only the value"
-    )
+    p_get.add_argument("--quiet", "-q", action="store_true", help="Output only the value")
 
     p_scan = sub.add_parser("scan", help="Scan and redact files")
     p_scan.add_argument(
@@ -192,19 +182,17 @@ def main():
         help="Scan only, don't redact files",
     )
 
-    p_restore = sub.add_parser("restore", help="Restore original files from backup")
+    sub.add_parser("restore", help="Restore original files from backup")
 
     p_set = sub.add_parser("set", help="Store a chat credential")
     p_set.add_argument("name", help="Credential name")
     p_set.add_argument("value", nargs="?", help="Value (omit to pipe from stdin)")
 
-    p_audit = sub.add_parser("audit", help="Show access audit log")
+    sub.add_parser("audit", help="Show access audit log")
 
     p_export = sub.add_parser("export", help="Export vault")
     p_export.add_argument("file", help="Output file path")
-    p_export.add_argument(
-        "--plain", action="store_true", help="Export as readable JSON (DANGEROUS)"
-    )
+    p_export.add_argument("--plain", action="store_true", help="Export as readable JSON (DANGEROUS)")
 
     p_import = sub.add_parser("import", help="Import vault from export file")
     p_import.add_argument("file", help="Input file path")

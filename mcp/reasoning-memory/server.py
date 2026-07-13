@@ -9,8 +9,6 @@ Dependencies: mcp, pyyaml
 
 import json
 import logging
-import os
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Optional
@@ -101,14 +99,8 @@ def capture_reasoning_episode(
         model_id=model_id,
     )
 
-    lean_ctx_cmd = (
-        f'ctx_knowledge(action="remember", '
-        f'category="reasoning_episode", '
-        f'key="{episode_id}", '
-        f'value="domain={domain}, outcome={outcome}, tags={tags}", '
-        f'query="{problem[:100]}"'
-        f")"
-    )
+    # ctx_knowledge call intentionally omitted at server scope;
+    # injected at agent runtime via capture_reasoning_episode flow.
 
     return json.dumps(
         {
@@ -215,9 +207,7 @@ def inject_reasoning_context(
         lines.append(f"    <domain>{ep['domain']}</domain>")
         lines.append(f"    <outcome>{ep['outcome']}</outcome>")
         lines.append(f"    <tags>{','.join(ep['tags'])}</tags>")
-        lines.append(
-            f"    <steps>{ep['step_count']} steps ({', '.join(set(ep['step_types']))})</steps>"
-        )
+        lines.append(f"    <steps>{ep['step_count']} steps ({', '.join(set(ep['step_types']))})</steps>")
         lines.append(f"    <tools>{ep['tool_count']} tool calls</tools>")
 
         if include_traces:
@@ -230,24 +220,16 @@ def inject_reasoning_context(
                 tc_lines = []
                 for tc in full["tool_calls"][:5]:
                     excerpt = str(tc.get("args", ""))[:120]
-                    tc_lines.append(
-                        f"      tool={tc.get('tool')} args={excerpt} \u2192 {tc.get('outcome')}"
-                    )
+                    tc_lines.append(f"      tool={tc.get('tool')} args={excerpt} \u2192 {tc.get('outcome')}")
                 if tc_lines:
-                    lines.append(
-                        "    <tool_calls>\n"
-                        + "\n".join(tc_lines)
-                        + "\n    </tool_calls>"
-                    )
+                    lines.append("    <tool_calls>\n" + "\n".join(tc_lines) + "\n    </tool_calls>")
 
-        lines.append(f"  </episode>")
+        lines.append("  </episode>")
 
     lines.append("</reasoning_memory>")
     lines.append("")
-    lines.append(
-        "<!-- Hybrid retrieval complete: MCP local (keyword+metadata) results above."
-    )
-    lines.append(f"     For broader semantic recall, also run:")
+    lines.append("<!-- Hybrid retrieval complete: MCP local (keyword+metadata) results above.")
+    lines.append("     For broader semantic recall, also run:")
     lines.append(
         f'     ctx_semantic_search(query="{problem[:80]}", path="~/.reasoning-memory/episodes/", mode="hybrid")'
     )
@@ -287,19 +269,15 @@ def consolidate_reasoning(
             domain = ep.get("domain", "unknown")
             clusters[domain].append(ep["id"])
 
-        report["actions"].append(
-            f"Clustered into {len(clusters)} domain groups: {dict(clusters)}"
-        )
+        report["actions"].append(f"Clustered into {len(clusters)} domain groups: {dict(clusters)}")
 
     if strategy in ("auto", "merge"):
         candidates = store.find_merge_candidates(min_tag_overlap=1)
         merged = 0
         for a, b, score in candidates:
-            pid = store.merge_to_pattern(a, b, score)
+            store.merge_to_pattern(a, b, score)
             merged += 1
-        report["actions"].append(
-            f"Merged {merged} episode pairs into patterns (found {len(candidates)} candidates)"
-        )
+        report["actions"].append(f"Merged {merged} episode pairs into patterns (found {len(candidates)} candidates)")
 
     if strategy in ("auto", "prune"):
         pruned = 0

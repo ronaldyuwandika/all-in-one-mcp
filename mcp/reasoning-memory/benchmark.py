@@ -14,9 +14,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from prompter import polish_prompt, load_skill, build_skill_context
+from prompter import polish_prompt
 from store import EpisodeStore
-import json
 
 BASE_DIR = Path.home() / ".reasoning-memory"
 store = EpisodeStore(BASE_DIR)
@@ -154,7 +153,7 @@ def run():
         )
 
     print(f"\nTotal configs tested: {len(results)}")
-    print(f"To run full eval: python3 eval.py --runs 3")
+    print("To run full eval: python3 eval.py --runs 3")
 
 
 if __name__ == "__main__":

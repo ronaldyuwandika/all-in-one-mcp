@@ -9,29 +9,20 @@ Usage:
   DEEPSEEK_API_KEY=sk-xxx python3 eval.py
 """
 
-import argparse
 import json
-import math
 import os
 import re
 import subprocess
 import sys
 import tempfile
-import time
-from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from prompter import polish_prompt
 from store import EpisodeStore
 
-HAS_REQUESTS = False
-try:
-    import requests
+from importlib import util as _util
 
-    HAS_REQUESTS = True
-except ImportError:
-    pass
+HAS_REQUESTS = _util.find_spec("requests") is not None
 
 TASKS = [
     {
@@ -79,9 +70,7 @@ def resolve_config(args) -> dict:
     auth = read_opencode_auth()
     deepseek_auth = auth.get("deepseek", {})
     default_key = deepseek_auth.get("key") or deepseek_auth.get("apiKey") or ""
-    env_key = (
-        os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
-    )
+    env_key = os.environ.get("DEEPSEEK_API_KEY") or os.environ.get("OPENAI_API_KEY") or ""
 
     cfg = {
         "provider": args.provider or "deepseek",
@@ -135,9 +124,7 @@ def validate_go(code: str) -> dict:
         f.write(code)
         tmp = f.name
     try:
-        r = subprocess.run(
-            ["go", "vet", tmp], capture_output=True, text=True, timeout=30
-        )
+        r = subprocess.run(["go", "vet", tmp], capture_output=True, text=True, timeout=30)
         if r.returncode != 0:
             errors.append(r.stderr.strip() or r.stdout.strip())
     except FileNotFoundError:
@@ -154,7 +141,7 @@ def validate_python(code: str) -> dict:
     if not code:
         return {"valid": False, "errors": ["empty code"]}
     try:
-        ast_code = compile(code, "<eval>", "exec", flags=0)
+        compile(code, "<eval>", "exec", flags=0)
     except SyntaxError as e:
         errors.append(f"syntax error: {e}")
     try:
@@ -173,6 +160,42 @@ def validate_python(code: str) -> dict:
     return {"valid": False, "errors": errors[:5]}
 
 
+def llm_complete(prompt: str, system: str, cfg: dict) -> str:
+    import urllib.request as _req
+    import urllib.error as _err
+
+    body = json.dumps(
+        {
+            "model": cfg.get("model", "deepseek-v4-pro"),
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            "temperature": 0.2,
+            "max_tokens": 4096,
+        }
+    ).encode()
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {cfg.get('api_key', '')}",
+    }
+    req = _req.Request(
+        cfg.get("base_url", "https://api.deepseek.com/v1") + "/chat/completions",
+        data=body,
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with _req.urlopen(req, timeout=120) as resp:
+            data = json.loads(resp.read().decode())
+        return data["choices"][0]["message"]["content"]
+    except _err.HTTPError as e:
+        return f'{{"error": "HTTP {e.code}: {e.read().decode()[:200]}"}}'
+    except Exception as e:
+        return f'{{"error": "{e}"}}'
+
+
 def grade_output(
     task_name: str,
     language: str,
@@ -187,18 +210,12 @@ def grade_output(
     val_a_str = (
         "PASS"
         if validation_a.get("valid")
-        else (
-            "FAIL"
-            + (f": {validation_a['errors'][0]}" if validation_a.get("errors") else "")
-        )
+        else ("FAIL" + (f": {validation_a['errors'][0]}" if validation_a.get("errors") else ""))
     )
     val_b_str = (
         "PASS"
         if validation_b.get("valid")
-        else (
-            "FAIL"
-            + (f": {validation_b['errors'][0]}" if validation_b.get("errors") else "")
-        )
+        else ("FAIL" + (f": {validation_b['errors'][0]}" if validation_b.get("errors") else ""))
     )
 
     judge_prompt = f"""You are a senior {language} engineer evaluating two code samples.

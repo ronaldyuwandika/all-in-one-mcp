@@ -37,7 +37,6 @@ def _parse_skill(name: str, text: str) -> dict:
 
     description = ""
     in_frontmatter = text.startswith("---")
-    frontmatter_end = 0
     if in_frontmatter:
         parts = text.split("---", 2)
         if len(parts) >= 3:
@@ -176,15 +175,13 @@ def build_compact_skill_context(skill_data: dict) -> str:
         lines.append("")
 
     constraints = ks.get("constraints", "")
-    c_lines = [l.strip() for l in constraints.split("\n") if l.strip().startswith("-")]
+    c_lines = [line.strip() for line in constraints.split("\n") if line.strip().startswith("-")]
     for c in c_lines[:4]:
         short = c.replace("  ", " ").rstrip()
         lines.append(short)
 
     lines.append("")
-    lines.append(
-        "**Output rule**: Produce ONLY a single code block with the implementation."
-    )
+    lines.append("**Output rule**: Produce ONLY a single code block with the implementation.")
     lines.append("No explanatory text, no README, no project structure files.")
 
     return "\n".join(lines)
@@ -286,10 +283,7 @@ def _inject_skill(lines: list, skill_context: str):
     lines.insert(idx + 1 + len(skill_context.split("\n")) + 1, "")
 
 
-def polish_coding_prompt(
-    raw: str, language: str | None, context: str, skill_context: str = ""
-) -> str:
-    lang = language or "general"
+def polish_coding_prompt(raw: str, language: str | None, context: str, skill_context: str = "") -> str:
     rules = DOMAIN_RULES["coding"]
 
     lang_rules = []
@@ -486,11 +480,7 @@ def polish_prompt(
     if skill_name:
         skill_data = load_skill(skill_name)
         if skill_data:
-            skill_context = (
-                build_compact_skill_context(skill_data)
-                if compact
-                else build_skill_context(skill_data)
-            )
+            skill_context = build_compact_skill_context(skill_data) if compact else build_skill_context(skill_data)
             skill_loaded = True
 
     polisher = POLISHERS.get(task_type, polish_general_prompt)

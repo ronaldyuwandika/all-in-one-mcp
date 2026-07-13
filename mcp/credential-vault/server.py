@@ -13,20 +13,14 @@ Uses macOS Keychain for the vault encryption key.
 """
 
 import json
-import os
 import re
-import shutil
-import stat
 import subprocess
-import sys
-import tempfile
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from cryptography.fernet import Fernet
-from mcp.server import Server, NotificationOptions
+from mcp.server import Server
 from mcp.server.models import InitializationOptions
 from mcp.types import ServerCapabilities, ToolsCapability, Tool as MCPTool
 import mcp.server.stdio
@@ -69,15 +63,11 @@ CRED_PATTERNS = [
         "AWS_ACCESS_KEY_ID",
     ),
     (
-        re.compile(
-            r'(?i)(?:aws[_-])?secret[_-]access[_-]key[= ]+["\']?([^"\' \n]{8})([^"\' \n]+)'
-        ),
+        re.compile(r'(?i)(?:aws[_-])?secret[_-]access[_-]key[= ]+["\']?([^"\' \n]{8})([^"\' \n]+)'),
         lambda m: f"secret_access_key={m.group(1)}{'*' * min(len(m.group(2)), 32)}",
     ),
     (
-        re.compile(
-            r'(?i)(?:aws[_-])?session[_-]token[= ]+["\']?[^"\' \n]{10}([^"\' \n]+)'
-        ),
+        re.compile(r'(?i)(?:aws[_-])?session[_-]token[= ]+["\']?[^"\' \n]{10}([^"\' \n]+)'),
         "AWS_SESSION_TOKEN",
     ),
     (
@@ -103,25 +93,19 @@ CRED_PATTERNS = [
     (re.compile(r"(?i)whsec_[A-Za-z0-9]{10,}"), "STRIPE_WEBHOOK_SECRET"),
     (re.compile(r"cfat_[A-Za-z0-9_]{10,}"), "CLOUDFLARE_TOKEN"),
     (
-        re.compile(
-            r'(?i)(api[_-]?key|apikey|api_secret|secret_key)[=: ]+["\']?([^"\' \n]{8})([^"\' \n]+)'
-        ),
+        re.compile(r'(?i)(api[_-]?key|apikey|api_secret|secret_key)[=: ]+["\']?([^"\' \n]{8})([^"\' \n]+)'),
         lambda m: f"{m.group(1)}={m.group(2)}{'*' * min(len(m.group(3)), 32)}",
     ),
     (
         re.compile(r'(?i)(bearer|jwt)[=: ]+["\']?[^"\' \n]{10}([^"\' \n]{10,})'),
-        lambda m: (
-            f"{m.group(1)}={'*' * min(len(m.group(0).split('=', 1)[-1].strip('"\'')), 40)}"
-        ),
+        lambda m: f"{m.group(1)}={'*' * min(len(m.group(0).split('=', 1)[-1].strip('"\'')), 40)}",
     ),
     (
         re.compile(r'(?i)(token|secret)[=: ]+["\']?([^"\' \n]{10})([^"\' \n]+)'),
         lambda m: f"{m.group(1)}={m.group(2)}{'*' * min(len(m.group(3)), 32)}",
     ),
     (
-        re.compile(
-            r'(?i)(password|passwd|pass|pwd)[=: ]+["\']?([^"\' \n]{3})([^"\' \n]+)'
-        ),
+        re.compile(r'(?i)(password|passwd|pass|pwd)[=: ]+["\']?([^"\' \n]{3})([^"\' \n]+)'),
         lambda m: f"{m.group(1)}={m.group(2)}{'*' * min(len(m.group(3)), 32)}",
     ),
     (
@@ -129,9 +113,7 @@ CRED_PATTERNS = [
         lambda m: m.group(1) + "://__REDACTED__@",
     ),
     (
-        re.compile(
-            r'(DATABASE_URL|REDIS_URL|MONGO_URI|MONGODB_URI)[=: ]+["\']?[^"\' \n]{8}([^"\' \n]+)'
-        ),
+        re.compile(r'(DATABASE_URL|REDIS_URL|MONGO_URI|MONGODB_URI)[=: ]+["\']?[^"\' \n]{8}([^"\' \n]+)'),
         lambda m: f"{m.group(1)}={'*' * min(len(m.group(2)), 40)}",
     ),
 ]
@@ -274,7 +256,7 @@ def import_vault(filepath: str, merge: bool = True) -> int:
 def load_audit() -> list:
     if not REDACT_LOG.exists():
         return []
-    return [json.loads(l) for l in REDACT_LOG.read_text().strip().split("\n") if l]
+    return [json.loads(line) for line in REDACT_LOG.read_text().strip().split("\n") if line]
 
 
 def append_audit(entry: dict):
@@ -364,12 +346,7 @@ def _flatten_yaml(obj: dict, prefix: str = "") -> dict:
         key = f"{prefix}.{k}" if prefix else k
         if isinstance(v, dict):
             result.update(_flatten_yaml(v, key))
-        elif (
-            isinstance(v, str)
-            and len(v) > 4
-            and not v.startswith("{{")
-            and not v.startswith("$")
-        ):
+        elif isinstance(v, str) and len(v) > 4 and not v.startswith("{{") and not v.startswith("$"):
             result[key] = v
     return result
 
@@ -529,9 +506,7 @@ def scan_credentials() -> dict:
             discovered[vault_key] = value
             if vault_key in vault.get("credentials", {}):
                 continue
-            vault.setdefault("credentials", {})[vault_key] = vault_encrypt(
-                {vault_key: value}
-            )
+            vault.setdefault("credentials", {})[vault_key] = vault_encrypt({vault_key: value})
 
     for env_file in _find_env_files():
         try:
@@ -550,9 +525,7 @@ def scan_credentials() -> dict:
             if vault_key in vault.get("credentials", {}):
                 continue
             discovered[vault_key] = value
-            vault.setdefault("credentials", {})[vault_key] = vault_encrypt(
-                {vault_key: value}
-            )
+            vault.setdefault("credentials", {})[vault_key] = vault_encrypt({vault_key: value})
 
     new_files = {}
     for target in SCAN_TARGETS:
@@ -630,11 +603,7 @@ def redact_credential_files():
                 decrypted_entry = vault_decrypt(encrypted)
             except Exception:
                 continue
-            val = (
-                list(decrypted_entry.values())[0]
-                if isinstance(decrypted_entry, dict)
-                else str(decrypted_entry)
-            )
+            val = list(decrypted_entry.values())[0] if isinstance(decrypted_entry, dict) else str(decrypted_entry)
             if val and len(val) > 4:
                 redacted = redacted.replace(val, f"[REDACTED:{vk}]")
 
@@ -670,9 +639,7 @@ def mask_text(text: str) -> str:
         else:
             result = pattern.sub(f"[REDACTED:{label}]", result)
     result = re.sub(r"\[REDACTED:[^\]]+\]", lambda m: m.group(0), result)
-    result = re.sub(
-        r"(?<!\[REDACTED:)[A-Za-z0-9+/=]{40,}(?!\])", "[REDACTED:LONG_KEY]", result
-    )
+    result = re.sub(r"(?<!\[REDACTED:)[A-Za-z0-9+/=]{40,}(?!\])", "[REDACTED:LONG_KEY]", result)
     return result
 
 
@@ -710,9 +677,7 @@ async def list_tools():
             description="Redact credential patterns from text (use before returning output to user)",
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "text": {"type": "string", "description": "Text to redact"}
-                },
+                "properties": {"text": {"type": "string", "description": "Text to redact"}},
                 "required": ["text"],
             },
         ),
@@ -736,9 +701,7 @@ async def list_tools():
             description="Run a shell command and redact any credential patterns from its output",
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "command": {"type": "string", "description": "Shell command to run"}
-                },
+                "properties": {"command": {"type": "string", "description": "Shell command to run"}},
                 "required": ["command"],
             },
         ),
@@ -800,9 +763,7 @@ async def call_tool(name: str, arguments: dict):
         purpose = arguments.get("purpose", "")
 
         if not cred_name or not purpose:
-            return [
-                {"type": "text", "text": '{"error": "name and purpose are required"}'}
-            ]
+            return [{"type": "text", "text": '{"error": "name and purpose are required"}'}]
 
         vault = load_vault()
         encrypted = vault.get("credentials", {}).get(cred_name)
@@ -856,9 +817,7 @@ async def call_tool(name: str, arguments: dict):
         if not cmd:
             return [{"type": "text", "text": '{"error": "command is required"}'}]
         try:
-            r = subprocess.run(
-                ["bash", "-c", cmd], capture_output=True, text=True, timeout=120
-            )
+            r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=120)
             output = r.stdout or r.stderr
             masked = mask_text(output)
             return [{"type": "text", "text": masked}]
@@ -871,17 +830,13 @@ async def call_tool(name: str, arguments: dict):
         cred_name = arguments.get("name", "")
         cred_value = arguments.get("value", "")
         if not cred_name or not cred_value:
-            return [
-                {"type": "text", "text": '{"error": "name and value are required"}'}
-            ]
+            return [{"type": "text", "text": '{"error": "name and value are required"}'}]
         vault = load_vault()
         vault_key = f"chat.{cred_name}"
         encrypted = vault_encrypt({vault_key: cred_value})
         vault.setdefault("credentials", {})[vault_key] = encrypted
         save_vault(vault)
-        append_audit(
-            {"action": "set", "credential": vault_key, "purpose": "chat-origin"}
-        )
+        append_audit({"action": "set", "credential": vault_key, "purpose": "chat-origin"})
         return [
             {
                 "type": "text",

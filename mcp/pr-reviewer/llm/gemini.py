@@ -3,7 +3,6 @@
 import json
 import logging
 import os
-from typing import Optional
 
 from llm.base import BaseLLM
 

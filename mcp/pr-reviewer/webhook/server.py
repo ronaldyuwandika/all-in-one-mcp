@@ -1,12 +1,11 @@
 """FastAPI webhook server for auto-reviewing PRs/MRs via webhook events."""
 
-import json
 import logging
 import os
 from pathlib import Path
 
 import yaml
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 
 from core.reviewer import Reviewer
 

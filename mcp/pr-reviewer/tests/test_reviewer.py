@@ -1,9 +1,8 @@
 """Tests for core/reviewer.py"""
 
-import json
 import pytest
 from core.reviewer import Reviewer
-from core.models import ReviewRequest, ReviewResult
+from core.models import ReviewRequest
 
 
 def test_url_parse_github():

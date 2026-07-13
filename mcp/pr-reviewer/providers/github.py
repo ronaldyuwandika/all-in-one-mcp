@@ -2,7 +2,6 @@
 
 import logging
 import os
-from typing import Optional
 
 from core.models import ReviewRequest, PendingReview
 

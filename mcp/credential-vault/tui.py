@@ -23,7 +23,7 @@ import server as sv
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, Container
-from textual.screen import ModalScreen, Screen
+from textual.screen import ModalScreen
 from textual.widgets import Header, Footer, DataTable, Static, RichLog, Input, Label, Button
 from textual import work
 

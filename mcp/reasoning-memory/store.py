@@ -1,7 +1,5 @@
-import os
 import re
 import json
-import hashlib
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,9 +57,7 @@ def _build_episode_md(episode: dict, steps_body: str, tools_body: str) -> str:
     meta["duration_seconds"] = episode.get("duration_seconds", 0)
     meta["problem"] = episode["problem"][:200]
     meta["thinking_trace"] = episode["thinking_trace"][:2000]
-    frontmatter = yaml.dump(
-        meta, default_flow_style=False, sort_keys=False, allow_unicode=True
-    )
+    frontmatter = yaml.dump(meta, default_flow_style=False, sort_keys=False, allow_unicode=True)
 
     return (
         f"---\n{frontmatter}---\n\n"
@@ -132,8 +128,7 @@ class EpisodeStore:
         }
 
         steps_body = "\n".join(
-            f"{i + 1}. **[{s.get('type', 'step')}]** {s.get('content', '')[:300]}"
-            for i, s in enumerate(steps)
+            f"{i + 1}. **[{s.get('type', 'step')}]** {s.get('content', '')[:300]}" for i, s in enumerate(steps)
         )
         tools_body = "\n".join(
             f"- `{tc.get('tool')}` args={json.dumps(tc.get('args', {}))[:200]} \u2192 {tc.get('outcome')}"
@@ -260,9 +255,7 @@ class EpisodeStore:
 
         return results
 
-    def find_merge_candidates(
-        self, min_tag_overlap: int = 1
-    ) -> list[tuple[dict, dict, float]]:
+    def find_merge_candidates(self, min_tag_overlap: int = 1) -> list[tuple[dict, dict, float]]:
         episodes = list(self._local_index.values())
         candidates = []
 
@@ -281,9 +274,7 @@ class EpisodeStore:
                     b_text = b.get("problem", "").lower()
                     a_terms = set(a_text.split())
                     b_terms = set(b_text.split())
-                    text_overlap = len(a_terms & b_terms) / max(
-                        len(a_terms | b_terms), 1
-                    )
+                    text_overlap = len(a_terms & b_terms) / max(len(a_terms | b_terms), 1)
                     score = (overlap * 0.3) + (text_overlap * 0.4)
                     candidates.append((a, b, round(score, 3)))
 
@@ -320,18 +311,12 @@ class EpisodeStore:
         a_tools = set()
         merged_tools = []
         for tc in a_full.get("tool_calls", []):
-            key = (
-                tc.get("tool", "")
-                + json.dumps(tc.get("args", {}), sort_keys=True)[:100]
-            )
+            key = tc.get("tool", "") + json.dumps(tc.get("args", {}), sort_keys=True)[:100]
             if key not in a_tools:
                 a_tools.add(key)
                 merged_tools.append(tc)
         for tc in b_full.get("tool_calls", []):
-            key = (
-                tc.get("tool", "")
-                + json.dumps(tc.get("args", {}), sort_keys=True)[:100]
-            )
+            key = tc.get("tool", "") + json.dumps(tc.get("args", {}), sort_keys=True)[:100]
             if key not in a_tools:
                 a_tools.add(key)
                 merged_tools.append(tc)
@@ -369,7 +354,7 @@ class EpisodeStore:
         lines = thinking_trace.strip().split("\n")
         steps = []
         current_step = None
-        step_types = [
+        _step_types = [
             "analysis",
             "option_generation",
             "decision",
@@ -385,17 +370,11 @@ class EpisodeStore:
 
             step_type = "analysis"
             lower = line_stripped.lower()
-            if any(
-                w in lower for w in ["decide", "choose", "pick", "select", "opt for"]
-            ):
+            if any(w in lower for w in ["decide", "choose", "pick", "select", "opt for"]):
                 step_type = "decision"
-            elif any(
-                w in lower for w in ["option", "alternative", "consider", "approach"]
-            ):
+            elif any(w in lower for w in ["option", "alternative", "consider", "approach"]):
                 step_type = "option_generation"
-            elif any(
-                w in lower for w in ["implement", "write", "code", "edit", "create"]
-            ):
+            elif any(w in lower for w in ["implement", "write", "code", "edit", "create"]):
                 step_type = "implementation"
             elif any(w in lower for w in ["verify", "test", "check", "validate"]):
                 step_type = "verification"
@@ -423,9 +402,7 @@ class EpisodeStore:
             steps.append(current_step)
 
         if not steps:
-            steps.append(
-                {"id": "s1", "type": "analysis", "content": thinking_trace[:500]}
-            )
+            steps.append({"id": "s1", "type": "analysis", "content": thinking_trace[:500]})
 
         return steps
 
