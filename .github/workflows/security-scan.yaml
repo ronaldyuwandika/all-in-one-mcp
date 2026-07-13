@@ -56,9 +56,8 @@ jobs:
             const exitcode = parseInt('${{ steps.bandit.outputs.exitcode }}');
             const pass = exitcode === 0;
             const issues = [];
-            const lines = (output || '').split('\n');
             let current = null;
-            for (const l of lines) {
+            for (const l of (output || '').split('\n')) {
               const m = l.match(/>> Issue: \[(\S+):(\w+)\]/);
               if (m) { current = { rule: m[1], type: m[2] }; issues.push(current); continue; }
               if (!current) continue;
@@ -71,27 +70,26 @@ jobs:
               const msg = l.match(/^\s{4}(.*\S)/);
               if (msg && !l.includes('>>') && !l.includes('Severity:') && !l.includes('CWE:') && !l.includes('Location:')) current.message = msg[1];
             }
-            let body = `## 🛡️ Python Security (bandit) ${pass ? '✅' : '❌'}\n\n**Result:** ${pass ? '✅ Pass' : '❌ Fail'} — ${issues.length} issue${issues.length !== 1 ? 's' : ''} found\n\n`;
+            let body = '## 🛡️ Python Security (bandit)\n\n';
+            body += `**Status:** ${pass ? '✅ Passing' : '❌ Failing'}\n`;
+            body += `**Issues Found:** ${issues.length}\n\n`;
             if (issues.length > 0) {
-              body += '| # | File | Line | Rule | Severity | Message |\n|---|------|------|------|----------|---------|\n';
-              const show = issues.slice(0, 25);
-              show.forEach((iss, i) => {
+              body += '### Findings\n';
+              body += '| # | File | Line | Severity | Rule | Detail |\n|---|------|------|----------|------|--------|\n';
+              issues.slice(0, 25).forEach((iss, i) => {
                 const file = (iss.file || '').replace('mcp/', '');
-                body += `| ${i+1} | \`${file}\` | ${iss.line || '-'} | \`${iss.rule}\` | ${iss.severity || '-'} | ${iss.message || ''} |\n`;
+                body += `| ${i+1} | \`${file}\` | ${iss.line || '-'} | ${iss.severity || 'N/A'} | \`${iss.rule}\` | ${iss.message || ''} |\n`;
               });
-              if (issues.length > 25) {
-                body += `| ... | *${issues.length - 25} more* | | | | |\n`;
-              }
+              if (issues.length > 25) body += `| ... | *${issues.length - 25} more issues* | | | | |\n`;
+              body += '\n### Summary\n';
               const bySev = {};
               issues.forEach(iss => { const s = iss.severity || 'Unknown'; bySev[s] = (bySev[s] || 0) + 1; });
-              body += '\n**Severity breakdown:**\n';
-              Object.entries(bySev).sort((a,b) => b[1]-a[1]).forEach(([sev, count]) => {
-                body += `- **${sev}**: ${count}\n`;
-              });
+              body += '**Severity breakdown:**\n';
+              Object.entries(bySev).sort((a,b) => b[1]-a[1]).forEach(([s, c]) => { body += `- **${s}**: ${c}\n`; });
             } else {
-              body += '✅ All checks passed. No security issues found.\n';
+              body += '✅ No security issues found. Python code looks secure.\n';
             }
-            body += `\n<details><summary>Full output</summary>\n\n\`\`\`\n${output.slice(0, 3000)}\n\`\`\`\n</details>`;
+            body += `\n<details><summary>📋 Raw Log</summary>\n\n\`\`\`\n${(output || 'N/A').slice(0, 4000)}\n\`\`\`\n</details>\n\n---`;
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
@@ -115,7 +113,7 @@ jobs:
         working-directory: mcp/reasoning-memory
         run: |
           exitcode=0
-          gosec ./... > /tmp/gosec-output.txt 2>&1 || exitcode=$?
+          gosec -fmt=json ./... > /tmp/gosec-output.json 2>&1 || exitcode=$?
           echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
           exit $exitcode
       - name: Post gosec report
@@ -124,33 +122,41 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            let output = '';
-            try { output = fs.readFileSync('/tmp/gosec-output.txt', 'utf8').trim(); } catch { output = ''; }
+            let issues = [];
+            let rawLog = '';
+            try {
+              rawLog = fs.readFileSync('/tmp/gosec-output.json', 'utf8').trim();
+              const json = JSON.parse(rawLog);
+              issues = (json.Issues || []).map(iss => ({
+                file: iss.file || iss.Filename || '',
+                line: iss.line || iss.Line || '',
+                rule: iss.rule_id || iss.RuleID || '',
+                cwe: iss.cwe || iss.CWE || '',
+                severity: iss.severity || iss.Severity || '',
+                message: iss.details || iss.Details || iss.Text || ''
+              }));
+            } catch { issues = []; }
             const exitcode = parseInt('${{ steps.gosec.outputs.exitcode }}');
             const pass = exitcode === 0;
-            const issues = [];
-            const lines = (output || '').split('\n');
-            for (const l of lines) {
-              const m = l.match(/\[(.+?):(\d+)\]\s*-\s*(\S+)\s*\(CWE-(\d+)\):\s*(.+)/);
-              if (m) {
-                issues.push({ file: m[1], line: m[2], rule: m[3], cwe: m[4], message: m[5] });
-              }
-            }
-            let body = `## 🔒 Go Security (gosec) ${pass ? '✅' : '❌'}\n\n**Result:** ${pass ? '✅ Pass' : '❌ Fail'} — ${issues.length} issue${issues.length !== 1 ? 's' : ''} found\n\n`;
+            let body = '## 🔒 Go Security (gosec)\n\n';
+            body += `**Status:** ${pass ? '✅ Passing' : '❌ Failing'}\n`;
+            body += `**Issues Found:** ${issues.length}\n\n`;
             if (issues.length > 0) {
-              body += '| # | File | Line | Rule | CWE | Message |\n|---|------|------|------|-----|---------|\n';
-              const show = issues.slice(0, 25);
-              show.forEach((iss, i) => {
+              body += '### Findings\n';
+              body += '| # | File | Line | Severity | Rule | CWE | Detail |\n|---|------|------|----------|------|-----|--------|\n';
+              issues.slice(0, 25).forEach((iss, i) => {
                 const file = iss.file.replace('mcp/reasoning-memory/', '');
-                body += `| ${i+1} | \`${file}\` | ${iss.line} | \`${iss.rule}\` | CWE-${iss.cwe} | ${iss.message} |\n`;
+                body += `| ${i+1} | \`${file}\` | ${iss.line} | ${iss.severity || 'N/A'} | \`${iss.rule}\` | ${iss.cwe ? 'CWE-'+iss.cwe : '-'} | ${iss.message} |\n`;
               });
-              if (issues.length > 25) {
-                body += `| ... | *${issues.length - 25} more* | | | | |\n`;
-              }
+              if (issues.length > 25) body += `| ... | *${issues.length - 25} more issues* | | | | | |\n`;
+              body += '\n### Summary\n';
+              const bySev = {};
+              issues.forEach(iss => { const s = iss.severity || 'Unknown'; bySev[s] = (bySev[s] || 0) + 1; });
+              Object.entries(bySev).sort((a,b) => b[1]-a[1]).forEach(([s, c]) => { body += `- **${s}**: ${c}\n`; });
             } else {
-              body += '✅ All checks passed. No security issues found.\n';
+              body += '✅ No security issues found. Go code looks secure.\n';
             }
-            body += `\n<details><summary>Full output</summary>\n\n\`\`\`\n${output.slice(0, 3000)}\n\`\`\`\n</details>`;
+            body += `\n<details><summary>📋 Raw Log</summary>\n\n\`\`\`json\n${rawLog.slice(0, 4000)}\n\`\`\`\n</details>\n\n---`;
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
@@ -167,7 +173,7 @@ jobs:
         id: trivy
         run: |
           exitcode=0
-          trivy fs --severity HIGH,CRITICAL --format table . > /tmp/trivy-output.txt 2>&1 || exitcode=$?
+          trivy fs --severity HIGH,CRITICAL --exit-code 1 --format json --output /tmp/trivy-output.json . 2>/tmp/trivy-raw.txt || exitcode=$?
           echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
           exit $exitcode
       - name: Post trivy report
@@ -176,21 +182,36 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const outputPath = '/tmp/trivy-output.txt';
-            let output = '';
-            try { output = fs.readFileSync(outputPath, 'utf8').trim(); } catch { output = 'No output captured'; }
+            let results = { Results: [] };
+            let rawLog = '';
+            try {
+              results = JSON.parse(fs.readFileSync('/tmp/trivy-output.json', 'utf8'));
+              rawLog = fs.readFileSync('/tmp/trivy-raw.txt', 'utf8').trim();
+            } catch { results = { Results: [] }; rawLog = ''; }
             const exitcode = parseInt('${{ steps.trivy.outputs.exitcode }}');
             const pass = exitcode === 0;
-            let body = `## 📦 Repository Scan (Trivy) ${pass ? '✅' : '❌'}\n\n**Result:** ${pass ? '✅ Pass' : '❌ Fail'}\n\n`;
-            if (!pass && output) {
-              const high = (output.match(/HIGH/g) || []).length;
-              const critical = (output.match(/CRITICAL/g) || []).length;
-              body += `**Vulnerabilities:** ${critical} critical, ${high} high\n\n`;
-              body += '```\n' + output.split('\n').slice(0, 40).join('\n') + '\n```\n';
+            const vulns = [];
+            (results.Results || []).forEach(r => (r.Vulnerabilities || []).forEach(v => {
+              vulns.push({ file: r.Target, pkg: v.PkgName, severity: v.Severity, vulnId: v.VulnerabilityID, title: v.Title });
+            }));
+            let body = '## 📦 Repository Vulnerability Scan (Trivy)\n\n';
+            body += `**Status:** ${pass ? '✅ Passing' : '❌ Failing'}\n`;
+            body += `**Vulnerabilities Found:** ${vulns.length}\n\n`;
+            if (vulns.length > 0) {
+              body += '### Findings\n';
+              body += '| # | Package | Severity | CVE | Target |\n|---|---------|----------|-----|--------|\n';
+              vulns.slice(0, 25).forEach((v, i) => {
+                body += `| ${i+1} | \`${v.pkg}\` | **${v.severity}** | \`${v.vulnId}\` | ${v.file} |\n`;
+              });
+              if (vulns.length > 25) body += `| ... | *${vulns.length - 25} more* | | |\n`;
+              body += '\n### Summary\n';
+              const bySev = {};
+              vulns.forEach(v => { bySev[v.severity] = (bySev[v.severity] || 0) + 1; });
+              Object.entries(bySev).sort((a,b) => b[1]-a[1]).forEach(([s, c]) => { body += `- **${s}**: ${c}\n`; });
             } else {
               body += '✅ No HIGH or CRITICAL vulnerabilities found.\n';
             }
-            body += `\n<details><summary>Full output</summary>\n\n\`\`\`\n${(output || 'N/A').slice(0, 3000)}\n\`\`\`\n</details>`;
+            body += `\n<details><summary>📋 Raw Log</summary>\n\n\`\`\`\n${(rawLog || 'No output').slice(0, 4000)}\n\`\`\`\n</details>\n\n---`;
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,

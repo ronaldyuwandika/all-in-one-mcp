@@ -55,35 +55,26 @@ jobs:
             try { output = fs.readFileSync('/tmp/ruff-output.txt', 'utf8').trim(); } catch { output = ''; }
             const exitcode = parseInt('${{ steps.ruff.outputs.exitcode }}');
             const pass = exitcode === 0;
-            const lines = (output || '').split('\n').filter(l => /^\S+:\d+:\d+:/.test(l));
-            let body = `## 🐍 Python Lint (ruff) ${pass ? '✅' : '❌'}\n\n**Result:** ${pass ? '✅ Pass' : '❌ Fail'} — ${lines.length} issue${lines.length !== 1 ? 's' : ''} found\n\n`;
+            let lines = (output || '').split('\n').filter(l => /^\S+:\d+:\d+:/.test(l));
+            let body = '## 🐍 Python Lint (ruff)\n\n';
+            body += `**Status:** ${pass ? '✅ Passing' : '❌ Failing'}\n`;
+            body += `**Issues Found:** ${lines.length}\n\n`;
             if (lines.length > 0) {
-              body += '| # | File | Line | Rule | Message |\n|---|------|------|------|---------|\n';
-              const show = lines.slice(0, 25);
-              show.forEach((l, i) => {
-                const parts = l.match(/^(.+?):(\d+):(\d+):\s*(\S+)\s*(.+)$/);
-                if (parts) {
-                  const file = parts[1].replace('mcp/', '');
-                  body += `| ${i+1} | \`${file}\` | ${parts[2]} | \`${parts[4]}\` | ${parts[5]} |\n`;
-                }
+              body += '### Findings\n';
+              body += '| # | File | Line | Rule | Detail |\n|---|------|------|------|--------|\n';
+              lines.slice(0, 25).forEach((l, i) => {
+                const m = l.match(/^(.+?):(\d+):(\d+):\s*(\S+)\s*(.+)$/);
+                if (m) body += `| ${i+1} | \`${m[1].replace('mcp/', '')}\` | ${m[2]} | \`${m[4]}\` | ${m[5]} |\n`;
               });
-              if (lines.length > 25) {
-                body += `| ... | *${lines.length - 25} more* | | | |\n`;
-              }
-              body += '\n';
+              if (lines.length > 25) body += `| ... | *${lines.length - 25} more issues* | | | |\n`;
+              body += '\n### Summary\n';
               const byRule = {};
-              lines.forEach(l => {
-                const m = l.match(/: \S+\s+(\S+)/);
-                if (m) byRule[m[1]] = (byRule[m[1]] || 0) + 1;
-              });
-              body += '**Breakdown by rule:**\n';
-              Object.entries(byRule).sort((a,b) => b[1]-a[1]).forEach(([rule, count]) => {
-                body += `- \`${rule}\`: ${count}\n`;
-              });
+              lines.forEach(l => { const m = l.match(/: \S+\s+(\S+)/); if (m) byRule[m[1]] = (byRule[m[1]] || 0) + 1; });
+              Object.entries(byRule).sort((a,b) => b[1]-a[1]).forEach(([r, c]) => { body += `- \`${r}\`: ${c} occurrence${c !== 1 ? 's' : ''}\n`; });
             } else {
-              body += '✅ All checks passed. No lint issues found.\n';
+              body += '✅ No lint issues found. Code looks clean.\n';
             }
-            body += `\n<details><summary>Full output</summary>\n\n\`\`\`\n${output.slice(0, 3000)}\n\`\`\`\n</details>`;
+            body += `\n<details><summary>📋 Raw Log</summary>\n\n\`\`\`\n${output.slice(0, 4000)}\n\`\`\`\n</details>\n\n---`;
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
@@ -102,42 +93,51 @@ jobs:
           go-version-file: mcp/reasoning-memory/go.mod
       - name: Run golangci-lint
         id: golangci
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
+          working-directory: mcp/reasoning-memory
+          args: --out-format=colored-line-number
+      - name: Capture golangci-lint output
+        id: golangci-capture
+        if: always() && github.event_name == 'pull_request'
         working-directory: mcp/reasoning-memory
+        continue-on-error: true
         run: |
-          go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-          exitcode=0
-          golangci-lint run ./... > /tmp/golangci-output.txt 2>&1 || exitcode=$?
-          echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
-          exit $exitcode
+          golangci-lint run ./... --out-format=json > /tmp/golangci-output.json 2>/dev/null || true
+          cat /tmp/golangci-output.json 2>/dev/null | head -1 || echo '{"Issues":[]}' > /tmp/golangci-output.json
       - name: Post golangci-lint report
         uses: actions/github-script@v9
         if: always() && github.event_name == 'pull_request'
         with:
           script: |
             const fs = require('fs');
-            let output = '';
-            try { output = fs.readFileSync('/tmp/golangci-output.txt', 'utf8').trim(); } catch { output = ''; }
-            const exitcode = parseInt('${{ steps.golangci.outputs.exitcode }}');
-            const pass = exitcode === 0;
-            const lines = (output || '').split('\n').filter(l => /^\S+:\d+:\d+:/.test(l));
-            let body = `## 🔷 Go Lint (golangci-lint) ${pass ? '✅' : '❌'}\n\n**Result:** ${pass ? '✅ Pass' : '❌ Fail'} — ${lines.length} issue${lines.length !== 1 ? 's' : ''} found\n\n`;
-            if (lines.length > 0) {
-              body += '| # | File | Line | Linter | Message |\n|---|------|------|--------|---------|\n';
-              const show = lines.slice(0, 25);
-              show.forEach((l, i) => {
-                const parts = l.match(/^(.+?):(\d+):(\d+):\s*(\S+):\s*(.+)$/);
-                if (parts) {
-                  const file = parts[1].replace('mcp/reasoning-memory/', '');
-                  body += `| ${i+1} | \`${file}\` | ${parts[2]} | \`${parts[4]}\` | ${parts[5]} |\n`;
-                }
+            let issues = [];
+            try {
+              const json = JSON.parse(fs.readFileSync('/tmp/golangci-output.json', 'utf8'));
+              issues = json.Issues || [];
+            } catch { issues = []; }
+            const pass = '${{ steps.golangci.outcome }}' === 'success';
+            let body = '## 🔷 Go Lint (golangci-lint)\n\n';
+            body += `**Status:** ${pass ? '✅ Passing' : '❌ Failing'}\n`;
+            body += `**Issues Found:** ${issues.length}\n\n`;
+            if (issues.length > 0) {
+              body += '### Findings\n';
+              body += '| # | File | Line | Linter | Detail |\n|---|------|------|--------|--------|\n';
+              issues.slice(0, 25).forEach((iss, i) => {
+                const file = iss.Pos ? iss.Pos.Filename.replace('mcp/reasoning-memory/', '') : '?';
+                const line = iss.Pos ? iss.Pos.Line : '?';
+                body += `| ${i+1} | \`${file}\` | ${line} | \`${iss.FromLinter}\` | ${iss.Text} |\n`;
               });
-              if (lines.length > 25) {
-                body += `| ... | *${lines.length - 25} more* | | | |\n`;
-              }
+              if (issues.length > 25) body += `| ... | *${issues.length - 25} more issues* | | | |\n`;
+              body += '\n### Summary\n';
+              const byLinter = {};
+              issues.forEach(iss => { byLinter[iss.FromLinter] = (byLinter[iss.FromLinter] || 0) + 1; });
+              Object.entries(byLinter).sort((a,b) => b[1]-a[1]).forEach(([l, c]) => { body += `- \`${l}\`: ${c} occurrence${c !== 1 ? 's' : ''}\n`; });
             } else {
-              body += '✅ All checks passed. No lint issues found.\n';
+              body += '✅ No lint issues found. Go code is clean.\n';
             }
-            body += `\n<details><summary>Full output</summary>\n\n\`\`\`\n${output.slice(0, 3000)}\n\`\`\`\n</details>`;
+            body += '\n<details><summary>📋 Raw Log</summary>\n\n```json\n' + JSON.stringify(issues, null, 2).slice(0, 4000) + '\n```\n</details>\n\n---';
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
