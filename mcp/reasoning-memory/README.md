@@ -98,11 +98,25 @@ Strategies: `auto` (recommended), `cluster_only`, `merge_only`, `prune_only`.
 
 #### `polish_prompt`
 
-Takes a raw, unstructured prompt, detects the task type, injects relevant skills, and returns a structured, context-enriched prompt.
+Takes a raw, unstructured prompt, automatically detects the task type/domain (e.g. coding, analysis, agentic), detects the programming language, injects relevant skill rules from `SKILL.md` (e.g. `golang-service`), merges relevant episodic reasoning context retrieved via vector search, and returns a fully structured, context-enriched polished prompt.
 
+##### Example Input
 ```json
 {
   "raw_prompt": "help me write tests for my Go service"
+}
+```
+
+##### Example Output
+```json
+{
+  "polished_prompt": "# Coding Task\n\n## Task\nhelp me write tests for my Go service\n\n## Language\nGo\n\n## Skill Rules\n- Use table-driven tests for multiple inputs/outputs.\n- Leverage mockgen to mock database and external calls.\n- Assert error values and types explicitly.\n\n## Execution Protocol\n1. Understand the codebase and conventions\n2. Plan the implementation with error handling\n3. Implement following idiomatic patterns\n4. Verify with tests and linting\n5. Only commit when explicitly requested\n\n## Relevant Past Reasoning\n<reasoning_memory>\n  <episode id=\"1\">\n    <problem>Write unit tests for SQLite store in Go</problem>\n    <domain>coding</domain>\n    <outcome>success</outcome>\n    <thinking_trace>Used go-sqlmock to stub database transactions. Tested query edge cases.</thinking_trace>\n  </episode>\n</reasoning_memory>",
+  "task_type": "coding",
+  "language": "Go",
+  "domain": "coding",
+  "skill_injected": true,
+  "skill_name": "golang-service",
+  "context_count": 1
 }
 ```
 
