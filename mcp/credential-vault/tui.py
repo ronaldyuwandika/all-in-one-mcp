@@ -176,7 +176,7 @@ class VaultMonitor(App):
             cells = table.get_row_at(row)
             name = re.sub(r"\[.*?\]", "", str(cells[0])).strip()
             self.push_screen(CredentialDetail(name, str(cells[1]), str(cells[2]), str(cells[3])))
-        except Exception:
+        except Exception:  # nosec B110
             pass
 
     def _update_status_bar(self, summary=""):

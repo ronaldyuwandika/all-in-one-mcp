@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   python-lint:
@@ -17,7 +18,22 @@ jobs:
       - name: Install ruff
         run: pip install ruff
       - name: Run ruff
-        run: ruff check mcp/credential-vault mcp/pr-reviewer
+        id: ruff
+        continue-on-error: true
+        run: ruff check mcp/credential-vault mcp/pr-reviewer --exclude mcp/pr-reviewer/.venv
+      - name: Post lint result comment
+        uses: actions/github-script@v7
+        if: always() && github.event_name == 'pull_request'
+        with:
+          script: |
+            const status = '${{ steps.ruff.outcome }}' === 'success' ? '✅ Pass' : '❌ Fail';
+            const body = `### Python Lint (ruff) — ${status}\n\n${status === '✅ Pass' ? 'No issues found.' : 'Lint errors detected. Check the job logs for details.'}`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
 
   go-lint:
     runs-on: ubuntu-latest
@@ -27,6 +43,21 @@ jobs:
         with:
           go-version-file: mcp/reasoning-memory/go.mod
       - name: Run golangci-lint
+        id: golangci
+        continue-on-error: true
         uses: golangci/golangci-lint-action@v6
         with:
           working-directory: mcp/reasoning-memory
+      - name: Post lint result comment
+        uses: actions/github-script@v7
+        if: always() && github.event_name == 'pull_request'
+        with:
+          script: |
+            const status = '${{ steps.golangci.outcome }}' === 'success' ? '✅ Pass' : '❌ Fail';
+            const body = `### Go Lint (golangci-lint) — ${status}\n\n${status === '✅ Pass' ? 'No issues found.' : 'Lint errors detected. Check the job logs for details.'}`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });

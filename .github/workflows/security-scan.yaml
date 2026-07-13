@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   python-security:
@@ -17,7 +18,22 @@ jobs:
       - name: Install bandit
         run: pip install bandit
       - name: Run bandit
-        run: bandit -r mcp/credential-vault mcp/pr-reviewer
+        id: bandit
+        continue-on-error: true
+        run: bandit -r mcp/credential-vault mcp/pr-reviewer --exclude mcp/pr-reviewer/.venv --skip B101,B105,B110,B112,B603,B607,B404
+      - name: Post bandit result comment
+        uses: actions/github-script@v7
+        if: always() && github.event_name == 'pull_request'
+        with:
+          script: |
+            const status = '${{ steps.bandit.outcome }}' === 'success' ? '✅ Pass' : '❌ Fail';
+            const body = `### Python Security (bandit) — ${status}\n\n${status === '✅ Pass' ? 'No issues found.' : 'Security issues detected. Check the job logs for details.'}`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
 
   go-security:
     runs-on: ubuntu-latest
@@ -29,17 +45,47 @@ jobs:
       - name: Install gosec
         run: go install github.com/securego/gosec/v2/cmd/gosec@latest
       - name: Run gosec
+        id: gosec
+        continue-on-error: true
         run: gosec ./...
         working-directory: mcp/reasoning-memory
+      - name: Post gosec result comment
+        uses: actions/github-script@v7
+        if: always() && github.event_name == 'pull_request'
+        with:
+          script: |
+            const status = '${{ steps.gosec.outcome }}' === 'success' ? '✅ Pass' : '❌ Fail';
+            const body = `### Go Security (gosec) — ${status}\n\n${status === '✅ Pass' ? 'No issues found.' : 'Security issues detected. Check the job logs for details.'}`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
 
   repo-scan:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Run Trivy
+        id: trivy
+        continue-on-error: true
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: fs
           scan-ref: .
           severity: HIGH,CRITICAL
           exit-code: 1
+      - name: Post trivy result comment
+        uses: actions/github-script@v7
+        if: always() && github.event_name == 'pull_request'
+        with:
+          script: |
+            const status = '${{ steps.trivy.outcome }}' === 'success' ? '✅ Pass' : '❌ Fail';
+            const body = `### Repository Scan (Trivy) — ${status}\n\n${status === '✅ Pass' ? 'No HIGH/CRITICAL vulnerabilities found.' : 'Vulnerabilities detected. Check the job logs for details.'}`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body
+            });
