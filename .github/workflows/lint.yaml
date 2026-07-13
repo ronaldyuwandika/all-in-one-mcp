@@ -97,7 +97,7 @@ jobs:
         id: golangci
         uses: golangci/golangci-lint-action@v6
         with:
-          version: v1.64.8
+          version: v2.12.2
           working-directory: mcp/reasoning-memory
       - name: Capture golangci-lint output
         id: golangci-capture
