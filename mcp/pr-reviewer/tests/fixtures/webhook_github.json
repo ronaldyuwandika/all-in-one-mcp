@@ -1,0 +1,18 @@
+{
+  "action": "opened",
+  "pull_request": {
+    "title": "Fix SQL injection in user query handler",
+    "body": "Fixes a SQL injection vulnerability.",
+    "html_url": "https://github.com/test-owner/test-repo/pull/42",
+    "head": {
+      "sha": "abc123def456789012345678901234567890abcd"
+    },
+    "user": {
+      "login": "test-dev"
+    }
+  },
+  "repository": {
+    "full_name": "test-owner/test-repo",
+    "html_url": "https://github.com/test-owner/test-repo"
+  }
+}

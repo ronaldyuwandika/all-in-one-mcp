@@ -1,0 +1,28 @@
+{
+  "summary": "CRITICAL: SQL injection vulnerability found in user search query. The code concatenates user input directly into SQL statements, creating a serious security risk. Additionally, the get_user endpoint has the same pattern. These must be fixed before merging.",
+  "verdict": "changes_requested",
+  "confidence": 0.95,
+  "comments": [
+    {
+      "file": "server.py",
+      "line": 12,
+      "severity": "critical",
+      "message": "SQL injection vulnerability: user input is concatenated directly into SQL query. Use parameterized queries instead.",
+      "rule": "security"
+    },
+    {
+      "file": "server.py",
+      "line": 23,
+      "severity": "critical",
+      "message": "Same SQL injection pattern in get_user endpoint. Parameterize this query too.",
+      "rule": "security"
+    },
+    {
+      "file": "server.py",
+      "line": 15,
+      "severity": "info",
+      "message": "Consider using a connection pool instead of raw cursor for better request throughput.",
+      "rule": "performance"
+    }
+  ]
+}

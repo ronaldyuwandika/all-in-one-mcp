@@ -35,23 +35,38 @@ class Reviewer:
 
     def _parse_url(self, url: str) -> tuple[str, str, str, int]:
         """Parse a PR/MR URL into (source, owner, repo, number)."""
-        if "github.com" in url:
-            parts = url.rstrip("/").split("/")
-            pr_idx = parts.index("pull") if "pull" in parts else -1
-            if pr_idx < 2 or pr_idx + 1 >= len(parts):
+        import urllib.parse
+
+        parsed = urllib.parse.urlparse(url)
+        hostname = (parsed.hostname or "").lower()
+
+        if "github.com" in hostname:
+            parts = parsed.path.strip("/").split("/")
+            try:
+                pull_idx = parts.index("pull")
+            except ValueError:
                 raise ValueError(f"Invalid GitHub PR URL: {url}")
-            owner = parts[pr_idx - 2]
-            repo = parts[pr_idx - 1]
-            number = int(parts[pr_idx + 1])
+            if pull_idx < 2 or pull_idx + 1 >= len(parts):
+                raise ValueError(f"Invalid GitHub PR URL: {url}")
+            owner = parts[pull_idx - 2]
+            repo = parts[pull_idx - 1]
+            number = int(parts[pull_idx + 1])
             return "github", owner, repo, number
 
-        elif "gitlab.com" in url or "gitlab" in url:
-            parts = url.rstrip("/").split("/")
-            mr_idx = parts.index("merge_requests") if "merge_requests" in parts else -1
+        elif "gitlab" in hostname:
+            parts = parsed.path.strip("/").split("/")
+            try:
+                mr_idx = parts.index("merge_requests")
+            except ValueError:
+                raise ValueError(f"Invalid GitLab MR URL: {url}")
             if mr_idx < 2 or mr_idx + 1 >= len(parts):
                 raise ValueError(f"Invalid GitLab MR URL: {url}")
-            owner = "/".join(parts[parts.index("//") + 2 : mr_idx - 1]) if "//" in url else parts[1]
-            repo = parts[mr_idx - 1]
+            if parts[mr_idx - 1] == "-" and mr_idx >= 3:
+                owner = "/".join(parts[: mr_idx - 2])
+                repo = parts[mr_idx - 2]
+            else:
+                owner = "/".join(parts[: mr_idx - 1])
+                repo = parts[mr_idx - 1]
             number = int(parts[mr_idx + 1])
             return "gitlab", owner, repo, number
 
