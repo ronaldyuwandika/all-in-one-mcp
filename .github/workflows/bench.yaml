@@ -1,0 +1,67 @@
+name: Go Benchmarks & Accuracy Tests
+
+on:
+  pull_request:
+    paths:
+      - 'mcp/reasoning-memory/**'
+  schedule:
+    # Weekly accuracy test (every Sunday at midnight)
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Current PR Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: mcp/reasoning-memory/go.sum
+
+      - name: Install dependencies (Current)
+        run: |
+          cd mcp/reasoning-memory
+          go mod download
+
+      - name: Checkout Base Branch
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref }}
+          path: base-branch
+
+      - name: Run Base Benchmarks
+        if: github.event_name == 'pull_request'
+        run: |
+          cd base-branch/mcp/reasoning-memory
+          go test -v -run="TestMeasurePercentiles" ./bench/... > ../../../mcp/reasoning-memory/bench/bench_base.txt || true
+
+      - name: Run Current Benchmarks & Generate Reports
+        run: |
+          cd mcp/reasoning-memory
+          # Run percentiles and generate reports
+          go test -v -run="TestMeasurePercentiles" ./bench/... | tee bench/bench_current.txt | go run ./bench/report/gen_reports.go
+          
+          # Run accuracy/effectiveness tests
+          go test -v -run="TestRetrievalRelevance|TestConsolidationQuality|TestPolishAccuracy" ./bench/...
+
+      - name: Verify Regressions
+        if: github.event_name == 'pull_request'
+        run: |
+          cd mcp/reasoning-memory
+          # Compare baseline and current using our compare tool
+          if [ -f bench/bench_base.txt ]; then
+             go run ./bench/compare/compare.go bench/bench_base.txt bench/bench_current.txt
+          else
+             echo "No baseline found, skipping regression check."
+          fi
+
+      - name: Upload Benchmark Results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-reports
+          path: mcp/reasoning-memory/bench/results/

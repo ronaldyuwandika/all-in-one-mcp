@@ -4,7 +4,7 @@ RUFF := ruff
 
 MCP_DIRS := reasoning-memory credential-vault pr-reviewer
 
-.PHONY: all setup install-mcp-% validate lint test clean
+.PHONY: all setup install-mcp-% validate lint test clean bench-reasoning-memory bench-go
 
 all: setup
 
@@ -91,6 +91,14 @@ test-mcp-pr-reviewer:
 	cd $(REPO_ROOT)/mcp/pr-reviewer && \
 		.venv/bin/python -m pytest tests/ -v 2>/dev/null || \
 		echo "  ℹ No tests found for pr-reviewer"
+
+bench-reasoning-memory:
+	@echo "→ Running performance benchmarks and generating reports..."
+	cd $(REPO_ROOT)/mcp/reasoning-memory && go test -v -run="TestMeasurePercentiles" ./bench/... | go run ./bench/report/gen_reports.go
+	@echo "→ Running accuracy/effectiveness benchmarks..."
+	cd $(REPO_ROOT)/mcp/reasoning-memory && go test -v -run="TestRetrievalRelevance|TestConsolidationQuality|TestPolishAccuracy" ./bench/...
+
+bench-go: bench-reasoning-memory
 
 # ── Run MCP servers ──────────────────────────────────────────────────────────
 
