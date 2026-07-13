@@ -54,27 +54,71 @@ class GitLabProvider:
             pr_url=mr_data.get("web_url", f"https://gitlab.com/{owner}/{repo}/-/merge_requests/{number}"),
         )
 
-    def post_review(self, owner: str, repo: str, number: int, summary: str, verdict: str, comments: list) -> bool:
+    def post_review(
+        self, owner: str, repo: str, number: int, summary: str, verdict: str, comments: list, commit_sha: str = ""
+    ) -> bool:
         import httpx
 
         project = self._project_path(owner, repo)
-        base_url = f"{self.api_url}/api/v4/projects/{project}/merge_requests/{number}/notes"
-
-        body = f"## MR Review ({verdict})\n\n{summary}\n\n"
-        body += "\n".join(f"- **{c.severity}** `{c.file}:{c.line}` — {c.message}" for c in comments[:10])
+        base_url = f"{self.api_url}/api/v4/projects/{project}"
 
         headers = {"Content-Type": "application/json"}
         if self.token:
             headers["PRIVATE-TOKEN"] = self.token
 
+        success = True
+
+        # Post inline comments on each reviewed file using MR discussions
+        for c in comments[:10]:
+            if c.file and c.line > 0:
+                position = {
+                    "position_type": "text",
+                    "new_path": c.file,
+                    "new_line": c.line,
+                    "base_sha": commit_sha or "0" * 40,
+                    "start_sha": commit_sha or "0" * 40,
+                    "head_sha": commit_sha or "0" * 40,
+                }
+                inline_body = f"**{c.severity.upper()}** ({c.rule}): {c.message}"
+                try:
+                    resp = httpx.post(
+                        f"{base_url}/merge_requests/{number}/discussions",
+                        json={"body": inline_body, "position": position},
+                        headers=headers,
+                        timeout=30,
+                    )
+                    if resp.status_code >= 400:
+                        logger.warning("Inline discussion failed on %s:%s: %s", c.file, c.line, resp.text[:200])
+                except Exception as e:
+                    logger.warning("Inline discussion error on %s:%s: %s", c.file, c.line, e)
+                    success = False
+
+        # Post summary as a regular note
+        body_lines = [f"## MR Review ({verdict})", "", summary, ""]
+        inline_count = sum(1 for c in comments[:10] if c.file and c.line > 0)
+        if inline_count < len(comments[:10]):
+            body_lines.append("### Additional comments")
+            for c in comments[:10]:
+                if not c.file or c.line <= 0:
+                    body_lines.append(f"- **{c.severity}** — {c.message} ({c.rule})")
+        body_lines.append("")
+        body_lines.append(f"_{len(comments)} comment(s), reviewed via {verdict}_")
+        note_body = "\n".join(body_lines)
+
         try:
-            resp = httpx.post(base_url, json={"body": body}, headers=headers, timeout=30)
+            resp = httpx.post(
+                f"{base_url}/merge_requests/{number}/notes",
+                json={"body": note_body},
+                headers=headers,
+                timeout=30,
+            )
             resp.raise_for_status()
-            logger.info("Posted review comment to MR#%s", number)
-            return True
+            logger.info("Posted review summary to MR#%s", number)
         except Exception as e:
-            logger.warning("Failed to post review comment: %s", e)
+            logger.warning("Failed to post MR note: %s", e)
             return False
+
+        return success
 
     def list_pending(self, owner: str, repo: str) -> list[PendingReview]:
         import httpx

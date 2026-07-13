@@ -29,6 +29,7 @@ class ReviewRequest:
     source: str = "draft"  # draft | github | gitlab
     pr_number: Optional[int] = None
     pr_url: str = ""
+    commit_sha: str = ""
 
     def to_dict(self) -> dict:
         return {
