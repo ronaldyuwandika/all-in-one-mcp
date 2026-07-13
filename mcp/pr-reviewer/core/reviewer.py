@@ -28,8 +28,8 @@ class Reviewer:
         provider = llm_config.get("provider", "gemini")
         if provider == "claude":
             self._llm = ClaudeLLM(llm_config.get("claude", {}))
-        elif provider == "openai":
-            self._llm = OpenAILLM(llm_config.get("openai", {}))
+        elif provider in ("openai", "deepseek"):
+            self._llm = OpenAILLM(llm_config.get(provider, {}))
         else:
             self._llm = GeminiLLM(llm_config.get("gemini", {}))
 
@@ -74,10 +74,17 @@ class Reviewer:
         return self.review_request(req)
 
     def review_and_post(self, url: str) -> ReviewResult:
-        result = self.review(url)
         source, owner, repo, number = self._parse_url(url)
         provider = self._get_provider(source)
-        provider.post_review(owner, repo, number, result.summary, result.verdict, result.comments)
+
+        logger.info("Fetching %s PR#%s from %s/%s", source, number, owner, repo)
+        req = provider.fetch_review(owner, repo, number)
+
+        result = self.review_request(req)
+
+        provider.post_review(
+            owner, repo, number, result.summary, result.verdict, result.comments, commit_sha=req.commit_sha
+        )
         return result
 
     def review_request(self, req: ReviewRequest) -> ReviewResult:
@@ -116,6 +123,11 @@ class Reviewer:
         elif provider == "openai":
             self._llm = OpenAILLM(
                 {"model": model, "api_key_env": "OPENAI_API_KEY", "base_url": "https://api.openai.com/v1"}
+            )
+            return True
+        elif provider == "deepseek":
+            self._llm = OpenAILLM(
+                {"model": model, "api_key_env": "DEEPSEEK_API_KEY", "base_url": "https://api.deepseek.com/v1"}
             )
             return True
         return False

@@ -1,5 +1,5 @@
 llm:
-  provider: openai  # gemini | claude | openai
+  provider: deepseek  # gemini | claude | openai | deepseek
   gemini:
     model: gemini-2.0-flash
     api_key_env: GEMINI_API_KEY
@@ -7,8 +7,12 @@ llm:
     model: claude-sonnet-4-20260514
     api_key_env: ANTHROPIC_API_KEY
   openai:
-    model: deepseek-v4-pro
+    model: gpt-4o
     api_key_env: OPENAI_API_KEY
+    base_url: https://api.openai.com/v1
+  deepseek:
+    model: deepseek-v4-pro
+    api_key_env: DEEPSEEK_API_KEY
     base_url: https://api.deepseek.com/v1
 
 github:

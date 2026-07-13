@@ -180,6 +180,7 @@ def configure_llm(provider: str, model: str, api_key: str = "") -> str:
             "gemini": "GEMINI_API_KEY",
             "claude": "ANTHROPIC_API_KEY",
             "openai": "OPENAI_API_KEY",
+            "deepseek": "DEEPSEEK_API_KEY",
         }.get(provider)
         if env_key:
             os.environ[env_key] = api_key
