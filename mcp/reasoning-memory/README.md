@@ -93,6 +93,79 @@ Auto-detects task type (coding/agentic/analysis/general), programming language, 
 }
 ```
 
+## Demo Episodes
+
+Live traces captured during a single session across all 5 tools. Full source: [`bench/results/demo-episodes.json`](./bench/results/demo-episodes.json).
+
+### Captured via `capture_reasoning_episode`
+
+**Episode 1 — Fix nil pointer dereference**
+
+```json
+{
+  "id": "re-20260714-003",
+  "problem": "Fix a nil pointer dereference in the Go HTTP handler",
+  "thinking_trace": "1. I saw the panic in the logs: nil pointer dereference at handler.go:42\n2. The issue was that r.FormValue(\"id\") returns empty string...",
+  "outcome": "success",
+  "domain": "coding",
+  "tags": ["go", "nil-pointer", "http-handler"],
+  "steps": [
+    {"type": "analysis", "content": "1. I saw the panic in the logs..."},
+    {"type": "verification", "content": "2. The issue was that..."},
+    {"type": "option_generation", "content": "3. Considered two approaches..."},
+    {"type": "error", "content": "4. Decided to add validation..."},
+    {"type": "verification", "content": "5. Implemented the fix..."},
+    {"type": "verification", "content": "6. Verified with unit test..."}
+  ],
+  "tool_calls": [
+    {"tool": "grep", "outcome": "success"},
+    {"tool": "edit", "outcome": "success"}
+  ],
+  "model_id": "claude-sonnet-4-20260514",
+  "duration_seconds": 180
+}
+```
+
+**Episode 2 — Design rate limiter middleware**
+
+```json
+{
+  "id": "re-20260714-004",
+  "problem": "Design a rate limiter middleware for a Go HTTP service",
+  "outcome": "success",
+  "domain": "coding",
+  "tags": ["go", "middleware", "rate-limiter", "concurrency"],
+  "steps": [
+    {"type": "analysis", "content": "1. Requirement: 100 req/s per IP..."},
+    {"type": "analysis", "content": "2. Compared token bucket vs sliding window..."},
+    {"type": "analysis", "content": "3. Chose sliding window..."},
+    {"type": "analysis", "content": "4. Used sync.Map for IP counters..."},
+    {"type": "implementation", "content": "5. Implemented middleware..."},
+    {"type": "analysis", "content": "6. Added configurable rate and burst..."},
+    {"type": "verification", "content": "7. Wrote table-driven tests..."},
+    {"type": "verification", "content": "8. Benchmark: <1μs overhead"}
+  ],
+  "model_id": "claude-sonnet-4-20260514",
+  "duration_seconds": 600
+}
+```
+
+### Retrieved via `retrieve_reasoning`
+
+Query: `"How to handle nil pointers in Go HTTP handlers"` → ranked results with top score `1.017` matching Episode 1.
+
+### Injected via `inject_reasoning_context`
+
+Query: `"Go middleware design patterns"` → XML block with 3 relevant episodes ready for prompt prepending.
+
+### Polished via `polish_prompt`
+
+Input: `"build a dockerfile for my go service"` + skill `docker-expert` → detected `coding` task type, injected docker-expert rules, appended relevant past reasoning.
+
+### Consolidated via `consolidate_reasoning`
+
+Strategy `auto` → found 1 merge candidate, merged into pattern `pat-re-20260714-002-re-20260714-001` (score 1.567), rebuilt index: 8 episodes, 1 pattern.
+
 ## Configuration
 
 `~/.reasoning-memory/config.yaml`:
