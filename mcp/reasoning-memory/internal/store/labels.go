@@ -177,43 +177,6 @@ func detectEntities(text string) []string {
 	return entities
 }
 
-func mergeLabels(existing map[string][]string, incoming map[string][]string) map[string][]string {
-	if existing == nil {
-		existing = make(map[string][]string)
-	}
-	for k, vs := range incoming {
-		seen := make(map[string]bool)
-		for _, v := range existing[k] {
-			seen[v] = true
-		}
-		for _, v := range vs {
-			if !seen[v] {
-				existing[k] = append(existing[k], v)
-				seen[v] = true
-			}
-		}
-	}
-	return existing
-}
-
-func labelsToTags(labels map[string][]string) []string {
-	if labels == nil {
-		return nil
-	}
-	return labels["tag"]
-}
-
-func labelsToRepo(labels map[string][]string) string {
-	if labels == nil {
-		return ""
-	}
-	vals := labels["repo"]
-	if len(vals) > 0 {
-		return vals[0]
-	}
-	return ""
-}
-
 func (es *EpisodeStore) SetLabels(episodeID string, labels map[string][]string) error {
 	lj, _ := json.Marshal(labels)
 	_, err := es.db.Exec("UPDATE episodes SET labels = ? WHERE id = ?", string(lj), episodeID)
