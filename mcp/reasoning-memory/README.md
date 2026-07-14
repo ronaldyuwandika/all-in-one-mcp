@@ -166,6 +166,24 @@ Input: `"build a dockerfile for my go service"` + skill `docker-expert` → dete
 
 Strategy `auto` → found 1 merge candidate, merged into pattern `pat-re-20260714-002-re-20260714-001` (score 1.567), rebuilt index: 8 episodes, 1 pattern.
 
+### Full Invocation Trace
+
+| # | Tool | Input | Output |
+|---|------|-------|--------|
+| 1 | `capture_reasoning_episode` | `{"problem": "Fix a nil pointer dereference...", "outcome": "success", "tags": ["go","nil-pointer","http-handler"]}` | `re-20260714-003` |
+| 2 | `capture_reasoning_episode` | `{"problem": "Design a rate limiter middleware...", "outcome": "success", "tags": ["go","middleware","rate-limiter","concurrency"]}` | `re-20260714-004` |
+| 3 | `retrieve_reasoning` | `{"problem": "How to handle nil pointers in Go HTTP handlers", "top_k": 5}` | Top result: `re-20260714-003` (score 1.017) |
+| 4 | `inject_reasoning_context` | `{"problem": "Go middleware design patterns", "top_k": 3}` | `<reasoning_memory>` XML with 3 episodes |
+| 5 | `polish_prompt` | `{"raw_prompt": "build a dockerfile for my go service", "skill_name": "docker-expert"}` | `coding` task type, skill injected, 1 context episode appended |
+| 6 | `consolidate_reasoning` | `{"strategy": "auto"}` | Merged 1 pair → `pat-re-20260714-002-re-20260714-001` (score 1.567), index rebuilt: 8 eps, 1 pattern |
+
+**Process flow:**
+- `capture_reasoning_episode` persists full traces (problem → thinking → outcome) to SQLite with FTS5 + optional vector index
+- `retrieve_reasoning` runs hybrid FTS5 + vector search, ranked by `_local_score`
+- `inject_reasoning_context` wraps search results into a `<reasoning_memory>` XML block ready for prompt prepending
+- `polish_prompt` auto-detects task type via keyword patterns → injects skill rules from `SKILL.md` → appends relevant past reasoning
+- `consolidate_reasoning` finds merge candidates → merges similar episodes → prunes stale failures → rebuilds FTS5 index
+
 ## Configuration
 
 `~/.reasoning-memory/config.yaml`:
