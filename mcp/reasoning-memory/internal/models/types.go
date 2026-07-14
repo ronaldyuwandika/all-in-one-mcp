@@ -16,35 +16,37 @@ type Step struct {
 }
 
 type Episode struct {
-	ID              string     `json:"id" yaml:"id"`
-	CreatedAt       time.Time  `json:"created_at" yaml:"created_at"`
-	Domain          string     `json:"domain" yaml:"domain"`
-	Outcome         string     `json:"outcome" yaml:"outcome"`
-	Tags            []string   `json:"tags" yaml:"tags"`
-	Repo            string     `json:"repo,omitempty" yaml:"repo,omitempty"`
-	Problem         string     `json:"problem" yaml:"problem"`
-	ThinkingTrace   string     `json:"thinking_trace" yaml:"thinking_trace"`
-	Steps           []Step     `json:"steps" yaml:"steps"`
-	ToolCalls       []ToolCall `json:"tool_calls" yaml:"tool_calls"`
-	ModelID         string     `json:"model_id" yaml:"model_id"`
-	DurationSeconds int        `json:"duration_seconds" yaml:"duration_seconds"`
+	ID              string              `json:"id" yaml:"id"`
+	CreatedAt       time.Time           `json:"created_at" yaml:"created_at"`
+	Domain          string              `json:"domain" yaml:"domain"`
+	Outcome         string              `json:"outcome" yaml:"outcome"`
+	Tags            []string            `json:"tags" yaml:"tags"`
+	Repo            string              `json:"repo,omitempty" yaml:"repo,omitempty"`
+	Labels          map[string][]string `json:"labels,omitempty" yaml:"labels,omitempty"`
+	Problem         string              `json:"problem" yaml:"problem"`
+	ThinkingTrace   string              `json:"thinking_trace" yaml:"thinking_trace"`
+	Steps           []Step              `json:"steps" yaml:"steps"`
+	ToolCalls       []ToolCall          `json:"tool_calls" yaml:"tool_calls"`
+	ModelID         string              `json:"model_id" yaml:"model_id"`
+	DurationSeconds int                 `json:"duration_seconds" yaml:"duration_seconds"`
 }
 
 type EpisodeSummary struct {
-	ID              string   `json:"id" yaml:"id"`
-	CreatedAt       string   `json:"created_at" yaml:"created_at"`
-	Problem         string   `json:"problem" yaml:"problem"`
-	Domain          string   `json:"domain" yaml:"domain"`
-	Outcome         string   `json:"outcome" yaml:"outcome"`
-	Tags            []string `json:"tags" yaml:"tags"`
-	Repo            string   `json:"repo,omitempty" yaml:"repo,omitempty"`
-	StepCount       int      `json:"step_count" yaml:"step_count"`
-	ToolCount       int      `json:"tool_count" yaml:"tool_count"`
-	StepTypes       []string `json:"step_types" yaml:"step_types"`
-	ModelID         string   `json:"model_id" yaml:"model_id"`
-	DurationSeconds int      `json:"duration_seconds" yaml:"duration_seconds"`
-	LocalScore      float64  `json:"_local_score,omitempty" yaml:"_local_score,omitempty"`
-	VectorScore     float64  `json:"_vector_score,omitempty" yaml:"_vector_score,omitempty"`
+	ID              string              `json:"id" yaml:"id"`
+	CreatedAt       string              `json:"created_at" yaml:"created_at"`
+	Problem         string              `json:"problem" yaml:"problem"`
+	Domain          string              `json:"domain" yaml:"domain"`
+	Outcome         string              `json:"outcome" yaml:"outcome"`
+	Tags            []string            `json:"tags" yaml:"tags"`
+	Repo            string              `json:"repo,omitempty" yaml:"repo,omitempty"`
+	Labels          map[string][]string `json:"labels,omitempty" yaml:"labels,omitempty"`
+	StepCount       int                 `json:"step_count" yaml:"step_count"`
+	ToolCount       int                 `json:"tool_count" yaml:"tool_count"`
+	StepTypes       []string            `json:"step_types" yaml:"step_types"`
+	ModelID         string              `json:"model_id" yaml:"model_id"`
+	DurationSeconds int                 `json:"duration_seconds" yaml:"duration_seconds"`
+	LocalScore      float64             `json:"_local_score,omitempty" yaml:"_local_score,omitempty"`
+	VectorScore     float64             `json:"_vector_score,omitempty" yaml:"_vector_score,omitempty"`
 }
 
 type Pattern struct {
@@ -122,6 +124,15 @@ type SummaryStats struct {
 	ConsolidationRatio float64 `json:"consolidation_ratio"`
 	TopDomain          string  `json:"top_domain"`
 	TopRepo            string  `json:"top_repo"`
+	TopLabelKey        string  `json:"top_label_key"`
+	LabelCardinality   int     `json:"label_cardinality"`
+	UnlabeledCount     int     `json:"unlabeled_count"`
+}
+
+type LabelCount struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+	Count int    `json:"count"`
 }
 
 type StatsResult struct {
@@ -130,6 +141,7 @@ type StatsResult struct {
 	EpisodesByDomain      map[string]int `json:"episodes_by_domain"`
 	EpisodesByOutcome     map[string]int `json:"episodes_by_outcome"`
 	EpisodesByRepo        map[string]int `json:"episodes_by_repo"`
+	EpisodesByLabel       []LabelCount   `json:"episodes_by_label,omitempty"`
 	TopTags               []TagCount     `json:"top_tags"`
 	VectorIndexSizeMB     float64        `json:"vector_index_size_mb"`
 	VectorCount           int            `json:"vector_count"`
@@ -144,6 +156,9 @@ type StatsResult struct {
 	ConsolidationRatio float64     `json:"consolidation_ratio"`
 	TopDomain          string      `json:"top_domain"`
 	TopRepo            string      `json:"top_repo"`
+	TopLabelKey        string      `json:"top_label_key"`
+	LabelCardinality   int         `json:"label_cardinality"`
+	UnlabeledCount     int         `json:"unlabeled_count"`
 	AvgDurationSec     float64     `json:"avg_duration_sec"`
 	EpisodesByDay      []DayBucket `json:"episodes_by_day"`
 }

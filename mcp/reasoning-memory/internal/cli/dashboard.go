@@ -954,6 +954,24 @@ func (m model) statsView() string {
 		}
 	}
 
+	if m.statsData.TopLabelKey != "" {
+		fmt.Fprintf(&b, "\n  %-30s %s\n", "Top label key", m.statsData.TopLabelKey)
+		fmt.Fprintf(&b, "  %-30s %d\n", "Label cardinality", m.statsData.LabelCardinality)
+		if m.statsData.UnlabeledCount > 0 {
+			fmt.Fprintf(&b, "  %-30s %d\n", "Unlabeled episodes", m.statsData.UnlabeledCount)
+		}
+	}
+	if len(m.statsData.EpisodesByLabel) > 0 {
+		fmt.Fprintf(&b, "\n  Labels:\n")
+		for _, lc := range m.statsData.EpisodesByLabel {
+			if lc.Value != "" {
+				fmt.Fprintf(&b, "    %s=%s: %d\n", lc.Key, lc.Value, lc.Count)
+			} else {
+				fmt.Fprintf(&b, "    %-20s %d\n", lc.Key, lc.Count)
+			}
+		}
+	}
+
 	if len(m.statsData.TopTags) > 0 {
 		fmt.Fprintf(&b, "\n  Top Tags:\n")
 		for _, tc := range m.statsData.TopTags {

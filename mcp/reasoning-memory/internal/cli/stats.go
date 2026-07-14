@@ -11,17 +11,38 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var statsFormat string
+var (
+	statsFormat string
+	byLabel     string
+)
 
 func NewStatsCmd(es *store.EpisodeStore) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "stats",
 		Short: "Show reasoning-memory statistics",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if byLabel != "" {
+				parts := strings.SplitN(byLabel, "=", 2)
+				key := parts[0]
+				value := ""
+				if len(parts) == 2 {
+					value = parts[1]
+				}
+				ids, err := es.EpisodesByLabel(key, value)
+				if err != nil {
+					return err
+				}
+				fmt.Printf("Episodes with label %q: %d\n", byLabel, len(ids))
+				for _, id := range ids {
+					fmt.Printf("  %s\n", id)
+				}
+				return nil
+			}
 			return runStats(es)
 		},
 	}
 	cmd.Flags().StringVar(&statsFormat, "format", "json", "Output format: json (default) or table")
+	cmd.Flags().StringVar(&byLabel, "by-label", "", "List episodes matching a label (e.g. language=go)")
 	return cmd
 }
 
@@ -38,6 +59,7 @@ func runStats(es *store.EpisodeStore) error {
 	lastConsolidation, _ := es.LastConsolidationTS()
 	summary, _ := es.SummaryStats()
 	epByDay, _ := es.EpisodesByDay(7)
+	labelKeys, _ := es.TopLabelKeys(10)
 
 	var vecSize float64
 	var vecCount int
@@ -68,9 +90,19 @@ func runStats(es *store.EpisodeStore) error {
 		result.TopDomain = summary.TopDomain
 		result.TopRepo = summary.TopRepo
 		result.AvgDurationSec = summary.AvgDurationSec
+		result.TopLabelKey = summary.TopLabelKey
+		result.LabelCardinality = summary.LabelCardinality
+		result.UnlabeledCount = summary.UnlabeledCount
 	}
 	if epByDay != nil {
 		result.EpisodesByDay = epByDay
+	}
+	if len(labelKeys) > 0 {
+		lb := make([]models.LabelCount, len(labelKeys))
+		for i, tc := range labelKeys {
+			lb[i] = models.LabelCount{Key: tc.Tag, Value: "", Count: tc.Count}
+		}
+		result.EpisodesByLabel = lb
 	}
 
 	if lastConsolidation != nil {
@@ -116,6 +148,19 @@ func renderStatsTable(s models.StatsResult) {
 		fmt.Println(strings.Repeat("─", 50))
 		for repo, count := range s.EpisodesByRepo {
 			fmt.Printf("  %-30s %s\n", "Repo: "+repo, strconv.Itoa(count))
+		}
+	}
+	if s.TopLabelKey != "" {
+		fmt.Printf("  %-30s %s\n", "Top label key", s.TopLabelKey)
+		fmt.Printf("  %-30s %d\n", "Label cardinality", s.LabelCardinality)
+	}
+	if s.UnlabeledCount > 0 {
+		fmt.Printf("  %-30s %d\n", "Unlabeled episodes", s.UnlabeledCount)
+	}
+	if len(s.EpisodesByLabel) > 0 {
+		fmt.Println(strings.Repeat("─", 50))
+		for _, kc := range s.EpisodesByLabel {
+			fmt.Printf("  %-30s %d\n", "Label: "+kc.Key, kc.Count)
 		}
 	}
 	fmt.Println(strings.Repeat("─", 50))

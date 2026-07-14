@@ -122,6 +122,7 @@ func runMCPServer() error {
 			mcp.WithNumber("duration_seconds", mcp.Description("Total task duration in seconds.")),
 			mcp.WithString("model_id", mcp.Description("Model identifier e.g. \"claude-sonnet-4-20260514\".")),
 			mcp.WithString("repo", mcp.Description("Optional repository/project name for filtering. Auto-detected from git remote if omitted.")),
+			mcp.WithObject("labels", mcp.Description("Optional metadata labels (key → [values]) for VectorDB-style mapping. Auto-enriched if omitted.")),
 		),
 		handleCapture(es, cfg),
 	)
@@ -134,9 +135,18 @@ func runMCPServer() error {
 			mcp.WithString("outcome", mcp.Description("Filter by outcome: \"success\", \"partial\", or \"failure\".")),
 			mcp.WithString("repo", mcp.Description("Filter by repository/project name.")),
 			mcp.WithArray("tags", mcp.Description("Filter by tags (any match).")),
+			mcp.WithObject("metadata_filter", mcp.Description("Filter by metadata labels e.g. {\"language\": \"go\", \"severity\": \"bug\"}")),
 			mcp.WithNumber("top_k", mcp.Description("Max results (default 5, max 20).")),
 		),
 		handleRetrieve(es, cfg),
+	)
+
+	s.AddTool(
+		mcp.NewTool("enrich_episode",
+			mcp.WithDescription("Run auto-enrichment on an existing episode to populate its metadata labels."),
+			mcp.WithString("episode_id", mcp.Description("The episode ID to enrich."), mcp.Required()),
+		),
+		handleEnrich(es, cfg),
 	)
 
 	s.AddTool(
@@ -229,6 +239,7 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 		}
 		tags := getStringSlice(args, "tags")
 		repo := getString(args, "repo")
+		labels := getStringMap(args, "labels")
 
 		var durationSeconds int
 		if ds, err := getFloat64(args, "duration_seconds"); err == nil {
@@ -244,6 +255,7 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 			Outcome:         outcome,
 			Tags:            tags,
 			Repo:            repo,
+			Labels:          labels,
 			Problem:         problem,
 			ThinkingTrace:   thinkingTrace,
 			Steps:           extractSteps(thinkingTrace),
@@ -270,6 +282,7 @@ func handleRetrieve(es *store.EpisodeStore, _ *models.Config) server.ToolHandler
 		outcome := getString(args, "outcome")
 		repo := getString(args, "repo")
 		tags := getStringSlice(args, "tags")
+		metadataFilter := getStringMap(args, "metadata_filter")
 
 		topK := 5
 		if tk, err := getFloat64(args, "top_k"); err == nil {
@@ -279,13 +292,46 @@ func handleRetrieve(es *store.EpisodeStore, _ *models.Config) server.ToolHandler
 			topK = 20
 		}
 
-		results, err := es.SearchLocal(problem, domain, outcome, repo, tags, topK)
+		results, err := es.SearchLocal(problem, domain, outcome, repo, tags, topK, metadataFilter)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 		}
 
 		data, _ := json.Marshal(results)
 		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+func handleEnrich(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args := req.Params.Arguments
+		episodeID := getString(args, "episode_id")
+
+		ep, err := es.GetEpisode(episodeID)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("get episode: %v", err)), nil
+		}
+		if ep == nil {
+			return mcp.NewToolResultError(fmt.Sprintf("episode not found: %s", episodeID)), nil
+		}
+
+		tcJSON, _ := json.Marshal(ep.ToolCalls)
+		ec := store.EnrichCtx{
+			Problem:       ep.Problem,
+			ThinkingTrace: ep.ThinkingTrace,
+			ToolCalls:     string(tcJSON),
+			Outcome:       ep.Outcome,
+			Domain:        ep.Domain,
+			ExistingTags:  ep.Tags,
+			ExistingRepo:  ep.Repo,
+		}
+		labels := store.EnrichLabels(ec)
+		if err := es.SetLabels(episodeID, labels); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("enrich failed: %v", err)), nil
+		}
+
+		lj, _ := json.Marshal(labels)
+		return mcp.NewToolResultText(fmt.Sprintf("Enriched %s: %s", episodeID, string(lj))), nil
 	}
 }
 
@@ -449,6 +495,28 @@ func getString(args map[string]interface{}, key string) string {
 		}
 	}
 	return ""
+}
+
+func getStringMap(args map[string]interface{}, key string) map[string][]string {
+	if v, ok := args[key]; ok {
+		if m, ok := v.(map[string]interface{}); ok {
+			result := make(map[string][]string)
+			for k, val := range m {
+				switch arr := val.(type) {
+				case []interface{}:
+					for _, item := range arr {
+						if s, ok := item.(string); ok {
+							result[k] = append(result[k], s)
+						}
+					}
+				case string:
+					result[k] = []string{arr}
+				}
+			}
+			return result
+		}
+	}
+	return nil
 }
 
 func getStringSlice(args map[string]interface{}, key string) []string {
