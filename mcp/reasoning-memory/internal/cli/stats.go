@@ -35,6 +35,8 @@ func runStats(es *store.EpisodeStore) error {
 	dbSize, _ := es.DBSizeMB()
 	ftsSize, _ := es.FTSSizeMB()
 	lastConsolidation, _ := es.LastConsolidationTS()
+	summary, _ := es.SummaryStats()
+	epByDay, _ := es.EpisodesByDay(7)
 
 	var vecSize float64
 	var vecCount int
@@ -58,6 +60,15 @@ func runStats(es *store.EpisodeStore) error {
 		AvgEpisodeLenChars:    avgProb,
 		AvgThinkingTraceChars: avgTrace,
 	}
+	if summary != nil {
+		result.SuccessRate = summary.SuccessRate
+		result.ConsolidationRatio = summary.ConsolidationRatio
+		result.TopDomain = summary.TopDomain
+		result.AvgDurationSec = summary.AvgDurationSec
+	}
+	if epByDay != nil {
+		result.EpisodesByDay = epByDay
+	}
 
 	if lastConsolidation != nil {
 		ts := lastConsolidation.Format("2006-01-02T15:04:05Z")
@@ -79,16 +90,20 @@ func renderStatsTable(s models.StatsResult) {
 	fmt.Println(strings.Repeat("─", 50))
 	fmt.Printf("  %-30s %d\n", "Episodes (total)", s.EpisodesTotal)
 	fmt.Printf("  %-30s %d\n", "Patterns (total)", s.PatternsTotal)
+	fmt.Printf("  %-30s %s\n", "Top domain", s.TopDomain)
+	fmt.Printf("  %-30s %.1f%%\n", "Success rate", s.SuccessRate*100)
+	fmt.Printf("  %-30s %.1f%%\n", "Consolidation ratio", s.ConsolidationRatio*100)
+	fmt.Printf("  %-30s %.1f s\n", "Avg duration", s.AvgDurationSec)
 
 	if s.EpisodesByDomain != nil {
 		fmt.Println(strings.Repeat("─", 50))
 		for domain, count := range s.EpisodesByDomain {
-			fmt.Printf("  %-30s %s\n", "Episodes by domain: "+domain, strconv.Itoa(count))
+			fmt.Printf("  %-30s %s\n", "Domain: "+domain, strconv.Itoa(count))
 		}
 	}
 	if s.EpisodesByOutcome != nil {
 		for outcome, count := range s.EpisodesByOutcome {
-			fmt.Printf("  %-30s %s\n", "Episodes by outcome: "+outcome, strconv.Itoa(count))
+			fmt.Printf("  %-30s %s\n", "Outcome: "+outcome, strconv.Itoa(count))
 		}
 	}
 	fmt.Println(strings.Repeat("─", 50))
@@ -105,7 +120,15 @@ func renderStatsTable(s models.StatsResult) {
 	}
 	fmt.Println(strings.Repeat("─", 50))
 	fmt.Printf("  %-30s %.0f\n", "Avg episode length (chars)", s.AvgEpisodeLenChars)
-	fmt.Printf("  %-30s %.0f\n", "Avg thinking trace (chars)", s.AvgThinkingTraceChars)
+	fmt.Printf("  %-30s %.0f\n", "Avg trace length (chars)", s.AvgThinkingTraceChars)
+
+	if len(s.EpisodesByDay) > 0 {
+		fmt.Println(strings.Repeat("─", 50))
+		fmt.Println("  Last 7 Days:")
+		for _, d := range s.EpisodesByDay {
+			fmt.Printf("    %s: %d eps, %d ok, %.0f s avg\n", d.Date, d.Count, d.Successes, d.AvgDuration)
+		}
+	}
 	fmt.Println(strings.Repeat("─", 50))
 
 	if len(s.TopTags) > 0 {
