@@ -171,7 +171,7 @@ func BenchmarkFTS5Search(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		q := queries[i%len(queries)]
-		_, err := store10kFTS.SearchLocal(q, "", "", nil, 10)
+		_, err := store10kFTS.SearchLocal(q, "", "", "", nil, 10)
 		if err != nil {
 			b.Fatalf("FTS5 search failed: %v", err)
 		}
@@ -352,7 +352,7 @@ func TestMeasurePercentiles(t *testing.T) {
 	for i := 0; i < 1000; i++ {
 		q := queries[i%len(queries)]
 		start := time.Now()
-		_, _ = store10kFTS.SearchLocal(q, "", "", nil, 10)
+		_, _ = store10kFTS.SearchLocal(q, "", "", "", nil, 10)
 		ftsDurations[i] = time.Since(start)
 	}
 	sort.Slice(ftsDurations, func(i, j int) bool { return ftsDurations[i] < ftsDurations[j] })

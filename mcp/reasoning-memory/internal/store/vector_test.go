@@ -59,7 +59,7 @@ func TestEpisodeStoreWithoutVector(t *testing.T) {
 		t.Fatal("expected non-empty ID")
 	}
 
-	results, err := es.SearchLocal("vector-less", "", "", nil, 5)
+	results, err := es.SearchLocal("vector-less", "", "", "", nil, 5)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}

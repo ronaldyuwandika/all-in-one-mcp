@@ -44,7 +44,7 @@ func TestRetrievalRelevance(t *testing.T) {
 
 	for _, q := range queries {
 		// Target FTS5 Only
-		resultsFTS, err := ftsStore.SearchLocal(q.Query, "", "", nil, 10)
+		resultsFTS, err := ftsStore.SearchLocal(q.Query, "", "", "", nil, 10)
 		if err == nil {
 			sumNDCG10FTS += computeNDCG10(resultsFTS, q.RelevantIDs)
 		}
@@ -63,7 +63,7 @@ func TestRetrievalRelevance(t *testing.T) {
 		}
 
 		// Target Hybrid Search
-		resultsHybrid, err := hybridStore.SearchLocal(q.Query, "", "", nil, 10)
+		resultsHybrid, err := hybridStore.SearchLocal(q.Query, "", "", "", nil, 10)
 		if err == nil {
 			sumNDCG10Hybrid += computeNDCG10(resultsHybrid, q.RelevantIDs)
 		}

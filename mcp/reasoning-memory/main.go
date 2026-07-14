@@ -121,6 +121,7 @@ func runMCPServer() error {
 			mcp.WithString("domain", mcp.Description("Broad domain: \"coding\" or \"agentic\". Defaults to \"coding\".")),
 			mcp.WithNumber("duration_seconds", mcp.Description("Total task duration in seconds.")),
 			mcp.WithString("model_id", mcp.Description("Model identifier e.g. \"claude-sonnet-4-20260514\".")),
+			mcp.WithString("repo", mcp.Description("Optional repository/project name for filtering. Auto-detected from git remote if omitted.")),
 		),
 		handleCapture(es, cfg),
 	)
@@ -131,6 +132,7 @@ func runMCPServer() error {
 			mcp.WithString("problem", mcp.Description("Problem description to match against."), mcp.Required()),
 			mcp.WithString("domain", mcp.Description("Filter by domain: \"coding\" or \"agentic\".")),
 			mcp.WithString("outcome", mcp.Description("Filter by outcome: \"success\", \"partial\", or \"failure\".")),
+			mcp.WithString("repo", mcp.Description("Filter by repository/project name.")),
 			mcp.WithArray("tags", mcp.Description("Filter by tags (any match).")),
 			mcp.WithNumber("top_k", mcp.Description("Max results (default 5, max 20).")),
 		),
@@ -226,6 +228,7 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 			domain = "coding"
 		}
 		tags := getStringSlice(args, "tags")
+		repo := getString(args, "repo")
 
 		var durationSeconds int
 		if ds, err := getFloat64(args, "duration_seconds"); err == nil {
@@ -240,6 +243,7 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 			Domain:          domain,
 			Outcome:         outcome,
 			Tags:            tags,
+			Repo:            repo,
 			Problem:         problem,
 			ThinkingTrace:   thinkingTrace,
 			Steps:           extractSteps(thinkingTrace),
@@ -264,6 +268,7 @@ func handleRetrieve(es *store.EpisodeStore, _ *models.Config) server.ToolHandler
 		problem := getString(args, "problem")
 		domain := getString(args, "domain")
 		outcome := getString(args, "outcome")
+		repo := getString(args, "repo")
 		tags := getStringSlice(args, "tags")
 
 		topK := 5
@@ -274,7 +279,7 @@ func handleRetrieve(es *store.EpisodeStore, _ *models.Config) server.ToolHandler
 			topK = 20
 		}
 
-		results, err := es.SearchLocal(problem, domain, outcome, tags, topK)
+		results, err := es.SearchLocal(problem, domain, outcome, repo, tags, topK)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 		}
@@ -301,7 +306,7 @@ func handleInject(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerFu
 			includeTraces = b
 		}
 
-		results, err := es.SearchLocal(problem, "", "", nil, topK)
+		results, err := es.SearchLocal(problem, "", "", "", nil, topK)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 		}
@@ -406,7 +411,7 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 
 		var contextStr string
 		if includeContext {
-			results, err := es.SearchLocal(rawPrompt, domain, "success", nil, topK)
+			results, err := es.SearchLocal(rawPrompt, domain, "success", "", nil, topK)
 			if err == nil && len(results) > 0 {
 				var ctxEpisodes []prompter.EpisodeContext
 				for _, r := range results {

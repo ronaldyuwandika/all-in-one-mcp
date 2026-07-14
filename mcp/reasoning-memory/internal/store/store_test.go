@@ -301,7 +301,7 @@ func TestReindexFTS5(t *testing.T) {
 		t.Fatalf("ReindexFTS5: %v", err)
 	}
 
-	results, err := es.SearchLocal("p1", "", "", nil, 10)
+	results, err := es.SearchLocal("p1", "", "", "", nil, 10)
 	if err != nil {
 		t.Fatalf("SearchLocal after reindex: %v", err)
 	}
