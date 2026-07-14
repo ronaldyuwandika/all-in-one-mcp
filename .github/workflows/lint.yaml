@@ -95,7 +95,7 @@ jobs:
           go-version-file: mcp/reasoning-memory/go.mod
       - name: Run golangci-lint
         id: golangci
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
           version: v2.12.2
           working-directory: .
