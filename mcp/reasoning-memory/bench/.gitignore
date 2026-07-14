@@ -1,0 +1,4 @@
+testdata/
+bench_current.txt
+bench_base.txt
+cover.out

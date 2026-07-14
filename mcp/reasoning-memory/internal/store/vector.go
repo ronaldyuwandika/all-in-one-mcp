@@ -3,9 +3,11 @@ package store
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	chromem "github.com/philippgille/chromem-go"
 )
@@ -28,9 +30,15 @@ func NewVectorStore(dataDir string, provider, model, baseURL, apiKey string, ena
 		return nil, fmt.Errorf("create vector dir: %w", err)
 	}
 
-	db, err := chromem.NewPersistentDB(path, false)
-	if err != nil {
-		return nil, fmt.Errorf("open vector db: %w", err)
+	var db *chromem.DB
+	var err error
+	if provider == "mock" {
+		db = chromem.NewDB()
+	} else {
+		db, err = chromem.NewPersistentDB(path, false)
+		if err != nil {
+			return nil, fmt.Errorf("open vector db: %w", err)
+		}
 	}
 	vs.db = db
 
@@ -58,6 +66,35 @@ func NewVectorStore(dataDir string, provider, model, baseURL, apiKey string, ena
 			model = "nomic-embed-text"
 		}
 		ef = chromem.NewEmbeddingFuncOllama(model, baseURL)
+	case "mock":
+		ef = func(ctx context.Context, text string) ([]float32, error) {
+			vec := make([]float32, 1536)
+			// Simple word hashing for mock embedding similarity
+			words := strings.Fields(strings.ToLower(text))
+			for _, w := range words {
+				// Simple hash of the word
+				hash := 0
+				for i := 0; i < len(w); i++ {
+					hash = (hash * 31) + int(w[i])
+				}
+				idx := (hash%1536 + 1536) % 1536
+				vec[idx] += 1.0
+			}
+			// Normalize vector
+			var sumSq float32
+			for _, v := range vec {
+				sumSq += v * v
+			}
+			if sumSq > 0 {
+				norm := float32(math.Sqrt(float64(sumSq)))
+				for i := range vec {
+					vec[i] /= norm
+				}
+			} else {
+				vec[0] = 1.0
+			}
+			return vec, nil
+		}
 	default:
 		return nil, fmt.Errorf("unsupported embedding provider: %s (supported: openai, openai-compat, ollama)", provider)
 	}

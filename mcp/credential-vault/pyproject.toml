@@ -16,6 +16,10 @@ dev = [
     "textual>=0.52.0",
 ]
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["server*", "cli*", "tui*"]
+
 [tool.ruff]
 line-length = 120
 target-version = "py312"
