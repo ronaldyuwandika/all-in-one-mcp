@@ -97,3 +97,48 @@ type PolishResult struct {
 	SkillName      string `json:"skill_name,omitempty"`
 	ContextCount   int    `json:"context_count"`
 }
+
+type TagCount struct {
+	Tag   string `json:"tag"`
+	Count int    `json:"count"`
+}
+
+type DayBucket struct {
+	Date        string  `json:"date"`
+	Count       int     `json:"count"`
+	Successes   int     `json:"successes"`
+	AvgDuration float64 `json:"avg_duration_sec"`
+	AvgTraceLen float64 `json:"avg_trace_len_chars"`
+}
+
+type SummaryStats struct {
+	TotalEpisodes      int     `json:"total_episodes"`
+	TotalPatterns      int     `json:"total_patterns"`
+	SuccessRate        float64 `json:"success_rate"`
+	AvgDurationSec     float64 `json:"avg_duration_sec"`
+	AvgTraceLenChars   float64 `json:"avg_trace_len_chars"`
+	ConsolidationRatio float64 `json:"consolidation_ratio"`
+	TopDomain          string  `json:"top_domain"`
+}
+
+type DoctorResult struct {
+	Check   string `json:"check"`
+	Status  string `json:"status"` // "ok", "warn", "fail"
+	Message string `json:"message"`
+}
+
+type StatsResult struct {
+	EpisodesTotal         int            `json:"episodes_total"`
+	PatternsTotal         int            `json:"patterns_total"`
+	EpisodesByDomain      map[string]int `json:"episodes_by_domain"`
+	EpisodesByOutcome     map[string]int `json:"episodes_by_outcome"`
+	TopTags               []TagCount     `json:"top_tags"`
+	VectorIndexSizeMB     float64        `json:"vector_index_size_mb"`
+	VectorCount           int            `json:"vector_count"`
+	FTSSizeMB             float64        `json:"fts5_size_mb"`
+	DBSizeMB              float64        `json:"db_size_mb"`
+	LastConsolidationTS   *string        `json:"last_consolidation_ts,omitempty"`
+	ConsolidationsTotal   int            `json:"consolidations_total"`
+	AvgEpisodeLenChars    float64        `json:"avg_episode_length_chars"`
+	AvgThinkingTraceChars float64        `json:"avg_thinking_trace_chars"`
+}

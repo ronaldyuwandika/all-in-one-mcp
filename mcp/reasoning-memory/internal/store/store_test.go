@@ -9,6 +9,270 @@ import (
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/models"
 )
 
+func seedPattern(es *EpisodeStore) *models.Pattern {
+	for i := 0; i < 3; i++ {
+		_, _ = es.CreateEpisode(&models.Episode{
+			ID:            es.NextID(),
+			Domain:        "coding",
+			Outcome:       "success",
+			Tags:          []string{"go", "testing", "ci"},
+			Problem:       "test",
+			ThinkingTrace: "trace",
+		})
+	}
+	candidates, _ := es.FindMergeCandidates(2)
+	if len(candidates) > 0 {
+		pid, _ := es.MergeToPattern(candidates[0])
+		pat, _ := es.GetPattern(pid)
+		return pat
+	}
+	return nil
+}
+
+func createEpisode(es *EpisodeStore, domain, outcome string, tags []string, prob, trace string, duration int) string {
+	id := es.NextID()
+	_, _ = es.CreateEpisode(&models.Episode{
+		ID:              id,
+		Domain:          domain,
+		Outcome:         outcome,
+		Tags:            tags,
+		Problem:         prob,
+		ThinkingTrace:   trace,
+		DurationSeconds: duration,
+	})
+	return id
+}
+
+func TestEpisodesByDomain(t *testing.T) {
+	es := testStore(t)
+	createEpisode(es, "coding", "success", nil, "p1", "t1", 0)
+	createEpisode(es, "agentic", "partial", nil, "p2", "t2", 0)
+	createEpisode(es, "coding", "failure", nil, "p3", "t3", 0)
+
+	byDomain, err := es.EpisodesByDomain()
+	if err != nil {
+		t.Fatalf("EpisodesByDomain: %v", err)
+	}
+
+	if byDomain["coding"] != 2 {
+		t.Errorf("expected 2 coding, got %d", byDomain["coding"])
+	}
+	if byDomain["agentic"] != 1 {
+		t.Errorf("expected 1 agentic, got %d", byDomain["agentic"])
+	}
+}
+
+func TestEpisodesByOutcome(t *testing.T) {
+	es := testStore(t)
+	createEpisode(es, "coding", "success", nil, "p1", "t1", 0)
+	createEpisode(es, "coding", "success", nil, "p2", "t2", 0)
+	createEpisode(es, "coding", "failure", nil, "p3", "t3", 0)
+
+	byOutcome, err := es.EpisodesByOutcome()
+	if err != nil {
+		t.Fatalf("EpisodesByOutcome: %v", err)
+	}
+
+	if byOutcome["success"] != 2 {
+		t.Errorf("expected 2 success, got %d", byOutcome["success"])
+	}
+	if byOutcome["failure"] != 1 {
+		t.Errorf("expected 1 failure, got %d", byOutcome["failure"])
+	}
+}
+
+func TestTopTags(t *testing.T) {
+	es := testStore(t)
+	createEpisode(es, "coding", "success", []string{"go", "testing"}, "p1", "t1", 0)
+	createEpisode(es, "coding", "success", []string{"go", "mcp"}, "p2", "t2", 0)
+	createEpisode(es, "agentic", "partial", []string{"python", "testing"}, "p3", "t3", 0)
+
+	tags, err := es.TopTags(10)
+	if err != nil {
+		t.Fatalf("TopTags: %v", err)
+	}
+
+	freq := make(map[string]int)
+	for _, tc := range tags {
+		freq[tc.Tag] = tc.Count
+	}
+
+	if freq["go"] != 2 {
+		t.Errorf("expected go:2, got %d", freq["go"])
+	}
+	if freq["testing"] != 2 {
+		t.Errorf("expected testing:2, got %d", freq["testing"])
+	}
+	if freq["mcp"] != 1 {
+		t.Errorf("expected mcp:1, got %d", freq["mcp"])
+	}
+}
+
+func TestTopTagsLimit(t *testing.T) {
+	es := testStore(t)
+	createEpisode(es, "coding", "success", []string{"a", "b", "c"}, "p1", "t1", 0)
+	createEpisode(es, "coding", "success", []string{"a", "b"}, "p2", "t2", 0)
+
+	tags, err := es.TopTags(2)
+	if err != nil {
+		t.Fatalf("TopTags: %v", err)
+	}
+
+	if len(tags) > 2 {
+		t.Errorf("expected at most 2 tags, got %d", len(tags))
+	}
+}
+
+func TestAvgEpisodeLengths(t *testing.T) {
+	es := testStore(t)
+	createEpisode(es, "coding", "success", nil, "short", "trace", 0)
+	createEpisode(es, "coding", "success", nil, "longer problem", "longer thinking trace here", 0)
+
+	avgProb, avgTrace, err := es.AvgEpisodeLengths()
+	if err != nil {
+		t.Fatalf("AvgEpisodeLengths: %v", err)
+	}
+
+	if avgProb < 5 || avgProb > 15 {
+		t.Errorf("expected avg problem around 10, got %f", avgProb)
+	}
+	if avgTrace < 8 || avgTrace > 25 {
+		t.Errorf("expected avg trace around 15, got %f", avgTrace)
+	}
+}
+
+func TestEmptyThinkingTraceCount(t *testing.T) {
+	es := testStore(t)
+	createEpisode(es, "coding", "success", nil, "p1", "full trace", 0)
+	createEpisode(es, "coding", "success", nil, "p2", "", 0)
+
+	count, err := es.EmptyThinkingTraceCount()
+	if err != nil {
+		t.Fatalf("EmptyThinkingTraceCount: %v", err)
+	}
+
+	if count != 1 {
+		t.Errorf("expected 1 empty trace, got %d", count)
+	}
+}
+
+func TestDBSizeMB(t *testing.T) {
+	es := testStore(t)
+	createEpisode(es, "coding", "success", nil, "p1", "t1", 0)
+
+	size, err := es.DBSizeMB()
+	if err != nil {
+		t.Fatalf("DBSizeMB: %v", err)
+	}
+
+	if size <= 0 {
+		t.Errorf("expected positive size, got %f", size)
+	}
+}
+
+func TestDBPath(t *testing.T) {
+	dir := t.TempDir()
+	es, err := New(filepath.Join(dir, "store.db"))
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer es.Close()
+
+	if es.DBPath() == "" {
+		t.Error("expected non-empty DBPath")
+	}
+}
+
+func TestDB(t *testing.T) {
+	es := testStore(t)
+	if es.DB() == nil {
+		t.Error("expected non-nil DB handle")
+	}
+}
+
+func TestLastConsolidationTS(t *testing.T) {
+	es := testStore(t)
+
+	// No patterns yet
+	ts, err := es.LastConsolidationTS()
+	if err != nil {
+		t.Fatalf("LastConsolidationTS (no patterns): %v", err)
+	}
+	if ts != nil {
+		t.Errorf("expected nil, got %v", ts)
+	}
+
+	// Add a pattern
+	pat := seedPattern(es)
+	if pat == nil {
+		t.Skip("no pattern merged (need 3+ episodes)")
+	}
+
+	ts, err = es.LastConsolidationTS()
+	if err != nil {
+		t.Fatalf("LastConsolidationTS: %v", err)
+	}
+	if ts == nil {
+		t.Error("expected non-nil timestamp")
+	}
+}
+
+func TestEpisodesByDay(t *testing.T) {
+	es := testStore(t)
+	createEpisode(es, "coding", "success", nil, "p1", "t1", 10)
+	createEpisode(es, "coding", "success", nil, "p2", "t2", 20)
+
+	buckets, err := es.EpisodesByDay(1)
+	if err != nil {
+		t.Fatalf("EpisodesByDay: %v", err)
+	}
+
+	if len(buckets) == 0 {
+		t.Error("expected at least 1 day bucket")
+	}
+}
+
+func TestEmptyStoreStats(t *testing.T) {
+	es := testStore(t)
+
+	stats, err := es.SummaryStats()
+	if err != nil {
+		t.Fatalf("SummaryStats: %v", err)
+	}
+
+	if stats.TotalEpisodes != 0 {
+		t.Errorf("expected 0 episodes, got %d", stats.TotalEpisodes)
+	}
+}
+
+func TestSummaryStats(t *testing.T) {
+	es := testStore(t)
+	createEpisode(es, "coding", "success", nil, "p1", "t1", 10)
+	createEpisode(es, "coding", "success", nil, "p2", "t2", 20)
+	createEpisode(es, "agentic", "failure", nil, "p3", "t3", 30)
+
+	stats, err := es.SummaryStats()
+	if err != nil {
+		t.Fatalf("SummaryStats: %v", err)
+	}
+
+	if stats.TotalEpisodes != 3 {
+		t.Errorf("expected 3 episodes, got %d", stats.TotalEpisodes)
+	}
+
+	if stats.SuccessRate <= 0 || stats.SuccessRate > 100 {
+		t.Errorf("expected success rate between 0-100, got %f", stats.SuccessRate)
+	}
+
+	if stats.AvgDurationSec <= 0 {
+		t.Errorf("expected positive avg duration, got %f", stats.AvgDurationSec)
+	}
+
+	if stats.TopDomain != "coding" {
+		t.Errorf("expected top domain 'coding', got '%s'", stats.TopDomain)
+	}
+}
+
 func testStore(t *testing.T) *EpisodeStore {
 	t.Helper()
 	dir := t.TempDir()
