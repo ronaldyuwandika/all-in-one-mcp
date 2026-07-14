@@ -18,6 +18,7 @@ type searchRow struct {
 	Outcome         string
 	TagsJSON        string
 	Repo            string
+	LabelsJSON      string
 	StepsJSON       string
 	ToolCallsJSON   string
 	CreatedAt       string
@@ -25,12 +26,17 @@ type searchRow struct {
 	DurationSeconds int
 }
 
-func (es *EpisodeStore) SearchLocal(query string, domainFilter, outcomeFilter, repoFilter string, tagsFilter []string, topK int) ([]models.EpisodeSummary, error) {
+func (es *EpisodeStore) SearchLocal(query string, domainFilter, outcomeFilter, repoFilter string, tagsFilter []string, topK int, metadataFilter ...map[string][]string) ([]models.EpisodeSummary, error) {
 	if topK <= 0 {
 		topK = 5
 	}
 
-	ftsResults, err := es.ftsSearch(query, domainFilter, outcomeFilter, repoFilter, tagsFilter, topK)
+	var mf map[string][]string
+	if len(metadataFilter) > 0 {
+		mf = metadataFilter[0]
+	}
+
+	ftsResults, err := es.ftsSearch(query, domainFilter, outcomeFilter, repoFilter, tagsFilter, topK, mf)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +116,7 @@ func (es *EpisodeStore) SearchLocal(query string, domainFilter, outcomeFilter, r
 	return ftsResults, nil
 }
 
-func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, repoFilter string, tagsFilter []string, topK int) ([]models.EpisodeSummary, error) {
+func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, repoFilter string, tagsFilter []string, topK int, metadataFilter map[string][]string) ([]models.EpisodeSummary, error) {
 	queryWords := strings.Fields(strings.ToLower(query))
 
 	ftsRows, err := es.searchFTS(query, repoFilter)
@@ -124,6 +130,34 @@ func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, rep
 
 		problemLower := strings.ToLower(r.Problem)
 		tagsList := parseTags(r.TagsJSON)
+		labels := es.parseLabelsJSON(r.LabelsJSON)
+
+		match := true
+		for mk, mv := range metadataFilter {
+			vals := labels[mk]
+			found := false
+			for _, filterVal := range mv {
+				for _, v := range vals {
+					if strings.EqualFold(v, filterVal) {
+						found = true
+						break
+					}
+				}
+				if found {
+					break
+				}
+			}
+			if !found {
+				match = false
+				break
+			}
+		}
+		if !match {
+			continue
+		}
+		if len(metadataFilter) > 0 {
+			score += 0.25
+		}
 
 		termMatches := 0
 		for _, w := range queryWords {
@@ -211,6 +245,7 @@ func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, rep
 			if r.ID == entry.id {
 				steps := parseSteps(r.StepsJSON)
 				toolCalls := parseToolCalls(r.ToolCallsJSON)
+				labels := es.parseLabelsJSON(r.LabelsJSON)
 				s := models.EpisodeSummary{
 					ID:              r.ID,
 					CreatedAt:       r.CreatedAt,
@@ -219,6 +254,7 @@ func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, rep
 					Outcome:         r.Outcome,
 					Tags:            parseTags(r.TagsJSON),
 					Repo:            r.Repo,
+					Labels:          labels,
 					StepCount:       len(steps),
 					ToolCount:       len(toolCalls),
 					StepTypes:       stepTypes(steps),
@@ -249,7 +285,7 @@ func (es *EpisodeStore) searchFTS(query, repoFilter string) ([]searchRow, error)
 	var args []interface{}
 	if repoFilter != "" {
 		q = `SELECT e.id, e.problem, e.thinking_trace, e.domain, e.outcome, e.tags,
-		            e.repo, e.steps, e.tool_calls, e.created_at, e.model_id, e.duration_seconds
+		            e.repo, e.labels, e.steps, e.tool_calls, e.created_at, e.model_id, e.duration_seconds
 		     FROM episodes_fts f
 		     JOIN episodes e ON e.rowid = f.rowid
 		     WHERE episodes_fts MATCH ? AND e.repo = ?
@@ -257,7 +293,7 @@ func (es *EpisodeStore) searchFTS(query, repoFilter string) ([]searchRow, error)
 		args = append(args, ftsQuery, repoFilter)
 	} else {
 		q = `SELECT e.id, e.problem, e.thinking_trace, e.domain, e.outcome, e.tags,
-		            e.repo, e.steps, e.tool_calls, e.created_at, e.model_id, e.duration_seconds
+		            e.repo, e.labels, e.steps, e.tool_calls, e.created_at, e.model_id, e.duration_seconds
 		     FROM episodes_fts f
 		     JOIN episodes e ON e.rowid = f.rowid
 		     WHERE episodes_fts MATCH ?
@@ -276,7 +312,7 @@ func (es *EpisodeStore) searchFTS(query, repoFilter string) ([]searchRow, error)
 		var r searchRow
 		if err := rows.Scan(
 			&r.ID, &r.Problem, &r.ThinkingTrace, &r.Domain, &r.Outcome,
-			&r.TagsJSON, &r.Repo, &r.StepsJSON, &r.ToolCallsJSON, &r.CreatedAt,
+			&r.TagsJSON, &r.Repo, &r.LabelsJSON, &r.StepsJSON, &r.ToolCallsJSON, &r.CreatedAt,
 			&r.ModelID, &r.DurationSeconds,
 		); err != nil {
 			return nil, fmt.Errorf("scan fts result: %w", err)
@@ -295,7 +331,7 @@ func (es *EpisodeStore) fallbackSearch(query, repoFilter string) ([]searchRow, e
 	var args []interface{}
 	if repoFilter != "" {
 		q = `SELECT id, problem, thinking_trace, domain, outcome, tags,
-		            repo, steps, tool_calls, created_at, model_id, duration_seconds
+		            repo, labels, steps, tool_calls, created_at, model_id, duration_seconds
 		     FROM episodes
 		     WHERE (problem LIKE ? ESCAPE '\' OR thinking_trace LIKE ? ESCAPE '\')
 		       AND repo = ?
@@ -303,7 +339,7 @@ func (es *EpisodeStore) fallbackSearch(query, repoFilter string) ([]searchRow, e
 		args = append(args, likePattern, likePattern, repoFilter)
 	} else {
 		q = `SELECT id, problem, thinking_trace, domain, outcome, tags,
-		            repo, steps, tool_calls, created_at, model_id, duration_seconds
+		            repo, labels, steps, tool_calls, created_at, model_id, duration_seconds
 		     FROM episodes WHERE problem LIKE ? ESCAPE '\' OR thinking_trace LIKE ? ESCAPE '\'
 		     LIMIT 50`
 		args = append(args, likePattern, likePattern)
@@ -320,7 +356,7 @@ func (es *EpisodeStore) fallbackSearch(query, repoFilter string) ([]searchRow, e
 		var r searchRow
 		if err := rows.Scan(
 			&r.ID, &r.Problem, &r.ThinkingTrace, &r.Domain, &r.Outcome,
-			&r.TagsJSON, &r.Repo, &r.StepsJSON, &r.ToolCallsJSON, &r.CreatedAt,
+			&r.TagsJSON, &r.Repo, &r.LabelsJSON, &r.StepsJSON, &r.ToolCallsJSON, &r.CreatedAt,
 			&r.ModelID, &r.DurationSeconds,
 		); err != nil {
 			return nil, fmt.Errorf("scan fallback result: %w", err)

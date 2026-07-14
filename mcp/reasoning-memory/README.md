@@ -23,6 +23,7 @@ reasoning-memory
 | `capture_reasoning_episode` | Store full trace at task end | `problem`, `thinking_trace`, `outcome` |
 | `retrieve_reasoning` | Search episodes | `problem` |
 | `inject_reasoning_context` | Get XML block for prompt injection | `problem` |
+| `enrich_episode` | Auto-enrich labels for an existing episode | `episode_id` |
 | `consolidate_reasoning` | Cluster, merge, prune, reindex | — |
 | `polish_prompt` | Structure raw prompt + inject skill context | `raw_prompt` |
 
@@ -39,9 +40,17 @@ Persists a complete reasoning trace (problem, thinking trace, outcome, tool call
   "tags": ["resilience", "retry"],
   "tool_calls": [{"tool": "grep", "args": "...", "result_excerpt": "...", "outcome": "success"}],
   "duration_seconds": 120,
-  "model_id": "claude-sonnet-4-20260514"
+  "model_id": "claude-sonnet-4-20260514",
+  "repo": "my-org/my-service",
+  "labels": {
+    "language": ["go"],
+    "framework": ["net/http"],
+    "severity": ["high"]
+  }
 }
 ```
+
+Labels are auto-enriched when omitted: language detection, framework detection (Go, Python, JS, Rust, Docker), severity (critical/high/medium/low), and entity extraction (cache, db, api, auth, deploy, test).
 
 ### `retrieve_reasoning`
 
@@ -53,9 +62,15 @@ Hybrid FTS5 + vector search returning ranked, deduplicated episode summaries.
   "domain": "coding",
   "outcome": "success",
   "tags": ["concurrency"],
-  "top_k": 5
+  "top_k": 5,
+  "metadata_filter": {
+    "language": ["go"],
+    "severity": ["high", "critical"]
+  }
 }
 ```
+
+`metadata_filter` narrows results by label key/value pairs. Multiple values per key are OR'ed; multiple keys are AND'ed.
 
 ### `inject_reasoning_context`
 
@@ -68,6 +83,18 @@ Returns a `<reasoning_memory>` XML block ready for prompt prepending.
   "include_traces": true
 }
 ```
+
+### `enrich_episode`
+
+Runs auto-enrichment (language, framework, severity, entity detection) on an existing episode and persists the labels.
+
+```json
+{
+  "episode_id": "re-20260714-003"
+}
+```
+
+Returns a confirmation with the enriched labels.
 
 ### `consolidate_reasoning`
 
@@ -169,20 +196,33 @@ Strategy `auto` → found 1 merge candidate, merged into pattern `pat-re-2026071
 ### Full Invocation Trace
 
 | # | Tool | Input | Output |
-|---|------|-------|--------|
+|   |------|-------|--------|
 | 1 | `capture_reasoning_episode` | `{"problem": "Fix a nil pointer dereference...", "outcome": "success", "tags": ["go","nil-pointer","http-handler"]}` | `re-20260714-003` |
 | 2 | `capture_reasoning_episode` | `{"problem": "Design a rate limiter middleware...", "outcome": "success", "tags": ["go","middleware","rate-limiter","concurrency"]}` | `re-20260714-004` |
-| 3 | `retrieve_reasoning` | `{"problem": "How to handle nil pointers in Go HTTP handlers", "top_k": 5}` | Top result: `re-20260714-003` (score 1.017) |
-| 4 | `inject_reasoning_context` | `{"problem": "Go middleware design patterns", "top_k": 3}` | `<reasoning_memory>` XML with 3 episodes |
-| 5 | `polish_prompt` | `{"raw_prompt": "build a dockerfile for my go service", "skill_name": "docker-expert"}` | `coding` task type, skill injected, 1 context episode appended |
-| 6 | `consolidate_reasoning` | `{"strategy": "auto"}` | Merged 1 pair → `pat-re-20260714-002-re-20260714-001` (score 1.567), index rebuilt: 8 eps, 1 pattern |
+| 3 | `enrich_episode` | `{"episode_id": "re-20260714-003"}` | `Enriched re-20260714-003: {"language":["go"],"framework":["net/http"],"severity":["high"],"tag":["go","nil-pointer","http-handler"],"domain":["coding"],"outcome":["success"]}` |
+| 4 | `retrieve_reasoning` | `{"problem": "How to handle nil pointers in Go HTTP handlers", "top_k": 5, "metadata_filter": {"language": ["go"]}}` | Top result: `re-20260714-003` (score 1.267, labels boosted) |
+| 5 | `inject_reasoning_context` | `{"problem": "Go middleware design patterns", "top_k": 3}` | `<reasoning_memory>` XML with 3 episodes |
+| 6 | `polish_prompt` | `{"raw_prompt": "build a dockerfile for my go service", "skill_name": "docker-expert"}` | `coding` task type, skill injected, 1 context episode appended |
+| 7 | `consolidate_reasoning` | `{"strategy": "auto"}` | Merged 1 pair → `pat-re-20260714-002-re-20260714-001` (score 1.567), index rebuilt: 8 eps, 1 pattern |
 
 **Process flow:**
-- `capture_reasoning_episode` persists full traces (problem → thinking → outcome) to SQLite with FTS5 + optional vector index
-- `retrieve_reasoning` runs hybrid FTS5 + vector search, ranked by `_local_score`
-- `inject_reasoning_context` wraps search results into a `<reasoning_memory>` XML block ready for prompt prepending
-- `polish_prompt` auto-detects task type via keyword patterns → injects skill rules from `SKILL.md` → appends relevant past reasoning
-- `consolidate_reasoning` finds merge candidates → merges similar episodes → prunes stale failures → rebuilds FTS5 index
+- `capture_reasoning_episode` persists full traces (problem → thinking → outcome) to SQLite with FTS5 + optional vector index. Labels are auto-enriched when omitted.
+- `enrich_episode` re-runs auto-enrichment for episodes captured without labels (or with partial labels).
+- `retrieve_reasoning` runs hybrid FTS5 + vector search, ranked by `_local_score`, optionally filtered by `metadata_filter`.
+- `inject_reasoning_context` wraps search results into a `<reasoning_memory>` XML block ready for prompt prepending.
+- `polish_prompt` auto-detects task type via keyword patterns → injects skill rules from `SKILL.md` → appends relevant past reasoning.
+- `consolidate_reasoning` finds merge candidates → merges similar episodes → prunes stale failures → rebuilds FTS5 index.
+
+## CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `reasoning-memory` | Start MCP server (stdio) |
+| `reasoning-memory dashboard` | Launch TUI dashboard |
+| `reasoning-memory stats` | Show statistics (JSON) |
+| `reasoning-memory stats --format table` | Show statistics (table) |
+| `reasoning-memory stats --by-label language=go` | List episodes with a specific label |
+| `reasoning-memory doctor` | Run health checks |
 
 ## Configuration
 
@@ -222,7 +262,8 @@ mcp/reasoning-memory/
 ├── internal/
 │   ├── store/                 # SQLite + FTS5 + vector (chromem-go)
 │   │   ├── store.go           # CRUD, FTS5 queries
-│   │   ├── search.go          # Hybrid search, ranking
+│   │   ├── search.go          # Hybrid search, ranking, metadata filter
+│   │   ├── labels.go          # Label enrichment + metadata index
 │   │   ├── vector.go          # chromem-go integration
 │   │   └── patterns.go        # Merge candidates, pattern episodes
 │   ├── prompter/              # Prompt engineering

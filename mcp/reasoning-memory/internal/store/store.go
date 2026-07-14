@@ -120,24 +120,45 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
-	var hasRepo bool
-	if rows, err := db.Query("PRAGMA table_info(episodes)"); err == nil {
-		for rows.Next() {
-			var cid int
-			var name, ctype string
-			var notnull int
-			var dflt sql.NullString
-			var pk int
-			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err == nil && name == "repo" {
-				hasRepo = true
+	hasCol := func(name string) bool {
+		if rows, err := db.Query("PRAGMA table_info(episodes)"); err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var cid int
+				var colName, ctype string
+				var notnull int
+				var dflt sql.NullString
+				var pk int
+				if err := rows.Scan(&cid, &colName, &ctype, &notnull, &dflt, &pk); err == nil && colName == name {
+					return true
+				}
 			}
 		}
-		rows.Close()
+		return false
 	}
-	if !hasRepo {
+
+	if !hasCol("repo") {
 		if _, err := db.Exec("ALTER TABLE episodes ADD COLUMN repo TEXT NOT NULL DEFAULT ''"); err != nil {
 			return fmt.Errorf("add repo column: %w", err)
 		}
+	}
+	if !hasCol("labels") {
+		if _, err := db.Exec("ALTER TABLE episodes ADD COLUMN labels TEXT NOT NULL DEFAULT '{}'"); err != nil {
+			return fmt.Errorf("add labels column: %w", err)
+		}
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS metadata_idx (
+		episode_id TEXT NOT NULL,
+		key TEXT NOT NULL,
+		value TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("create metadata_idx: %w", err)
+	}
+	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_meta_kv ON metadata_idx(key, value)"); err != nil {
+		return fmt.Errorf("create idx_meta_kv: %w", err)
+	}
+	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_meta_eid ON metadata_idx(episode_id)"); err != nil {
+		return fmt.Errorf("create idx_meta_eid: %w", err)
 	}
 
 	return nil
@@ -187,15 +208,32 @@ func (es *EpisodeStore) CreateEpisode(ep *models.Episode) (string, error) {
 		ep.Repo = detectGitRepo()
 	}
 
+	labels := ep.Labels
+	if labels == nil {
+		ec := EnrichCtx{
+			Problem:       ep.Problem,
+			ThinkingTrace: ep.ThinkingTrace,
+			ToolCalls:     string(toolCallsJSON),
+			Outcome:       ep.Outcome,
+			Domain:        ep.Domain,
+			ExistingTags:  ep.Tags,
+			ExistingRepo:  ep.Repo,
+		}
+		labels = EnrichLabels(ec)
+		ep.Labels = labels
+	}
+	labelsJSON, _ := json.Marshal(labels)
+
 	_, err := es.db.Exec(
-		`INSERT INTO episodes (id, created_at, domain, outcome, tags, repo, problem, thinking_trace, steps, tool_calls, model_id, duration_seconds)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO episodes (id, created_at, domain, outcome, tags, repo, labels, problem, thinking_trace, steps, tool_calls, model_id, duration_seconds)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ep.ID,
 		ep.CreatedAt.Format(time.RFC3339),
 		ep.Domain,
 		ep.Outcome,
 		string(tagsJSON),
 		ep.Repo,
+		string(labelsJSON),
 		ep.Problem,
 		ep.ThinkingTrace,
 		string(stepsJSON),
@@ -205,6 +243,10 @@ func (es *EpisodeStore) CreateEpisode(ep *models.Episode) (string, error) {
 	)
 	if err != nil {
 		return "", fmt.Errorf("create episode: %w", err)
+	}
+
+	if err := es.syncMetadataIndex(ep.ID, labels); err != nil {
+		return "", fmt.Errorf("sync labels: %w", err)
 	}
 
 	if es.vec != nil && es.vec.Enabled() {
@@ -227,12 +269,13 @@ func (es *EpisodeStore) CreateEpisodeContext(ctx context.Context, ep *models.Epi
 
 func (es *EpisodeStore) GetEpisode(id string) (*models.Episode, error) {
 	row := es.db.QueryRow(
-		`SELECT id, created_at, domain, outcome, tags, repo, problem, thinking_trace, steps, tool_calls, model_id, duration_seconds
+		`SELECT id, created_at, domain, outcome, tags, repo, labels, problem, thinking_trace, steps, tool_calls, model_id, duration_seconds
 		FROM episodes WHERE id = ?`, id,
 	)
 
 	var (
 		tagsJSON      string
+		labelsJSON    string
 		stepsJSON     string
 		toolCallsJSON string
 		createdAt     string
@@ -241,7 +284,7 @@ func (es *EpisodeStore) GetEpisode(id string) (*models.Episode, error) {
 
 	err := row.Scan(
 		&ep.ID, &createdAt, &ep.Domain, &ep.Outcome, &tagsJSON,
-		&ep.Repo, &ep.Problem, &ep.ThinkingTrace, &stepsJSON, &toolCallsJSON,
+		&ep.Repo, &labelsJSON, &ep.Problem, &ep.ThinkingTrace, &stepsJSON, &toolCallsJSON,
 		&ep.ModelID, &ep.DurationSeconds,
 	)
 	if err == sql.ErrNoRows {
@@ -252,6 +295,7 @@ func (es *EpisodeStore) GetEpisode(id string) (*models.Episode, error) {
 	}
 
 	ep.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	ep.Labels = es.parseLabelsJSON(labelsJSON)
 	_ = json.Unmarshal([]byte(tagsJSON), &ep.Tags)
 	_ = json.Unmarshal([]byte(stepsJSON), &ep.Steps)
 	_ = json.Unmarshal([]byte(toolCallsJSON), &ep.ToolCalls)
@@ -261,12 +305,13 @@ func (es *EpisodeStore) GetEpisode(id string) (*models.Episode, error) {
 
 func (es *EpisodeStore) GetSummary(id string) (*models.EpisodeSummary, error) {
 	row := es.db.QueryRow(
-		`SELECT id, created_at, problem, domain, outcome, tags, repo, steps, tool_calls, model_id, duration_seconds
+		`SELECT id, created_at, problem, domain, outcome, tags, repo, labels, steps, tool_calls, model_id, duration_seconds
 		FROM episodes WHERE id = ?`, id,
 	)
 
 	var (
 		tagsJSON      string
+		labelsJSON    string
 		stepsJSON     string
 		toolCallsJSON string
 		createdAt     string
@@ -276,7 +321,7 @@ func (es *EpisodeStore) GetSummary(id string) (*models.EpisodeSummary, error) {
 
 	err := row.Scan(
 		&summary.ID, &createdAt, &summary.Problem, &summary.Domain,
-		&summary.Outcome, &tagsJSON, &summary.Repo, &stepsJSON, &toolCallsJSON,
+		&summary.Outcome, &tagsJSON, &summary.Repo, &labelsJSON, &stepsJSON, &toolCallsJSON,
 		&summary.ModelID, &summary.DurationSeconds,
 	)
 	if err == sql.ErrNoRows {
@@ -287,6 +332,7 @@ func (es *EpisodeStore) GetSummary(id string) (*models.EpisodeSummary, error) {
 	}
 
 	summary.CreatedAt = createdAt
+	summary.Labels = es.parseLabelsJSON(labelsJSON)
 	_ = json.Unmarshal([]byte(tagsJSON), &summary.Tags)
 	_ = json.Unmarshal([]byte(stepsJSON), &steps)
 	summary.StepCount = len(steps)
@@ -302,7 +348,7 @@ func (es *EpisodeStore) GetSummary(id string) (*models.EpisodeSummary, error) {
 
 func (es *EpisodeStore) ListEpisodes(limit, offset int) ([]models.EpisodeSummary, error) {
 	rows, err := es.db.Query(
-		`SELECT id, created_at, problem, domain, outcome, tags, repo, steps, tool_calls, model_id, duration_seconds
+		`SELECT id, created_at, problem, domain, outcome, tags, repo, labels, steps, tool_calls, model_id, duration_seconds
 		FROM episodes ORDER BY created_at DESC LIMIT ? OFFSET ?`, limit, offset,
 	)
 	if err != nil {
@@ -314,6 +360,7 @@ func (es *EpisodeStore) ListEpisodes(limit, offset int) ([]models.EpisodeSummary
 	for rows.Next() {
 		var (
 			tagsJSON      string
+			labelsJSON    string
 			stepsJSON     string
 			toolCallsJSON string
 			steps         []models.Step
@@ -321,11 +368,12 @@ func (es *EpisodeStore) ListEpisodes(limit, offset int) ([]models.EpisodeSummary
 		)
 		if err := rows.Scan(
 			&s.ID, &s.CreatedAt, &s.Problem, &s.Domain,
-			&s.Outcome, &tagsJSON, &s.Repo, &stepsJSON, &toolCallsJSON,
+			&s.Outcome, &tagsJSON, &s.Repo, &labelsJSON, &stepsJSON, &toolCallsJSON,
 			&s.ModelID, &s.DurationSeconds,
 		); err != nil {
 			return nil, fmt.Errorf("scan episode: %w", err)
 		}
+		s.Labels = es.parseLabelsJSON(labelsJSON)
 		_ = json.Unmarshal([]byte(tagsJSON), &s.Tags)
 		_ = json.Unmarshal([]byte(stepsJSON), &steps)
 		s.StepCount = len(steps)
@@ -609,6 +657,20 @@ func (es *EpisodeStore) SummaryStats() (*models.SummaryStats, error) {
 		GROUP BY repo ORDER BY COUNT(*) DESC LIMIT 1`,
 	).Scan(&topRepo)
 	stats.TopRepo = topRepo
+
+	var topLabelKey string
+	_ = es.db.QueryRow(`
+		SELECT key FROM metadata_idx
+		GROUP BY key ORDER BY COUNT(DISTINCT episode_id) DESC LIMIT 1`,
+	).Scan(&topLabelKey)
+	stats.TopLabelKey = topLabelKey
+
+	var labelCard int
+	_ = es.db.QueryRow(`SELECT COUNT(DISTINCT key) FROM metadata_idx`).Scan(&labelCard)
+	stats.LabelCardinality = labelCard
+
+	unlabeled, _ := es.UnlabeledCount()
+	stats.UnlabeledCount = unlabeled
 
 	return stats, nil
 }
