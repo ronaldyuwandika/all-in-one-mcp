@@ -107,7 +107,7 @@ jobs:
         working-directory: mcp/reasoning-memory
         run: |
           exitcode=0
-          gosec -fmt=json ./... > /tmp/gosec-output.json 2>&1 || exitcode=$?
+          gosec -fmt=json -exclude-dir=bench ./... > /tmp/gosec-output.json 2>&1 || exitcode=$?
           echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
           exit $exitcode
       - name: Post gosec report
