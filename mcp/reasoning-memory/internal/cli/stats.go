@@ -32,7 +32,6 @@ func runStats(es *store.EpisodeStore) error {
 	byOutcome, _ := es.EpisodesByOutcome()
 	topTags, _ := es.TopTags(10)
 	avgProb, avgTrace, _ := es.AvgEpisodeLengths()
-	emptyTrace, _ := es.EmptyThinkingTraceCount()
 	dbSize, _ := es.DBSizeMB()
 	ftsSize, _ := es.FTSSizeMB()
 	lastConsolidation, _ := es.LastConsolidationTS()
@@ -64,8 +63,6 @@ func runStats(es *store.EpisodeStore) error {
 		ts := lastConsolidation.Format("2006-01-02T15:04:05Z")
 		result.LastConsolidationTS = &ts
 	}
-
-	_ = emptyTrace
 
 	if statsFormat == "table" {
 		renderStatsTable(result)

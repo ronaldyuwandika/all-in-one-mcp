@@ -121,12 +121,6 @@ type SummaryStats struct {
 	TopDomain          string  `json:"top_domain"`
 }
 
-type DoctorResult struct {
-	Check   string `json:"check"`
-	Status  string `json:"status"` // "ok", "warn", "fail"
-	Message string `json:"message"`
-}
-
 type StatsResult struct {
 	EpisodesTotal         int            `json:"episodes_total"`
 	PatternsTotal         int            `json:"patterns_total"`
