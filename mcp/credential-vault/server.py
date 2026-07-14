@@ -92,6 +92,7 @@ CRED_PATTERNS = [
     (re.compile(r"(?i)rk_live_[A-Za-z0-9]{10,}"), "STRIPE_SECRET_KEY"),
     (re.compile(r"(?i)whsec_[A-Za-z0-9]{10,}"), "STRIPE_WEBHOOK_SECRET"),
     (re.compile(r"cfat_[A-Za-z0-9_]{10,}"), "CLOUDFLARE_TOKEN"),
+    (re.compile(r"ATATT3x[A-Za-z0-9_\-=]{10,}"), "JIRA_API_TOKEN"),
     (
         re.compile(r'(?i)(api[_-]?key|apikey|api_secret|secret_key)[=: ]+["\']?([^"\' \n]{8})([^"\' \n]+)'),
         lambda m: f"{m.group(1)}={m.group(2)}{'*' * min(len(m.group(3)), 32)}",
@@ -101,7 +102,9 @@ CRED_PATTERNS = [
         lambda m: f"{m.group(1)}={'*' * min(len(m.group(0).split('=', 1)[-1].strip('"\'')), 40)}",
     ),
     (
-        re.compile(r'(?i)(token|secret)[=: ]+["\']?([^"\' \n]{10})([^"\' \n]+)'),
+        re.compile(
+            r'(?i)([A-Z_][A-Z0-9_]*?(?:TOKEN|PASSWORD|PASSWD|SECRET)[A-Z0-9_]*)[=: ]+["\']?([^"\' \n]{8})([^"\' \n]+)'
+        ),
         lambda m: f"{m.group(1)}={m.group(2)}{'*' * min(len(m.group(3)), 32)}",
     ),
     (
@@ -385,6 +388,7 @@ _CRED_ENV_KEY_RE = re.compile(
     r"CLAIM|"
     r"INSTRUMENTATIONKEY|"
     r"CONNECTION[_-]STRING|"
+    r"JIRA[_-](?:API[_-])?TOKEN|"
     r"PGPASSWORD|PGPWD|"
     r"ACCESS[_-](?:KEY|SECRET|TOKEN|ID)|"
     r"API[_-](?:KEY|SECRET|TOKEN|CREDENTIAL)|"
