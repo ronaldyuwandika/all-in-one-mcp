@@ -1,92 +1,77 @@
 # reasoning-memory
 
-> **LLM Reasoning Trace Capture, Search & Injection for MCP**
-
 [![Go 1.24](https://img.shields.io/badge/go-1.24-00ADD8?style=flat-square&logo=go)](https://golang.org/doc/go1.24)
 [![MCP](https://img.shields.io/badge/MCP-compatible-6B21A8?style=flat-square)](https://modelcontextprotocol.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](../../LICENSE)
-[![Build](https://img.shields.io/github/actions/workflow/status/ronaldyuwandika/all-in-one-mcp/ci.yml?branch=main&style=flat-square)](../../actions)
+[![Build](https://img.shields.io/github/actions/workflow/status/ronaldyuwandika/all-in-one-mcp/lint.yaml?branch=main&style=flat-square)](../../actions)
 [![Coverage](https://img.shields.io/codecov/c/github/ronaldyuwandika/all-in-one-mcp?style=flat-square)](https://codecov.io/gh/ronaldyuwandika/all-in-one-mcp)
 
-A Go 1.24 MCP server that captures, stores, and retrieves LLM reasoning traces using SQLite + FTS5 full-text search and chromem-go vector embeddings. Designed to give LLM agents persistent episodic memory of their past reasoning, enabling smarter prompt injection and continuous learning across sessions.
+> Captures, stores, searches, and consolidates LLM reasoning traces for prompt engineering and agent memory.
 
----
-
-## ✨ Features
-
-| Feature | Status |
-|---------|--------|
-| Capture reasoning episodes at task end | ✅ |
-| FTS5 full-text search over episodes | ✅ |
-| Vector semantic search (chromem-go) | ✅ |
-| Prompt injection with relevant history | ✅ |
-| Consolidation: clustering, merge, prune, reindex | ✅ |
-| Prompt polishing with skill injection | ✅ |
-| Vector search requires embedding provider (OpenAI / local Ollama) | ⚠️ |
-
----
-
-## 🚀 Quick Start
+## Quick Start
 
 ```bash
-make install-mcp-reasoning-memory
-reasoning-memory  # starts the stdio MCP server
+make run-reasoning-memory
+# Or installed:
+reasoning-memory
 ```
 
-Your MCP host (Claude Desktop, Cursor, etc.) connects to the server via stdio. No additional daemon is required.
-
----
-
-## 🛠 MCP Tools Reference
+## MCP Tools
 
 | Tool | Description | Required Params |
 |------|-------------|-----------------|
-| `capture_reasoning_episode` | Store a full reasoning trace after a task completes | `problem`, `thinking_trace`, `outcome` |
-| `retrieve_reasoning` | Search past episodes relevant to a problem | `problem` |
-| `inject_reasoning_context` | Build an XML context block for prompt injection | `problem` |
-| `consolidate_reasoning` | Cluster, merge, prune, and reindex stored episodes | `strategy` |
-| `polish_prompt` | Structure a raw prompt and inject relevant context | `raw_prompt` |
+| `capture_reasoning_episode` | Store full trace at task end | `problem`, `thinking_trace`, `outcome` |
+| `retrieve_reasoning` | Search episodes | `problem` |
+| `inject_reasoning_context` | Get XML block for prompt injection | `problem` |
+| `consolidate_reasoning` | Cluster, merge, prune, reindex | — |
+| `polish_prompt` | Structure raw prompt + inject skill context | `raw_prompt` |
 
-### Tool Details
+### `capture_reasoning_episode`
 
-#### `capture_reasoning_episode`
-
-Persists a complete reasoning trace (problem statement, thinking trace, outcome, optional tool calls) to SQLite. Both FTS5 and vector indexes are updated atomically.
+Persists a complete reasoning trace (problem, thinking trace, outcome, tool calls, tags, domain, duration, model) to SQLite with FTS5 + optional vector indexing.
 
 ```json
 {
-  "problem": "How do I implement a retry-with-backoff pattern in Go?",
+  "problem": "How do I implement retry-with-backoff?",
   "thinking_trace": "...",
   "outcome": "success",
-  "tool_calls": []
+  "domain": "coding",
+  "tags": ["resilience", "retry"],
+  "tool_calls": [{"tool": "grep", "args": "...", "result_excerpt": "...", "outcome": "success"}],
+  "duration_seconds": 120,
+  "model_id": "claude-sonnet-4-20260514"
 }
 ```
 
-#### `retrieve_reasoning`
+### `retrieve_reasoning`
 
-Searches stored episodes using a hybrid FTS5 + vector strategy and returns ranked, deduplicated results.
+Hybrid FTS5 + vector search returning ranked, deduplicated episode summaries.
 
 ```json
 {
   "problem": "Go concurrency patterns",
-  "limit": 5
+  "domain": "coding",
+  "outcome": "success",
+  "tags": ["concurrency"],
+  "top_k": 5
 }
 ```
 
-#### `inject_reasoning_context`
+### `inject_reasoning_context`
 
-Returns a structured XML block ready to be prepended to a system prompt. Automatically selects the most relevant historical episodes.
+Returns a `<reasoning_memory>` XML block ready for prompt prepending.
 
 ```json
 {
   "problem": "Refactor a large Go service",
-  "max_episodes": 3
+  "top_k": 3,
+  "include_traces": true
 }
 ```
 
-#### `consolidate_reasoning`
+### `consolidate_reasoning`
 
-Runs a multi-phase consolidation pipeline: cluster similar episodes, merge duplicates, prune stale entries, and rebuild indexes.
+Multi-phase pipeline: find merge candidates → merge similar episodes → prune stale failures → rebuild index.
 
 ```json
 {
@@ -94,228 +79,286 @@ Runs a multi-phase consolidation pipeline: cluster similar episodes, merge dupli
 }
 ```
 
-Strategies: `auto` (recommended), `cluster_only`, `merge_only`, `prune_only`.
+### `polish_prompt`
 
-#### `polish_prompt`
+Auto-detects task type (coding/agentic/analysis/general), programming language, injects skill rules from SKILL.md, and merges relevant past reasoning context.
 
-Takes a raw, unstructured prompt, automatically detects the task type/domain (e.g. coding, analysis, agentic), detects the programming language, injects relevant skill rules from `SKILL.md` (e.g. `golang-service`), merges relevant episodic reasoning context retrieved via vector search, and returns a fully structured, context-enriched polished prompt.
-
-##### Example Input
 ```json
 {
-  "raw_prompt": "help me write tests for my Go service"
-}
-```
-
-##### Example Output
-```json
-{
-  "polished_prompt": "# Coding Task\n\n## Task\nhelp me write tests for my Go service\n\n## Language\nGo\n\n## Skill Rules\n- Use table-driven tests for multiple inputs/outputs.\n- Leverage mockgen to mock database and external calls.\n- Assert error values and types explicitly.\n\n## Execution Protocol\n1. Understand the codebase and conventions\n2. Plan the implementation with error handling\n3. Implement following idiomatic patterns\n4. Verify with tests and linting\n5. Only commit when explicitly requested\n\n## Relevant Past Reasoning\n<reasoning_memory>\n  <episode id=\"1\">\n    <problem>Write unit tests for SQLite store in Go</problem>\n    <domain>coding</domain>\n    <outcome>success</outcome>\n    <thinking_trace>Used go-sqlmock to stub database transactions. Tested query edge cases.</thinking_trace>\n  </episode>\n</reasoning_memory>",
-  "task_type": "coding",
-  "language": "Go",
+  "raw_prompt": "help me write tests for my Go service",
   "domain": "coding",
-  "skill_injected": true,
-  "skill_name": "golang-service",
-  "context_count": 1
+  "include_context": true,
+  "top_k": 3,
+  "skill_name": "golang-service"
 }
 ```
 
----
+## Demo Episodes
 
-## ⚙️ Configuration
+Live traces captured during a single session across all 5 tools. Full source: [`bench/results/demo-episodes.json`](./bench/results/demo-episodes.json).
 
-Default config location: `~/.reasoning-memory/config.yaml`
+### Captured via `capture_reasoning_episode`
+
+**Episode 1 — Fix nil pointer dereference**
+
+```json
+{
+  "id": "re-20260714-003",
+  "problem": "Fix a nil pointer dereference in the Go HTTP handler",
+  "thinking_trace": "1. I saw the panic in the logs: nil pointer dereference at handler.go:42\n2. The issue was that r.FormValue(\"id\") returns empty string...",
+  "outcome": "success",
+  "domain": "coding",
+  "tags": ["go", "nil-pointer", "http-handler"],
+  "steps": [
+    {"type": "analysis", "content": "1. I saw the panic in the logs..."},
+    {"type": "verification", "content": "2. The issue was that..."},
+    {"type": "option_generation", "content": "3. Considered two approaches..."},
+    {"type": "error", "content": "4. Decided to add validation..."},
+    {"type": "verification", "content": "5. Implemented the fix..."},
+    {"type": "verification", "content": "6. Verified with unit test..."}
+  ],
+  "tool_calls": [
+    {"tool": "grep", "outcome": "success"},
+    {"tool": "edit", "outcome": "success"}
+  ],
+  "model_id": "claude-sonnet-4-20260514",
+  "duration_seconds": 180
+}
+```
+
+**Episode 2 — Design rate limiter middleware**
+
+```json
+{
+  "id": "re-20260714-004",
+  "problem": "Design a rate limiter middleware for a Go HTTP service",
+  "outcome": "success",
+  "domain": "coding",
+  "tags": ["go", "middleware", "rate-limiter", "concurrency"],
+  "steps": [
+    {"type": "analysis", "content": "1. Requirement: 100 req/s per IP..."},
+    {"type": "analysis", "content": "2. Compared token bucket vs sliding window..."},
+    {"type": "analysis", "content": "3. Chose sliding window..."},
+    {"type": "analysis", "content": "4. Used sync.Map for IP counters..."},
+    {"type": "implementation", "content": "5. Implemented middleware..."},
+    {"type": "analysis", "content": "6. Added configurable rate and burst..."},
+    {"type": "verification", "content": "7. Wrote table-driven tests..."},
+    {"type": "verification", "content": "8. Benchmark: <1μs overhead"}
+  ],
+  "model_id": "claude-sonnet-4-20260514",
+  "duration_seconds": 600
+}
+```
+
+### Retrieved via `retrieve_reasoning`
+
+Query: `"How to handle nil pointers in Go HTTP handlers"` → ranked results with top score `1.017` matching Episode 1.
+
+### Injected via `inject_reasoning_context`
+
+Query: `"Go middleware design patterns"` → XML block with 3 relevant episodes ready for prompt prepending.
+
+### Polished via `polish_prompt`
+
+Input: `"build a dockerfile for my go service"` + skill `docker-expert` → detected `coding` task type, injected docker-expert rules, appended relevant past reasoning.
+
+### Consolidated via `consolidate_reasoning`
+
+Strategy `auto` → found 1 merge candidate, merged into pattern `pat-re-20260714-002-re-20260714-001` (score 1.567), rebuilt index: 8 episodes, 1 pattern.
+
+### Full Invocation Trace
+
+| # | Tool | Input | Output |
+|---|------|-------|--------|
+| 1 | `capture_reasoning_episode` | `{"problem": "Fix a nil pointer dereference...", "outcome": "success", "tags": ["go","nil-pointer","http-handler"]}` | `re-20260714-003` |
+| 2 | `capture_reasoning_episode` | `{"problem": "Design a rate limiter middleware...", "outcome": "success", "tags": ["go","middleware","rate-limiter","concurrency"]}` | `re-20260714-004` |
+| 3 | `retrieve_reasoning` | `{"problem": "How to handle nil pointers in Go HTTP handlers", "top_k": 5}` | Top result: `re-20260714-003` (score 1.017) |
+| 4 | `inject_reasoning_context` | `{"problem": "Go middleware design patterns", "top_k": 3}` | `<reasoning_memory>` XML with 3 episodes |
+| 5 | `polish_prompt` | `{"raw_prompt": "build a dockerfile for my go service", "skill_name": "docker-expert"}` | `coding` task type, skill injected, 1 context episode appended |
+| 6 | `consolidate_reasoning` | `{"strategy": "auto"}` | Merged 1 pair → `pat-re-20260714-002-re-20260714-001` (score 1.567), index rebuilt: 8 eps, 1 pattern |
+
+**Process flow:**
+- `capture_reasoning_episode` persists full traces (problem → thinking → outcome) to SQLite with FTS5 + optional vector index
+- `retrieve_reasoning` runs hybrid FTS5 + vector search, ranked by `_local_score`
+- `inject_reasoning_context` wraps search results into a `<reasoning_memory>` XML block ready for prompt prepending
+- `polish_prompt` auto-detects task type via keyword patterns → injects skill rules from `SKILL.md` → appends relevant past reasoning
+- `consolidate_reasoning` finds merge candidates → merges similar episodes → prunes stale failures → rebuilds FTS5 index
+
+## Configuration
+
+`~/.reasoning-memory/config.yaml`:
 
 ```yaml
 embedding:
-  provider: "openai"  # or "ollama", "none"
+  provider: "openai"    # or gemini, ollama, none
   model: "text-embedding-3-small"
+  base_url: ""
+  api_key: ""
   enabled: true
-
+retrieval:
+  top_k_default: 3
+  min_similarity: 0.15
+  hybrid_weight: 0.5
 consolidation:
-  min_episodes_for_pattern: 5
+  min_episodes_for_pattern: 3
   prune_after_days: 90
+  auto_run: true
 ```
-
-### Embedding Providers
-
-| Provider | Config Value | Notes |
-|----------|--------------|-------|
-| OpenAI | `openai` | Requires `OPENAI_API_KEY` env var |
-| Ollama (local) | `ollama` | Requires Ollama running at `localhost:11434` |
-| Disabled | `none` | FTS5 text search only; no vector search |
 
 ### Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `OPENAI_API_KEY` | OpenAI API key for embeddings | — |
-| `REASONING_MEMORY_DB` | Path to SQLite database file | `~/.reasoning-memory/episodes.db` |
-| `REASONING_MEMORY_CONFIG` | Path to config file | `~/.reasoning-memory/config.yaml` |
-| `OLLAMA_BASE_URL` | Ollama server base URL | `http://localhost:11434` |
+| `OPENAI_API_KEY` | API key for OpenAI embeddings | — |
+| `REASONING_MEMORY_DB` | SQLite database path | `~/.reasoning-memory/episodes.db` |
+| `REASONING_MEMORY_CONFIG` | Config file path | `~/.reasoning-memory/config.yaml` |
+| `OLLAMA_BASE_URL` | Ollama server URL | `http://localhost:11434` |
 
----
-
-## 🏗 Architecture
+## Architecture
 
 ```
 mcp/reasoning-memory/
-├── main.go                    # MCP server wiring, tool registration
+├── main.go                    # MCP server, tool registration, stdio transport
 ├── internal/
-│   ├── store/                 # Persistence layer
-│   │   ├── sqlite.go          # SQLite + FTS5 schema, queries
-│   │   ├── vector.go          # chromem-go vector store integration
-│   │   └── consolidator.go    # Clustering, merge, prune, reindex logic
-│   ├── prompter/              # Prompt engineering layer
-│   │   ├── injector.go        # XML context block builder
-│   │   ├── polisher.go        # Raw prompt structuring + skill injection
-│   │   └── skill_loader.go    # Skill loading from config
-│   └── models/                # Shared domain types
-│       ├── episode.go         # Episode, Step, ToolCall types
-│       └── config.go          # Config struct
-└── bench/
-    └── results/               # Benchmark output files
+│   ├── store/                 # SQLite + FTS5 + vector (chromem-go)
+│   │   ├── store.go           # CRUD, FTS5 queries
+│   │   ├── search.go          # Hybrid search, ranking
+│   │   ├── vector.go          # chromem-go integration
+│   │   └── patterns.go        # Merge candidates, pattern episodes
+│   ├── prompter/              # Prompt engineering
+│   │   ├── prompter.go        # Task detection, language detection
+│   │   ├── detect.go          # Pattern-based task classifier
+│   │   └── skills.go          # Skill injection from SKILL.md
+│   ├── models/                # Shared types
+│   │   └── types.go           # Episode, Step, ToolCall, Config, Pattern
+│   └── config/                # YAML config loading
+│       └── config.go          # Load, defaults, dir helpers
+└── bench/                     # Performance + accuracy suite
+    ├── results/               # Markdown benchmark reports
+    └── report/                # Report generator
 ```
 
-### Data Flow
+## Benchmarks
 
-```
-LLM Agent
-   │
-   ├─► capture_reasoning_episode ──► SQLite (FTS5 + vector)
-   │
-   ├─► retrieve_reasoning ──────────► FTS5 search ──► ranked results
-   │                        └──────► vector search ─┘
-   │
-   ├─► inject_reasoning_context ────► XML block ──► prepend to prompt
-   │
-   ├─► consolidate_reasoning ───────► cluster → merge → prune → reindex
-   │
-   └─► polish_prompt ───────────────► detect task → inject skills → structured prompt
-```
-
----
-
-## 📊 Benchmarks
-
-Benchmarks run on Apple M3 Pro, Go 1.24, 1 000 stored episodes, SQLite WAL mode.
+Benchmarks run on Apple M3 Pro, Go 1.24, 1 000 episodes, SQLite WAL mode.
 
 | Scenario | p50 | p99 | Throughput |
 |----------|-----|-----|------------|
-| FTS5 Search (1k eps) | 2 ms | 8 ms | 500 ops/s |
-| Vector Search (1k eps) | 12 ms | 45 ms | 80 ops/s |
-| Insert Episode | 0.5 ms | 2 ms | 2 000 ops/s |
-| Consolidate Auto (1k eps) | 15 s | 45 s | — |
+| FTS5 Search (1k eps) | 0.22ms | 0.69ms | 500/s |
+| Vector Search (1k eps) | 4.59ms | 6.40ms | 100/s |
+| Insert Episode | — | — | 10 349 ops/s |
+| Insert Episode + Vector | — | — | 10 491 ops/s |
+| Consolidate Auto (1k eps) | 1.79s | — | — |
 
 [Full benchmark results](./bench/results/)
 
-Run benchmarks locally:
+Run locally:
 
 ```bash
+make bench-go
+# or directly:
 cd mcp/reasoning-memory
 go test -bench=. -benchmem ./...
 ```
 
----
+## Accuracy & Effectiveness
 
-## 🎯 Accuracy & Effectiveness
-
-| Metric | Value | Evaluation Method |
-|--------|-------|-------------------|
-| Retrieval nDCG@10 | 0.82 | Labeled query/episode pairs (200 samples) |
+| Metric | Value | Method |
+|--------|-------|--------|
+| Retrieval nDCG@10 (hybrid) | 0.5453 | 200 labeled query/episode pairs |
+| Prompt polish task detection | 87.5% | 200 held-out test prompts |
 | Consolidation quality | 4.2 / 5 | Human evaluation (50 merged clusters) |
-| Prompt polish task detection | 94% | 200 held-out test prompts |
 
-**Retrieval nDCG@10 of 0.82** indicates strong ranking quality — relevant episodes consistently appear in the top positions. Hybrid FTS5 + vector search outperforms either method alone by ~12% on this dataset.
+## Prompt Engineering Guide
 
----
+### Task Type Detection
 
-```bash
-go test -v ./...
+`polish_prompt` classifies input into one of four domains using keyword patterns:
+
+| Domain | Triggers |
+|--------|----------|
+| `coding` | test, implement, refactor, debug, write code, fix bug, ci/cd, pipeline |
+| `agentic` | deploy, run, execute, operate, monitor, orchestrate, schedule |
+| `analysis` | analyze, compare, investigate, audit, review, estimate, research |
+| `general` | (fallback) |
+
+### Skill Injection
+
+When `skill_name` is provided, the prompter loads `~/.agents/skills/<name>/SKILL.md` or `~/.config/opencode/skill/<name>/SKILL.md`. The skill's Intent, Core Principles, Validation Checklist, and Workflow rules are injected between the Task section and Execution Protocol in the polished prompt.
+
+### Best Practices: `thinking_trace` Format
+
+For best consolidation and search results:
+
+- **Be verbose** — include alternative approaches considered, trade-offs evaluated, and dead ends explored
+- **Structure with numbered steps** — the step extractor splits on lines starting with `N. `
+- **Tag decisions** — lines containing "decide", "choose", "select" are classified as `decision` steps
+- **Include errors** — "error", "bug", "fail" lines are tagged as `error` steps for failure pattern analysis
+
+### Before/After
+
+**Raw input:**
+```
+help me write tests for my Go service
 ```
 
-## Benchmarking & Accuracy Suite
+**Polished output:**
 
-The `reasoning-memory` module includes a comprehensive suite of performance and accuracy/effectiveness benchmarks located in the `bench/` package.
+````markdown
+# Coding Task
 
-### Targets and Scenarios
+## Task
+help me write tests for my Go service
 
-| Category | Benchmark | Metric | Target |
-|---|---|---|---|
-| **Performance** | FTS5 Search | p50/p99 Latency | &lt;5ms / &lt;20ms |
-| | Vector Search | p50/p99 Latency | &lt;15ms / &lt;50ms |
-| | Episode Insert | Throughput | &gt;5,000 ops/s |
-| | Episode Insert + Vector | Throughput | &gt;3,000 ops/s |
-| | Auto Consolidation (1k eps) | Duration | &lt;30 seconds |
-| | Memory Footprint | RSS / Heap | &lt;200MB RSS |
-| **Accuracy** | Retrieval Relevance | nDCG@10 | &gt;0.8000 |
-| | Prompt Polish | Task Type Detection | Accuracy Rate |
-| | Consolidation Quality | Human Evaluation | &gt;3.5 / 5.0 rating |
+## Language
+Go
 
-### Running the Suite
+## Skill Rules
+- Use table-driven tests for multiple inputs/outputs.
+- Leverage mockgen to mock database and external calls.
+- Assert error values and types explicitly.
 
-To run all benchmarks (performance + accuracy) and generate markdown reports:
+## Execution Protocol
+1. Understand the codebase and conventions
+2. Plan the implementation with error handling
+3. Implement following idiomatic patterns
+4. Verify with tests and linting
+5. Only commit when explicitly requested
 
-```bash
-make bench-go
-```
+## Relevant Past Reasoning
+<reasoning_memory>
+  <episode id="1">
+    <problem>Write unit tests for SQLite store in Go</problem>
+    <domain>coding</domain>
+    <outcome>success</outcome>
+  </episode>
+</reasoning_memory>
+````
 
-This target runs:
-1. Performance measurements and pipes results to `bench/report/gen_reports.go`.
-2. Retrieval relevance, prompt task type detection accuracy, and consolidation pattern generator tests.
+## Consolidation Strategies
 
-All reports are written to the `bench/results/` directory:
-- `fts5-search.md` - Lexical search latencies
-- `vector-search.md` - Semantic search latencies
-- `insert-throughput.md` - Insertion write speed
-- `consolidate.md` - Auto-consolidation run duration
-- `memory.md` - Process memory usage
-- `relevance-ndcg.md` - Retrieval relevance nDCG@10 scores
-- `polish-accuracy.md` - Prompt task classifier accuracy breakdown
-- `consolidation-quality.md` - Consolidated patterns review sheet for human evaluation
+| Strategy | Actions |
+|----------|---------|
+| `auto` | Find merge candidates → merge → prune stale failures → rebuild FTS5 index |
+| `cluster` | Find merge candidates only (no merge, no prune) |
+| `merge` | Find + merge candidates (no prune) |
+| `prune` | Remove stale failure episodes older than `prune_after_days` |
+| `index` | Rebuild FTS5 index from all stored episodes + patterns |
 
-### Comparing Benchmarks
+## Limitations
 
-To compare performance of the current branch against a baseline (e.g. `main`), run:
+- Vector search requires an embedding provider (OpenAI, Gemini, or local Ollama). Set `embedding.enabled: false` for FTS5-only mode.
+- SQLite WAL mode limits concurrent writers — lock contention possible with simultaneous MCP clients.
+- No built-in authentication — use transport-level auth (e.g. stdio for local, SSH tunnel for remote).
+- Consolidation is CPU-intensive (1.8s for 1k episodes with `auto` strategy).
+- chromem-go vectors live in RAM — memory scales with episode count.
 
-```bash
-./bench/benchstat.sh
-```
+## Troubleshooting
 
-This script will run standard Go `benchstat` to highlight performance deltas and regressions.
-
-## ⚠️ Limitations
-
-- **Vector search requires an embedding provider** — either an OpenAI API key or a locally running Ollama instance. Set `embedding.provider: none` to fall back to FTS5-only search.
-- **Consolidation is heuristic** — automatic clustering may produce imperfect merges on niche domains. Manual review of consolidated clusters is recommended before pruning.
-- **FTS5 tokenizer is fixed** — the server uses Porter stemmer tokenization. Custom tokenizers are not supported without recompiling.
-- **SQLite single-writer constraint** — concurrent MCP clients writing episodes simultaneously may experience lock contention. For high-concurrency deployments, use connection pooling or serialize writes through a single process.
-- **In-memory vector store** — chromem-go loads all vectors into RAM. For very large episode collections (>100k), memory usage may be significant.
-
----
-
-## 🔧 Troubleshooting
-
-| Symptom | Likely Cause | Fix |
-|---------|--------------|-----|
-| `"vector store disabled"` error | No embedding config provided | Add `embedding.provider` and `embedding.model` to `~/.reasoning-memory/config.yaml` |
-| Slow search queries | Large DB without periodic maintenance | Run `VACUUM` on the SQLite file, or run `consolidate_reasoning` with `strategy: prune_only` |
-| Consolidation stuck / timeout | Too many episodes in a single cluster | Increase `consolidation.min_episodes_for_pattern` to raise the threshold |
-| `OPENAI_API_KEY` errors | Missing or invalid API key | Export `OPENAI_API_KEY=sk-...` in your shell or MCP host config |
-| DB locked errors | Multiple concurrent writers | Ensure only one `reasoning-memory` process accesses the DB at a time |
-
----
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feat/your-feature`
-3. Run tests: `go test ./...`
-4. Run linter: `golangci-lint run`
-5. Submit a pull request
-
----
-
-## 📄 License
-
-[MIT](../../LICENSE) © ronaldyuwandika
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `"vector store disabled"` | No `embedding.api_key` or provider unavailable | Set `embedding.provider` and `embedding.api_key` in config |
+| Slow search | No FTS5 index | Run `consolidate_reasoning` with `strategy: index` |
+| DB locked | Multiple concurrent writers | Use a single process or serialize writes |
+| Consolidation timeout | Too many episodes in one cluster | Increase `min_episodes_for_pattern` |
+| `OPENAI_API_KEY` errors | Missing or invalid key | Set `OPENAI_API_KEY` env var or `embedding.api_key` in config |

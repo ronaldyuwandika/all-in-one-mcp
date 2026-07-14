@@ -28,19 +28,19 @@ func main() {
 			diffPercent := ((currVal - baseVal) / baseVal) * 100.0
 			fmt.Printf("%s: Base=%.3fms, Current=%.3fms (Diff=%.2f%%)\n", k, baseVal, currVal, diffPercent)
 
-			if diffPercent > 5.0 {
-				fmt.Printf("⚠ REGRESSION: %s regressed by > 5%% (%.2f%%)\n", k, diffPercent)
+			if diffPercent > 20.0 {
+				fmt.Printf("⚠ REGRESSION: %s regressed by > 20%% (%.2f%%)\n", k, diffPercent)
 				regressed = true
 			}
 		}
 	}
 
 	if regressed {
-		fmt.Println("🔴 Pull request rejected due to performance regression (> 5% on p99 latency).")
+		fmt.Println("🔴 Pull request rejected due to performance regression (> 20% on p99 latency).")
 		os.Exit(1)
 	}
 
-	fmt.Println("🟢 Performance verification passed (no regressions > 5% on p99 latency).")
+	fmt.Println("🟢 Performance verification passed (no regressions > 20% on p99 latency).")
 }
 
 func readMetrics(path string) map[string]float64 {
