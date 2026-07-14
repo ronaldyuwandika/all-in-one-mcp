@@ -11,22 +11,36 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/spf13/cobra"
 
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/cli"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/config"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/models"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/prompter"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/store"
 )
 
+var es *store.EpisodeStore
+var cfg *models.Config
+var cfgPath string
+
 func main() {
-	cfg, err := config.Load(configPath())
+	home, err := os.UserHomeDir()
 	if err != nil {
-		log.Fatalf("load config: %v", err)
+		home = "."
+	}
+	dataDir := filepath.Join(home, ".reasoning-memory")
+	_ = os.MkdirAll(dataDir, 0700)
+	dbPath := filepath.Join(dataDir, "store.db")
+	cfgPath = configPath()
+
+	var loadErr error
+	cfg, loadErr = config.Load(cfgPath)
+	if loadErr != nil {
+		log.Fatalf("load config: %v", loadErr)
 	}
 
-	dbPath := filepath.Join(dataDir(), "store.db")
-
-	vecDataDir := dataDir()
+	vecDataDir := dataDir
 	vec, vecErr := store.NewVectorStore(
 		vecDataDir,
 		cfg.Embedding.Provider,
@@ -40,19 +54,18 @@ func main() {
 		vec = nil
 	}
 
-	var es *store.EpisodeStore
 	if vec != nil && vec.Enabled() {
-		es, err = store.NewWithVector(dbPath, vec)
+		es, loadErr = store.NewWithVector(dbPath, vec)
 	} else {
-		es, err = store.New(dbPath)
+		es, loadErr = store.New(dbPath)
 	}
-	if err != nil {
-		log.Fatalf("open store: %v", err)
+	if loadErr != nil {
+		log.Fatalf("open store: %v", loadErr)
 	}
 	defer func() { _ = es.Close() }()
+
 	if vec != nil {
 		log.Printf("Vector search enabled (provider=%s, model=%s)", cfg.Embedding.Provider, cfg.Embedding.Model)
-
 		epCount, _ := es.EpisodeCount()
 		if epCount > 0 && vec.Count() == 0 {
 			log.Printf("Reindexing %d episodes into vector DB...", epCount)
@@ -60,6 +73,35 @@ func main() {
 			reindexEpisodes(ctx, es, vec)
 		}
 	}
+
+	rootCmd := &cobra.Command{
+		Use:   "reasoning-memory",
+		Short: "Reasoning Memory Network — MCP server + CLI tools",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMCPServer()
+		},
+	}
+
+	serveCmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Start the MCP stdio server",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runMCPServer()
+		},
+	}
+
+	rootCmd.AddCommand(serveCmd)
+	rootCmd.AddCommand(cli.NewStatsCmd(es))
+	rootCmd.AddCommand(cli.NewDoctorCmd(es, cfgPath))
+	rootCmd.AddCommand(cli.NewDashboardCmd(es, cfgPath, cfg))
+
+	if err := rootCmd.Execute(); err != nil {
+		os.Exit(1)
+	}
+}
+
+func runMCPServer() error {
+	log.SetFlags(0)
 
 	s := server.NewMCPServer(
 		"reasoning-memory",
@@ -130,6 +172,46 @@ func main() {
 	if err := server.ServeStdio(s); err != nil {
 		log.Fatalf("server: %v", err)
 	}
+	return nil
+}
+
+func configPath() string {
+	if p := os.Getenv("REASONING_MEMORY_CONFIG"); p != "" {
+		return p
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".reasoning-memory", "config.yaml")
+}
+
+func reindexEpisodes(ctx context.Context, es *store.EpisodeStore, vec *store.VectorStore) {
+	const batchSize = 10
+	offset := 0
+	total := 0
+	for {
+		summaries, err := es.ListEpisodes(batchSize, offset)
+		if err != nil || len(summaries) == 0 {
+			break
+		}
+		var contents []store.EpisodeContent
+		for _, s := range summaries {
+			ep, err := es.GetEpisode(s.ID)
+			if err != nil || ep == nil {
+				continue
+			}
+			contents = append(contents, store.EpisodeContent{
+				ID:      ep.ID,
+				Content: ep.Problem + "\n" + ep.ThinkingTrace,
+			})
+		}
+		if len(contents) > 0 {
+			if err := vec.AddEpisodes(ctx, contents); err != nil {
+				log.Printf("⚠ reindex batch: %v", err)
+			}
+			total += len(contents)
+		}
+		offset += batchSize
+	}
+	log.Printf("✓ Reindexed %d episodes", total)
 }
 
 func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerFunc {
@@ -475,57 +557,4 @@ func extractSteps(thinkingTrace string) []models.Step {
 	}
 
 	return steps
-}
-
-func configPath() string {
-	if p := os.Getenv("REASONING_MEMORY_CONFIG"); p != "" {
-		return p
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".reasoning-memory", "config.yaml")
-}
-
-func dataDir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".reasoning-memory")
-}
-
-func init() {
-	log.SetFlags(0)
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "."
-	}
-	_ = os.MkdirAll(filepath.Join(home, ".reasoning-memory"), 0700)
-}
-
-func reindexEpisodes(ctx context.Context, es *store.EpisodeStore, vec *store.VectorStore) {
-	const batchSize = 10
-	offset := 0
-	total := 0
-	for {
-		summaries, err := es.ListEpisodes(batchSize, offset)
-		if err != nil || len(summaries) == 0 {
-			break
-		}
-		var contents []store.EpisodeContent
-		for _, s := range summaries {
-			ep, err := es.GetEpisode(s.ID)
-			if err != nil || ep == nil {
-				continue
-			}
-			contents = append(contents, store.EpisodeContent{
-				ID:      ep.ID,
-				Content: ep.Problem + "\n" + ep.ThinkingTrace,
-			})
-		}
-		if len(contents) > 0 {
-			if err := vec.AddEpisodes(ctx, contents); err != nil {
-				log.Printf("⚠ reindex batch: %v", err)
-			}
-			total += len(contents)
-		}
-		offset += batchSize
-	}
-	log.Printf("✓ Reindexed %d episodes", total)
 }

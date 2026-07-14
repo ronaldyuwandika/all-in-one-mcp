@@ -1,4 +1,4 @@
-go 1.24
+go 1.24.2
 
 // Active Go modules in this workspace.
 // Add new Go modules here as they are introduced.

@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
+	"os"
+	"sort"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -13,8 +16,9 @@ import (
 )
 
 type EpisodeStore struct {
-	db  *sql.DB
-	vec *VectorStore
+	db     *sql.DB
+	vec    *VectorStore
+	dbPath string
 }
 
 func New(dbPath string) (*EpisodeStore, error) {
@@ -25,7 +29,6 @@ func New(dbPath string) (*EpisodeStore, error) {
 
 	db.SetMaxOpenConns(1)
 
-	// WAL mode reduces lock contention significantly for concurrent readers
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		return nil, fmt.Errorf("enable wal: %w", err)
 	}
@@ -34,7 +37,7 @@ func New(dbPath string) (*EpisodeStore, error) {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
-	return &EpisodeStore{db: db}, nil
+	return &EpisodeStore{db: db, dbPath: dbPath}, nil
 }
 
 func NewWithVector(dbPath string, vec *VectorStore) (*EpisodeStore, error) {
@@ -53,7 +56,7 @@ func NewWithVector(dbPath string, vec *VectorStore) (*EpisodeStore, error) {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
-	return &EpisodeStore{db: db, vec: vec}, nil
+	return &EpisodeStore{db: db, dbPath: dbPath, vec: vec}, nil
 }
 
 func migrate(db *sql.DB) error {
@@ -305,6 +308,231 @@ func (es *EpisodeStore) EpisodeCount() (int, error) {
 
 func (es *EpisodeStore) VectorStore() *VectorStore {
 	return es.vec
+}
+
+func (es *EpisodeStore) DB() *sql.DB {
+	return es.db
+}
+
+func (es *EpisodeStore) DeletePattern(id string) error {
+	_, err := es.db.Exec("DELETE FROM patterns WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("delete pattern: %w", err)
+	}
+	return nil
+}
+
+func (es *EpisodeStore) ReindexFTS5() error {
+	_, err := es.db.Exec("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild')")
+	if err != nil {
+		return fmt.Errorf("reindex fts5: %w", err)
+	}
+	return nil
+}
+
+func (es *EpisodeStore) DBPath() string {
+	return es.dbPath
+}
+
+func (es *EpisodeStore) EpisodesByDomain() (map[string]int, error) {
+	rows, err := es.db.Query("SELECT domain, COUNT(*) FROM episodes GROUP BY domain")
+	if err != nil {
+		return nil, fmt.Errorf("episodes by domain: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := make(map[string]int)
+	for rows.Next() {
+		var domain string
+		var count int
+		if err := rows.Scan(&domain, &count); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		result[domain] = count
+	}
+	return result, rows.Err()
+}
+
+func (es *EpisodeStore) EpisodesByOutcome() (map[string]int, error) {
+	rows, err := es.db.Query("SELECT outcome, COUNT(*) FROM episodes GROUP BY outcome")
+	if err != nil {
+		return nil, fmt.Errorf("episodes by outcome: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := make(map[string]int)
+	for rows.Next() {
+		var outcome string
+		var count int
+		if err := rows.Scan(&outcome, &count); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		result[outcome] = count
+	}
+	return result, rows.Err()
+}
+
+func (es *EpisodeStore) TopTags(limit int) ([]models.TagCount, error) {
+	rows, err := es.db.Query("SELECT tags FROM episodes")
+	if err != nil {
+		return nil, fmt.Errorf("top tags: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	freq := make(map[string]int)
+	for rows.Next() {
+		var tagsJSON string
+		if err := rows.Scan(&tagsJSON); err != nil {
+			continue
+		}
+		var tags []string
+		if err := json.Unmarshal([]byte(tagsJSON), &tags); err != nil {
+			continue
+		}
+		for _, t := range tags {
+			freq[t]++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var tc []models.TagCount
+	for tag, count := range freq {
+		tc = append(tc, models.TagCount{Tag: tag, Count: count})
+	}
+
+	sort.Slice(tc, func(i, j int) bool {
+		return tc[i].Count > tc[j].Count
+	})
+	if limit > 0 && len(tc) > limit {
+		tc = tc[:limit]
+	}
+	return tc, nil
+}
+
+func (es *EpisodeStore) AvgEpisodeLengths() (avgProblem, avgTrace float64, err error) {
+	err = es.db.QueryRow(
+		"SELECT COALESCE(AVG(LENGTH(problem)),0), COALESCE(AVG(LENGTH(thinking_trace)),0) FROM episodes",
+	).Scan(&avgProblem, &avgTrace)
+	if err != nil {
+		return 0, 0, fmt.Errorf("avg lengths: %w", err)
+	}
+	return
+}
+
+func (es *EpisodeStore) EmptyThinkingTraceCount() (int, error) {
+	var count int
+	err := es.db.QueryRow("SELECT COUNT(*) FROM episodes WHERE thinking_trace = ''").Scan(&count)
+	return count, err
+}
+
+func (es *EpisodeStore) DBSizeMB() (float64, error) {
+	info, err := os.Stat(es.dbPath)
+	if err != nil {
+		return 0, fmt.Errorf("db stat: %w", err)
+	}
+	return float64(info.Size()) / 1024 / 1024, nil
+}
+
+func (es *EpisodeStore) FTSSizeMB() (float64, error) {
+	var size float64
+	err := es.db.QueryRow(
+		"SELECT COALESCE(SUM(pgsize), 0) FROM dbstat WHERE name LIKE 'episodes_fts%'",
+	).Scan(&size)
+	if err != nil {
+		return 0, nil
+	}
+	return size / 1024 / 1024, nil
+}
+
+func (es *EpisodeStore) LastConsolidationTS() (*time.Time, error) {
+	var ts string
+	err := es.db.QueryRow("SELECT MAX(created_at) FROM patterns").Scan(&ts)
+	if err != nil || ts == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return nil, nil
+	}
+	return &t, nil
+}
+
+func (es *EpisodeStore) EpisodesByDay(days int) ([]models.DayBucket, error) {
+	rows, err := es.db.Query(
+		`SELECT date(created_at) as d, COUNT(*) as cnt,
+		        COUNT(CASE WHEN outcome='success' THEN 1 END) as ok,
+		        COALESCE(AVG(duration_seconds),0),
+		        COALESCE(AVG(LENGTH(thinking_trace)),0)
+		 FROM episodes
+		 WHERE created_at >= date('now', ?)
+		 GROUP BY d ORDER BY d`,
+		fmt.Sprintf("-%d days", days),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("episodes by day: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var buckets []models.DayBucket
+	for rows.Next() {
+		var b models.DayBucket
+		if err := rows.Scan(&b.Date, &b.Count, &b.Successes, &b.AvgDuration, &b.AvgTraceLen); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		buckets = append(buckets, b)
+	}
+	return buckets, rows.Err()
+}
+
+func (es *EpisodeStore) SummaryStats() (*models.SummaryStats, error) {
+	stats := &models.SummaryStats{}
+
+	total, err := es.EpisodeCount()
+	if err != nil {
+		return nil, err
+	}
+	stats.TotalEpisodes = total
+
+	patCount, err := es.PatternCount()
+	if err != nil {
+		return nil, err
+	}
+	stats.TotalPatterns = patCount
+
+	if total > 0 {
+		var successCount int
+		_ = es.db.QueryRow("SELECT COUNT(*) FROM episodes WHERE outcome='success'").Scan(&successCount)
+		stats.SuccessRate = float64(successCount) / float64(total) * 100
+	}
+
+	var avgDur, avgTrace float64
+	_ = es.db.QueryRow(
+		"SELECT COALESCE(AVG(duration_seconds),0), COALESCE(AVG(LENGTH(thinking_trace)),0) FROM episodes",
+	).Scan(&avgDur, &avgTrace)
+	stats.AvgDurationSec = avgDur
+	stats.AvgTraceLenChars = avgTrace
+
+	if stats.TotalPatterns > 0 && stats.TotalEpisodes > 0 {
+		var patternSourced int
+		_ = es.db.QueryRow(`
+			SELECT COALESCE(SUM(json_array_length(sources)), 0)
+			FROM patterns`).Scan(&patternSourced)
+		if stats.TotalEpisodes > 0 {
+			stats.ConsolidationRatio = math.Min(
+				float64(patternSourced)/float64(stats.TotalEpisodes)*100, 100)
+		}
+	}
+
+	var topDomain string
+	_ = es.db.QueryRow(`
+		SELECT domain FROM episodes
+		GROUP BY domain ORDER BY COUNT(*) DESC LIMIT 1`,
+	).Scan(&topDomain)
+	stats.TopDomain = topDomain
+
+	return stats, nil
 }
 
 func (es *EpisodeStore) NextID() string {

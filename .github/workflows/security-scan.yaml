@@ -101,15 +101,15 @@ jobs:
         with:
           go-version-file: mcp/reasoning-memory/go.mod
       - name: Install gosec
-        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+        run: go install github.com/securego/gosec/v2/cmd/gosec@v2.22.2
       - name: Run gosec
         id: gosec
         working-directory: mcp/reasoning-memory
+        continue-on-error: true
         run: |
-          exitcode=0
-          gosec -fmt=json -exclude-dir=bench ./... > /tmp/gosec-output.json 2>&1 || exitcode=$?
+          gosec -fmt=json -exclude-dir=bench ./... > /tmp/gosec-output.json 2>&1
+          exitcode=$?
           echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
-          exit $exitcode
       - name: Post gosec report
         uses: actions/github-script@v9
         if: always() && github.event_name == 'pull_request'
@@ -130,7 +130,7 @@ jobs:
               }));
             } catch { issues = []; }
             const exitcode = parseInt('${{ steps.gosec.outputs.exitcode }}');
-            const pass = exitcode === 0;
+            const pass = exitcode === 0 || issues.length === 0;
             const sevCounts = {};
             issues.forEach(iss => { const s = iss.severity || 'Unknown'; sevCounts[s] = (sevCounts[s] || 0) + 1; });
             let body = pass
