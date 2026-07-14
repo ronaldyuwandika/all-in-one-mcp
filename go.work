@@ -1,0 +1,10 @@
+go 1.24
+
+// Active Go modules in this workspace.
+// Add new Go modules here as they are introduced.
+use ./mcp/reasoning-memory
+
+// Future modules (to be added when implemented as Go):
+// ./mcp/credential-vault-go
+// ./mcp/pr-reviewer-go
+// ./mcp/mcpctl
