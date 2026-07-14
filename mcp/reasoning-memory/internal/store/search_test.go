@@ -11,7 +11,7 @@ func TestSearchLocalBasic(t *testing.T) {
 	es := testStore(t)
 	seedEpisode(es)
 
-	results, err := es.SearchLocal("unit tests", "", "", nil, 5)
+	results, err := es.SearchLocal("unit tests", "", "", "", nil, 5)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestSearchLocalDomainFilter(t *testing.T) {
 		ThinkingTrace: "Agentic trace",
 	})
 
-	results, err := es.SearchLocal("task", "agentic", "", nil, 5)
+	results, err := es.SearchLocal("task", "agentic", "", "", nil, 5)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestSearchLocalOutcomeFilter(t *testing.T) {
 		ThinkingTrace: "Debugging trace",
 	})
 
-	results, err := es.SearchLocal("test", "", "failure", nil, 5)
+	results, err := es.SearchLocal("test", "", "failure", "", nil, 5)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestSearchLocalNoMatch(t *testing.T) {
 	es := testStore(t)
 	seedEpisode(es)
 
-	results, err := es.SearchLocal("xyznonexistentquery", "", "", nil, 5)
+	results, err := es.SearchLocal("xyznonexistentquery", "", "", "", nil, 5)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestSearchLocalTopK(t *testing.T) {
 		})
 	}
 
-	results, err := es.SearchLocal("search functionality", "", "", nil, 2)
+	results, err := es.SearchLocal("search functionality", "", "", "", nil, 2)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}

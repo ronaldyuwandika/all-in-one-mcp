@@ -30,6 +30,7 @@ func runStats(es *store.EpisodeStore) error {
 	patTotal, _ := es.PatternCount()
 	byDomain, _ := es.EpisodesByDomain()
 	byOutcome, _ := es.EpisodesByOutcome()
+	byRepo, _ := es.EpisodesByRepo()
 	topTags, _ := es.TopTags(10)
 	avgProb, avgTrace, _ := es.AvgEpisodeLengths()
 	dbSize, _ := es.DBSizeMB()
@@ -51,6 +52,7 @@ func runStats(es *store.EpisodeStore) error {
 		PatternsTotal:         patTotal,
 		EpisodesByDomain:      byDomain,
 		EpisodesByOutcome:     byOutcome,
+		EpisodesByRepo:        byRepo,
 		TopTags:               topTags,
 		VectorIndexSizeMB:     vecSize,
 		VectorCount:           vecCount,
@@ -64,6 +66,7 @@ func runStats(es *store.EpisodeStore) error {
 		result.SuccessRate = summary.SuccessRate
 		result.ConsolidationRatio = summary.ConsolidationRatio
 		result.TopDomain = summary.TopDomain
+		result.TopRepo = summary.TopRepo
 		result.AvgDurationSec = summary.AvgDurationSec
 	}
 	if epByDay != nil {
@@ -91,6 +94,9 @@ func renderStatsTable(s models.StatsResult) {
 	fmt.Printf("  %-30s %d\n", "Episodes (total)", s.EpisodesTotal)
 	fmt.Printf("  %-30s %d\n", "Patterns (total)", s.PatternsTotal)
 	fmt.Printf("  %-30s %s\n", "Top domain", s.TopDomain)
+	if s.TopRepo != "" {
+		fmt.Printf("  %-30s %s\n", "Top repo", s.TopRepo)
+	}
 	fmt.Printf("  %-30s %.1f%%\n", "Success rate", s.SuccessRate*100)
 	fmt.Printf("  %-30s %.1f%%\n", "Consolidation ratio", s.ConsolidationRatio*100)
 	fmt.Printf("  %-30s %.1f s\n", "Avg duration", s.AvgDurationSec)
@@ -104,6 +110,12 @@ func renderStatsTable(s models.StatsResult) {
 	if s.EpisodesByOutcome != nil {
 		for outcome, count := range s.EpisodesByOutcome {
 			fmt.Printf("  %-30s %s\n", "Outcome: "+outcome, strconv.Itoa(count))
+		}
+	}
+	if s.EpisodesByRepo != nil {
+		fmt.Println(strings.Repeat("─", 50))
+		for repo, count := range s.EpisodesByRepo {
+			fmt.Printf("  %-30s %s\n", "Repo: "+repo, strconv.Itoa(count))
 		}
 	}
 	fmt.Println(strings.Repeat("─", 50))

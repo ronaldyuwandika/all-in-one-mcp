@@ -57,6 +57,7 @@ type model struct {
 	patterns []models.Pattern
 
 	searchInput   textinput.Model
+	repoInput     textinput.Model
 	searchResults []models.EpisodeSummary
 
 	polishInput   textinput.Model
@@ -131,6 +132,10 @@ func initialModel(es *store.EpisodeStore, cfgPath string, cfg *models.Config) mo
 	si.Placeholder = "Type a search query..."
 	si.Width = 50
 
+	ri := textinput.New()
+	ri.Placeholder = "Filter by repo (optional)..."
+	ri.Width = 40
+
 	pi := textinput.New()
 	pi.Placeholder = "Paste a raw prompt to polish..."
 	pi.Width = 80
@@ -149,6 +154,7 @@ func initialModel(es *store.EpisodeStore, cfgPath string, cfg *models.Config) mo
 		epTable:     epTable,
 		patTable:    patTable,
 		searchInput: si,
+		repoInput:   ri,
 		polishInput: pi,
 		detailVP:    dvp,
 		help:        help.New(),
@@ -299,11 +305,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		if m.activeTab == 2 {
-			if msg.Type == tea.KeyEnter && m.searchInput.Focused() {
+			if msg.Type == tea.KeyEnter && (m.searchInput.Focused() || m.repoInput.Focused()) {
 				return m, m.runSearch()
 			}
-			if msg.Type == tea.KeyEnter && !m.searchInput.Focused() && len(m.searchResults) > 0 {
+			if msg.Type == tea.KeyEnter && !m.searchInput.Focused() && !m.repoInput.Focused() && len(m.searchResults) > 0 {
 				return m, m.loadEpisodeDetail(m.searchResults[0].ID)
+			}
+			if msg.String() == "ctrl+f" {
+				if m.searchInput.Focused() {
+					m.searchInput.Blur()
+					cmds = append(cmds, m.repoInput.Focus())
+				} else {
+					m.repoInput.Blur()
+					cmds = append(cmds, m.searchInput.Focus())
+				}
 			}
 			if key.Matches(msg, m.keys.Back) {
 				m.searchResults = nil
@@ -408,10 +423,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.polishInput.SetValue(msg.content)
 	}
 
-	if m.activeTab == 2 && m.searchInput.Focused() {
-		var cmd tea.Cmd
-		m.searchInput, cmd = m.searchInput.Update(msg)
-		cmds = append(cmds, cmd)
+	if m.activeTab == 2 {
+		if m.searchInput.Focused() {
+			var cmd tea.Cmd
+			m.searchInput, cmd = m.searchInput.Update(msg)
+			cmds = append(cmds, cmd)
+		}
+		if m.repoInput.Focused() {
+			var cmd tea.Cmd
+			m.repoInput, cmd = m.repoInput.Update(msg)
+			cmds = append(cmds, cmd)
+		}
 	}
 
 	if m.activeTab == 4 && m.polishInput.Focused() {
@@ -454,6 +476,7 @@ func (m *model) blurActiveInput() {
 	switch m.activeTab {
 	case 2:
 		m.searchInput.Blur()
+		m.repoInput.Blur()
 	case 4:
 		m.polishInput.Blur()
 	}
@@ -545,10 +568,11 @@ func (m model) editInEditor() tea.Cmd {
 func (m model) runSearch() tea.Cmd {
 	return func() tea.Msg {
 		q := m.searchInput.Value()
-		if q == "" {
+		repo := m.repoInput.Value()
+		if q == "" && repo == "" {
 			return searchResultsMsg{nil, nil}
 		}
-		results, err := m.es.SearchLocal(q, "", "", nil, 20)
+		results, err := m.es.SearchLocal(q, "", "", repo, nil, 20)
 		if err != nil {
 			return searchResultsMsg{nil, err}
 		}
@@ -647,6 +671,7 @@ func (m model) loadStats() tea.Cmd {
 		patTotal, _ := m.es.PatternCount()
 		byDomain, _ := m.es.EpisodesByDomain()
 		byOutcome, _ := m.es.EpisodesByOutcome()
+		byRepo, _ := m.es.EpisodesByRepo()
 		topTags, _ := m.es.TopTags(10)
 		avgProb, avgTrace, _ := m.es.AvgEpisodeLengths()
 		dbSize, _ := m.es.DBSizeMB()
@@ -666,6 +691,7 @@ func (m model) loadStats() tea.Cmd {
 			PatternsTotal:         patTotal,
 			EpisodesByDomain:      byDomain,
 			EpisodesByOutcome:     byOutcome,
+			EpisodesByRepo:        byRepo,
 			TopTags:               topTags,
 			DBSizeMB:              dbSize,
 			FTSSizeMB:             ftsSize,
@@ -678,6 +704,7 @@ func (m model) loadStats() tea.Cmd {
 			sr.SuccessRate = summary.SuccessRate
 			sr.ConsolidationRatio = summary.ConsolidationRatio
 			sr.TopDomain = summary.TopDomain
+			sr.TopRepo = summary.TopRepo
 			sr.AvgDurationSec = summary.AvgDurationSec
 		}
 		if epByDay != nil {
@@ -713,6 +740,9 @@ func formatEpisode(ep *models.Episode) string {
 	fmt.Fprintf(&b, "Created: %s\n", ep.CreatedAt.Format("2006-01-02 15:04:05"))
 	if len(ep.Tags) > 0 {
 		fmt.Fprintf(&b, "Tags: %s\n", strings.Join(ep.Tags, ", "))
+	}
+	if ep.Repo != "" {
+		fmt.Fprintf(&b, "Repo: %s\n", ep.Repo)
 	}
 	fmt.Fprintf(&b, "\nProblem:\n%s\n", ep.Problem)
 	fmt.Fprintf(&b, "\nThinking Trace:\n%s\n", ep.ThinkingTrace)
@@ -811,6 +841,9 @@ func (m model) searchView() string {
 	var b strings.Builder
 	b.WriteString(m.searchInput.View() + "  [enter: search]")
 	b.WriteString("\n")
+	b.WriteString(m.repoInput.View())
+	b.WriteString("  [^F: toggle focus]")
+	b.WriteString("\n")
 
 	if len(m.searchResults) > 0 {
 		fmt.Fprintf(&b, "\n  %d result(s):\n", len(m.searchResults))
@@ -873,6 +906,9 @@ func (m model) statsView() string {
 	fmt.Fprintf(&b, "  %-30s %d\n", "Episodes (total)", m.statsData.EpisodesTotal)
 	fmt.Fprintf(&b, "  %-30s %d\n", "Patterns (total)", m.statsData.PatternsTotal)
 	fmt.Fprintf(&b, "  %-30s %s\n", "Top domain", m.statsData.TopDomain)
+	if m.statsData.TopRepo != "" {
+		fmt.Fprintf(&b, "  %-30s %s\n", "Top repo", m.statsData.TopRepo)
+	}
 	fmt.Fprintf(&b, "  %-30s %.1f%%\n", "Success rate", m.statsData.SuccessRate*100)
 	fmt.Fprintf(&b, "  %-30s %.1f%%\n", "Consolidation ratio", m.statsData.ConsolidationRatio*100)
 	fmt.Fprintf(&b, "  %-30s %.1f s\n", "Avg duration", m.statsData.AvgDurationSec)
@@ -895,6 +931,12 @@ func (m model) statsView() string {
 		fmt.Fprintf(&b, "\n  By Outcome:\n")
 		for outcome, count := range m.statsData.EpisodesByOutcome {
 			fmt.Fprintf(&b, "    %-20s %d\n", outcome, count)
+		}
+	}
+	if m.statsData.EpisodesByRepo != nil {
+		fmt.Fprintf(&b, "\n  By Repo:\n")
+		for repo, count := range m.statsData.EpisodesByRepo {
+			fmt.Fprintf(&b, "    %-20s %d\n", repo, count)
 		}
 	}
 

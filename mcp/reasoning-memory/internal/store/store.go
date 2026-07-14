@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -117,7 +120,33 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	db.Exec("ALTER TABLE episodes ADD COLUMN repo TEXT NOT NULL DEFAULT ''")
+
 	return nil
+}
+
+func detectGitRepo() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "remote", "get-url", "origin")
+	cmd.Dir = wd
+	out, err := cmd.Output()
+	if err != nil {
+		return filepath.Base(wd)
+	}
+	url := strings.TrimSpace(string(out))
+	if url == "" {
+		return filepath.Base(wd)
+	}
+	if strings.Contains(url, "/") {
+		parts := strings.Split(strings.TrimSuffix(url, ".git"), "/")
+		return parts[len(parts)-1]
+	}
+	return url
 }
 
 func (es *EpisodeStore) Close() error {
@@ -136,14 +165,19 @@ func (es *EpisodeStore) CreateEpisode(ep *models.Episode) (string, error) {
 	toolCallsJSON, _ := json.Marshal(ep.ToolCalls)
 	tagsJSON, _ := json.Marshal(ep.Tags)
 
+	if ep.Repo == "" {
+		ep.Repo = detectGitRepo()
+	}
+
 	_, err := es.db.Exec(
-		`INSERT INTO episodes (id, created_at, domain, outcome, tags, problem, thinking_trace, steps, tool_calls, model_id, duration_seconds)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO episodes (id, created_at, domain, outcome, tags, repo, problem, thinking_trace, steps, tool_calls, model_id, duration_seconds)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ep.ID,
 		ep.CreatedAt.Format(time.RFC3339),
 		ep.Domain,
 		ep.Outcome,
 		string(tagsJSON),
+		ep.Repo,
 		ep.Problem,
 		ep.ThinkingTrace,
 		string(stepsJSON),
@@ -175,7 +209,7 @@ func (es *EpisodeStore) CreateEpisodeContext(ctx context.Context, ep *models.Epi
 
 func (es *EpisodeStore) GetEpisode(id string) (*models.Episode, error) {
 	row := es.db.QueryRow(
-		`SELECT id, created_at, domain, outcome, tags, problem, thinking_trace, steps, tool_calls, model_id, duration_seconds
+		`SELECT id, created_at, domain, outcome, tags, repo, problem, thinking_trace, steps, tool_calls, model_id, duration_seconds
 		FROM episodes WHERE id = ?`, id,
 	)
 
@@ -189,7 +223,7 @@ func (es *EpisodeStore) GetEpisode(id string) (*models.Episode, error) {
 
 	err := row.Scan(
 		&ep.ID, &createdAt, &ep.Domain, &ep.Outcome, &tagsJSON,
-		&ep.Problem, &ep.ThinkingTrace, &stepsJSON, &toolCallsJSON,
+		&ep.Repo, &ep.Problem, &ep.ThinkingTrace, &stepsJSON, &toolCallsJSON,
 		&ep.ModelID, &ep.DurationSeconds,
 	)
 	if err == sql.ErrNoRows {
@@ -209,7 +243,7 @@ func (es *EpisodeStore) GetEpisode(id string) (*models.Episode, error) {
 
 func (es *EpisodeStore) GetSummary(id string) (*models.EpisodeSummary, error) {
 	row := es.db.QueryRow(
-		`SELECT id, created_at, problem, domain, outcome, tags, steps, tool_calls, model_id, duration_seconds
+		`SELECT id, created_at, problem, domain, outcome, tags, repo, steps, tool_calls, model_id, duration_seconds
 		FROM episodes WHERE id = ?`, id,
 	)
 
@@ -224,7 +258,7 @@ func (es *EpisodeStore) GetSummary(id string) (*models.EpisodeSummary, error) {
 
 	err := row.Scan(
 		&summary.ID, &createdAt, &summary.Problem, &summary.Domain,
-		&summary.Outcome, &tagsJSON, &stepsJSON, &toolCallsJSON,
+		&summary.Outcome, &tagsJSON, &summary.Repo, &stepsJSON, &toolCallsJSON,
 		&summary.ModelID, &summary.DurationSeconds,
 	)
 	if err == sql.ErrNoRows {
@@ -250,7 +284,7 @@ func (es *EpisodeStore) GetSummary(id string) (*models.EpisodeSummary, error) {
 
 func (es *EpisodeStore) ListEpisodes(limit, offset int) ([]models.EpisodeSummary, error) {
 	rows, err := es.db.Query(
-		`SELECT id, created_at, problem, domain, outcome, tags, steps, tool_calls, model_id, duration_seconds
+		`SELECT id, created_at, problem, domain, outcome, tags, repo, steps, tool_calls, model_id, duration_seconds
 		FROM episodes ORDER BY created_at DESC LIMIT ? OFFSET ?`, limit, offset,
 	)
 	if err != nil {
@@ -269,7 +303,7 @@ func (es *EpisodeStore) ListEpisodes(limit, offset int) ([]models.EpisodeSummary
 		)
 		if err := rows.Scan(
 			&s.ID, &s.CreatedAt, &s.Problem, &s.Domain,
-			&s.Outcome, &tagsJSON, &stepsJSON, &toolCallsJSON,
+			&s.Outcome, &tagsJSON, &s.Repo, &stepsJSON, &toolCallsJSON,
 			&s.ModelID, &s.DurationSeconds,
 		); err != nil {
 			return nil, fmt.Errorf("scan episode: %w", err)
@@ -368,6 +402,25 @@ func (es *EpisodeStore) EpisodesByOutcome() (map[string]int, error) {
 			return nil, fmt.Errorf("scan: %w", err)
 		}
 		result[outcome] = count
+	}
+	return result, rows.Err()
+}
+
+func (es *EpisodeStore) EpisodesByRepo() (map[string]int, error) {
+	rows, err := es.db.Query("SELECT repo, COUNT(*) FROM episodes WHERE repo != '' GROUP BY repo ORDER BY COUNT(*) DESC")
+	if err != nil {
+		return nil, fmt.Errorf("episodes by repo: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	result := make(map[string]int)
+	for rows.Next() {
+		var repo string
+		var count int
+		if err := rows.Scan(&repo, &count); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		result[repo] = count
 	}
 	return result, rows.Err()
 }
@@ -531,6 +584,13 @@ func (es *EpisodeStore) SummaryStats() (*models.SummaryStats, error) {
 		GROUP BY domain ORDER BY COUNT(*) DESC LIMIT 1`,
 	).Scan(&topDomain)
 	stats.TopDomain = topDomain
+
+	var topRepo string
+	_ = es.db.QueryRow(`
+		SELECT repo FROM episodes WHERE repo != ''
+		GROUP BY repo ORDER BY COUNT(*) DESC LIMIT 1`,
+	).Scan(&topRepo)
+	stats.TopRepo = topRepo
 
 	return stats, nil
 }

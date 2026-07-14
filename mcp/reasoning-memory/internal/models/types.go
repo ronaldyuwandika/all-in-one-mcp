@@ -21,6 +21,7 @@ type Episode struct {
 	Domain          string     `json:"domain" yaml:"domain"`
 	Outcome         string     `json:"outcome" yaml:"outcome"`
 	Tags            []string   `json:"tags" yaml:"tags"`
+	Repo            string     `json:"repo,omitempty" yaml:"repo,omitempty"`
 	Problem         string     `json:"problem" yaml:"problem"`
 	ThinkingTrace   string     `json:"thinking_trace" yaml:"thinking_trace"`
 	Steps           []Step     `json:"steps" yaml:"steps"`
@@ -36,6 +37,7 @@ type EpisodeSummary struct {
 	Domain          string   `json:"domain" yaml:"domain"`
 	Outcome         string   `json:"outcome" yaml:"outcome"`
 	Tags            []string `json:"tags" yaml:"tags"`
+	Repo            string   `json:"repo,omitempty" yaml:"repo,omitempty"`
 	StepCount       int      `json:"step_count" yaml:"step_count"`
 	ToolCount       int      `json:"tool_count" yaml:"tool_count"`
 	StepTypes       []string `json:"step_types" yaml:"step_types"`
@@ -119,6 +121,7 @@ type SummaryStats struct {
 	AvgTraceLenChars   float64 `json:"avg_trace_len_chars"`
 	ConsolidationRatio float64 `json:"consolidation_ratio"`
 	TopDomain          string  `json:"top_domain"`
+	TopRepo            string  `json:"top_repo"`
 }
 
 type StatsResult struct {
@@ -126,6 +129,7 @@ type StatsResult struct {
 	PatternsTotal         int            `json:"patterns_total"`
 	EpisodesByDomain      map[string]int `json:"episodes_by_domain"`
 	EpisodesByOutcome     map[string]int `json:"episodes_by_outcome"`
+	EpisodesByRepo        map[string]int `json:"episodes_by_repo"`
 	TopTags               []TagCount     `json:"top_tags"`
 	VectorIndexSizeMB     float64        `json:"vector_index_size_mb"`
 	VectorCount           int            `json:"vector_count"`
@@ -139,6 +143,7 @@ type StatsResult struct {
 	SuccessRate        float64     `json:"success_rate"`
 	ConsolidationRatio float64     `json:"consolidation_ratio"`
 	TopDomain          string      `json:"top_domain"`
+	TopRepo            string      `json:"top_repo"`
 	AvgDurationSec     float64     `json:"avg_duration_sec"`
 	EpisodesByDay      []DayBucket `json:"episodes_by_day"`
 }

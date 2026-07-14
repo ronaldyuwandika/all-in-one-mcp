@@ -249,7 +249,7 @@ func BenchmarkSearchLocal(b *testing.B) {
 	} {
 		b.Run(query.name, func(b *testing.B) {
 			for b.Loop() {
-				results, err := es.SearchLocal(query.q, "", "", nil, 5)
+				results, err := es.SearchLocal(query.q, "", "", "", nil, 5)
 				if err != nil {
 					b.Fatalf("search: %v", err)
 				}
@@ -265,7 +265,7 @@ func BenchmarkSearchLocalWithFilters(b *testing.B) {
 
 	b.Run("domain_filter", func(b *testing.B) {
 		for b.Loop() {
-			results, err := es.SearchLocal("benchmark", "coding", "", nil, 5)
+			results, err := es.SearchLocal("benchmark", "coding", "", "", nil, 5)
 			if err != nil {
 				b.Fatalf("search: %v", err)
 			}
@@ -275,7 +275,7 @@ func BenchmarkSearchLocalWithFilters(b *testing.B) {
 
 	b.Run("outcome_filter", func(b *testing.B) {
 		for b.Loop() {
-			results, err := es.SearchLocal("benchmark", "", "success", nil, 5)
+			results, err := es.SearchLocal("benchmark", "", "success", "", nil, 5)
 			if err != nil {
 				b.Fatalf("search: %v", err)
 			}
@@ -285,7 +285,7 @@ func BenchmarkSearchLocalWithFilters(b *testing.B) {
 
 	b.Run("all_filters", func(b *testing.B) {
 		for b.Loop() {
-			results, err := es.SearchLocal("benchmark", "coding", "success", []string{"benchmark"}, 5)
+			results, err := es.SearchLocal("benchmark", "coding", "success", "", []string{"benchmark"}, 5)
 			if err != nil {
 				b.Fatalf("search: %v", err)
 			}
@@ -301,7 +301,7 @@ func BenchmarkSearchLocalTopK(b *testing.B) {
 	for _, topK := range []int{1, 5, 10, 20} {
 		b.Run("topk_"+itoa(topK), func(b *testing.B) {
 			for b.Loop() {
-				results, err := es.SearchLocal("benchmark", "", "", nil, topK)
+				results, err := es.SearchLocal("benchmark", "", "", "", nil, topK)
 				if err != nil {
 					b.Fatalf("search: %v", err)
 				}
