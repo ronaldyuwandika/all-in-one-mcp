@@ -273,6 +273,43 @@ func TestSummaryStats(t *testing.T) {
 	}
 }
 
+func TestDeletePattern(t *testing.T) {
+	es := testStore(t)
+	pat := seedPattern(es)
+	if pat == nil {
+		t.Skip("no pattern to delete")
+	}
+
+	if err := es.DeletePattern(pat.ID); err != nil {
+		t.Fatalf("DeletePattern: %v", err)
+	}
+
+	got, err := es.GetPattern(pat.ID)
+	if err != nil {
+		t.Fatalf("GetPattern after delete: %v", err)
+	}
+	if got != nil {
+		t.Error("expected nil after delete")
+	}
+}
+
+func TestReindexFTS5(t *testing.T) {
+	es := testStore(t)
+	createEpisode(es, "coding", "success", nil, "p1", "t1", 0)
+
+	if err := es.ReindexFTS5(); err != nil {
+		t.Fatalf("ReindexFTS5: %v", err)
+	}
+
+	results, err := es.SearchLocal("p1", "", "", nil, 10)
+	if err != nil {
+		t.Fatalf("SearchLocal after reindex: %v", err)
+	}
+	if len(results) != 1 {
+		t.Errorf("expected 1 result after reindex, got %d", len(results))
+	}
+}
+
 func testStore(t *testing.T) *EpisodeStore {
 	t.Helper()
 	dir := t.TempDir()

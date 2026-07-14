@@ -155,6 +155,7 @@ func initialModel(es *store.EpisodeStore, cfgPath string, cfg *models.Config) mo
 			Delete:   key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
 			Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		},
+		consolidationMsg: "Press [c] to find merge candidates",
 	}
 }
 
@@ -440,8 +441,7 @@ func (m model) deleteEpisode(id string) tea.Cmd {
 
 func (m model) deletePattern(id string) tea.Cmd {
 	return func() tea.Msg {
-		_, err := m.es.DB().Exec("DELETE FROM patterns WHERE id = ?", id)
-		return deleteMsg{err}
+		return deleteMsg{m.es.DeletePattern(id)}
 	}
 }
 
@@ -509,8 +509,7 @@ func (m model) runPrune() tea.Cmd {
 
 func (m model) runReindex() tea.Cmd {
 	return func() tea.Msg {
-		_, err := m.es.DB().Exec("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild')")
-		if err != nil {
+		if err := m.es.ReindexFTS5(); err != nil {
 			return consolidateMsg{fmt.Sprintf("Reindex error: %v", err)}
 		}
 		count, _ := m.es.EpisodeCount()
@@ -599,19 +598,19 @@ func (m *model) refreshConsolidation() {
 
 func formatEpisode(ep *models.Episode) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "[bold]Episode: %s[/bold]\n\n", ep.ID)
+	fmt.Fprintf(&b, "Episode: %s\n\n", ep.ID)
 	fmt.Fprintf(&b, "Domain: %s  |  Outcome: %s  |  Duration: %ds\n", ep.Domain, ep.Outcome, ep.DurationSeconds)
 	fmt.Fprintf(&b, "Model: %s\n", ep.ModelID)
 	fmt.Fprintf(&b, "Created: %s\n", ep.CreatedAt.Format("2006-01-02 15:04:05"))
 	if len(ep.Tags) > 0 {
 		fmt.Fprintf(&b, "Tags: %s\n", strings.Join(ep.Tags, ", "))
 	}
-	fmt.Fprintf(&b, "\n[bold]Problem:[/bold]\n%s\n", ep.Problem)
-	fmt.Fprintf(&b, "\n[bold]Thinking Trace:[/bold]\n%s\n", ep.ThinkingTrace)
+	fmt.Fprintf(&b, "\nProblem:\n%s\n", ep.Problem)
+	fmt.Fprintf(&b, "\nThinking Trace:\n%s\n", ep.ThinkingTrace)
 	if len(ep.ToolCalls) > 0 {
-		fmt.Fprintf(&b, "\n[bold]Tool Calls (%d):[/bold]\n", len(ep.ToolCalls))
+		fmt.Fprintf(&b, "\nTool Calls (%d):\n", len(ep.ToolCalls))
 		for _, tc := range ep.ToolCalls {
-			fmt.Fprintf(&b, "  • %s → %s\n", tc.Tool, tc.Outcome)
+			fmt.Fprintf(&b, "  \u2022 %s \u2192 %s\n", tc.Tool, tc.Outcome)
 		}
 	}
 	return b.String()
@@ -677,9 +676,6 @@ func (m model) detailView() string {
 	fmt.Fprintln(&b, strings.Repeat("─", m.width-2))
 
 	content := m.detailVP.View()
-	// Strip bold tags for terminal display
-	content = strings.ReplaceAll(content, "[bold]", "")
-	content = strings.ReplaceAll(content, "[/bold]", "")
 	b.WriteString(content)
 
 	return b.String()

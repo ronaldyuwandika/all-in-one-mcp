@@ -313,6 +313,22 @@ func (es *EpisodeStore) DB() *sql.DB {
 	return es.db
 }
 
+func (es *EpisodeStore) DeletePattern(id string) error {
+	_, err := es.db.Exec("DELETE FROM patterns WHERE id = ?", id)
+	if err != nil {
+		return fmt.Errorf("delete pattern: %w", err)
+	}
+	return nil
+}
+
+func (es *EpisodeStore) ReindexFTS5() error {
+	_, err := es.db.Exec("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild')")
+	if err != nil {
+		return fmt.Errorf("reindex fts5: %w", err)
+	}
+	return nil
+}
+
 func (es *EpisodeStore) DBPath() string {
 	return es.dbPath
 }
