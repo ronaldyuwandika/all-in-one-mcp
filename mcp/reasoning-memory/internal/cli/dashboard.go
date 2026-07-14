@@ -67,6 +67,8 @@ type model struct {
 	consolidationMsg string
 
 	statsData *models.StatsResult
+
+	errMsg string
 }
 
 type keyMap struct {
@@ -196,6 +198,8 @@ type loadPatternsMsg struct {
 	err      error
 }
 
+type errorMsg string
+
 type polishResultMsg struct {
 	result *prompter.PolishResult
 }
@@ -214,6 +218,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ready = true
 
 	case tea.KeyMsg:
+		m.errMsg = ""
+
 		if m.showDetail {
 			switch {
 			case key.Matches(msg, m.keys.Back):
@@ -342,7 +348,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil {
 			return m, tea.Batch(m.loadEpisodes(), m.loadPatterns())
 		}
+		m.errMsg = fmt.Sprintf("Delete failed: %v", msg.err)
 	case polishResultMsg:
+		if msg.result == nil {
+			m.errMsg = "Polish failed"
+			break
+		}
 		m.polishResult = msg.result
 		m.polishHistory = append(m.polishHistory, polishEntry{
 			original: m.polishInput.Value(),
@@ -351,8 +362,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.polishInput.SetValue("")
 		m.polishInput.Blur()
 
-		if msg.result != nil && !m.polishInput.Focused() {
-			_, _ = m.es.CreateEpisode(&models.Episode{
+		cmds = append(cmds, func() tea.Msg {
+			_, err := m.es.CreateEpisode(&models.Episode{
 				ID:            m.es.NextID(),
 				Domain:        msg.result.Domain,
 				Outcome:       "success",
@@ -360,10 +371,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Problem:       "Polish prompt: " + msg.result.TaskType,
 				ThinkingTrace: msg.result.PolishedPrompt,
 			})
-		}
+			if err != nil {
+				return errorMsg(fmt.Sprintf("auto-capture: %v", err))
+			}
+			return nil
+		})
 	case searchResultsMsg:
+		if msg.err != nil {
+			m.errMsg = fmt.Sprintf("Search failed: %v", msg.err)
+			break
+		}
 		m.searchResults = msg.results
 		m.searchInput.Blur()
+	case errorMsg:
+		m.errMsg = string(msg)
 	case consolidateMsg:
 		m.consolidationMsg = msg.report
 	case statsMsg:
@@ -663,6 +684,9 @@ func (m model) View() string {
 		b.WriteString(m.statsView())
 	}
 
+	if m.errMsg != "" {
+		fmt.Fprintln(&b, lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("  ✗ "+m.errMsg))
+	}
 	fmt.Fprintln(&b)
 	b.WriteString(m.help.View(m.keys))
 
