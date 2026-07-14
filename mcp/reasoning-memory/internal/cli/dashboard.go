@@ -161,7 +161,7 @@ func initialModel(es *store.EpisodeStore, cfgPath string, cfg *models.Config) mo
 			Delete:   key.NewBinding(key.WithKeys("d", "backspace"), key.WithHelp("d/⌫", "delete")),
 			Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 			Paste:    key.NewBinding(key.WithKeys("ctrl+v"), key.WithHelp("⌘V", "paste")),
-			Edit:     key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit in $EDITOR")),
+			Edit:     key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("^O", "edit in $EDITOR")),
 		},
 		consolidationMsg: "Press [c] to find merge candidates",
 	}
@@ -520,7 +520,9 @@ func (m model) editInEditor() tea.Cmd {
 		}
 		tmpPath := f.Name()
 		if m.polishInput.Value() != "" {
-			f.WriteString(m.polishInput.Value())
+			if _, err := f.WriteString(m.polishInput.Value()); err != nil {
+				return editContentMsg{"", err}
+			}
 		}
 		f.Close()
 		defer os.Remove(tmpPath)
@@ -833,7 +835,7 @@ func (m model) consolidationView() string {
 func (m model) polishView() string {
 	var b strings.Builder
 	b.WriteString(m.polishInput.View())
-	b.WriteString("  [enter: polish | e: $EDITOR]\n")
+	b.WriteString("  [enter: polish | ^O: $EDITOR]\n")
 
 	if m.polishResult != nil {
 		fmt.Fprintf(&b, "\n  Type: %s  |  Domain: %s  |  Skill: %s\n",
