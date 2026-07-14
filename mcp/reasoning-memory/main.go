@@ -65,6 +65,7 @@ func main() {
 	defer func() { _ = es.Close() }()
 
 	if vec != nil {
+		log.Printf("Vector search enabled (provider=%s, model=%s)", cfg.Embedding.Provider, cfg.Embedding.Model)
 		epCount, _ := es.EpisodeCount()
 		if epCount > 0 && vec.Count() == 0 {
 			log.Printf("Reindexing %d episodes into vector DB...", epCount)

@@ -290,7 +290,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.loadEpisodeDetail(m.searchResults[0].ID)
 			}
 			if !m.searchInput.Focused() && key.Matches(msg, m.keys.Back) {
-				m.searchInput.Focus()
+				cmds = append(cmds, m.searchInput.Focus())
 				m.searchResults = nil
 			}
 		}
@@ -300,7 +300,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.runPolish()
 			}
 			if key.Matches(msg, m.keys.Back) && !m.polishInput.Focused() {
-				m.polishInput.Focus()
+				cmds = append(cmds, m.polishInput.Focus())
 				m.polishResult = nil
 			}
 		}
