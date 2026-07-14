@@ -120,7 +120,25 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
-	db.Exec("ALTER TABLE episodes ADD COLUMN repo TEXT NOT NULL DEFAULT ''")
+	var hasRepo bool
+	if rows, err := db.Query("PRAGMA table_info(episodes)"); err == nil {
+		for rows.Next() {
+			var cid int
+			var name, ctype string
+			var notnull int
+			var dflt sql.NullString
+			var pk int
+			if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err == nil && name == "repo" {
+				hasRepo = true
+			}
+		}
+		rows.Close()
+	}
+	if !hasRepo {
+		if _, err := db.Exec("ALTER TABLE episodes ADD COLUMN repo TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("add repo column: %w", err)
+		}
+	}
 
 	return nil
 }
