@@ -135,4 +135,10 @@ type StatsResult struct {
 	ConsolidationsTotal   int            `json:"consolidations_total"`
 	AvgEpisodeLenChars    float64        `json:"avg_episode_length_chars"`
 	AvgThinkingTraceChars float64        `json:"avg_thinking_trace_chars"`
+
+	SuccessRate        float64     `json:"success_rate"`
+	ConsolidationRatio float64     `json:"consolidation_ratio"`
+	TopDomain          string      `json:"top_domain"`
+	AvgDurationSec     float64     `json:"avg_duration_sec"`
+	EpisodesByDay      []DayBucket `json:"episodes_by_day"`
 }

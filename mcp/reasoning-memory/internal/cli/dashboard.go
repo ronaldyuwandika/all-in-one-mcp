@@ -2,6 +2,8 @@ package cli
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/help"
@@ -79,6 +81,8 @@ type keyMap struct {
 	Back     key.Binding
 	Delete   key.Binding
 	Help     key.Binding
+	Paste    key.Binding
+	Edit     key.Binding
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
@@ -88,7 +92,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Tab, k.ShiftTab, k.Enter, k.Back},
-		{k.Delete, k.Help, k.Quit},
+		{k.Delete, k.Paste, k.Edit, k.Help, k.Quit},
 	}
 }
 
@@ -149,13 +153,15 @@ func initialModel(es *store.EpisodeStore, cfgPath string, cfg *models.Config) mo
 		detailVP:    dvp,
 		help:        help.New(),
 		keys: keyMap{
-			Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-			Tab:      key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next tab")),
-			ShiftTab: key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "prev tab")),
+			Quit:     key.NewBinding(key.WithKeys("q", "ctrl+c", "ctrl+q", "ctrl+w"), key.WithHelp("q/⌘Q/⌘W", "quit")),
+			Tab:      key.NewBinding(key.WithKeys("tab", "ctrl+tab"), key.WithHelp("tab/⌃tab", "next tab")),
+			ShiftTab: key.NewBinding(key.WithKeys("shift+tab", "ctrl+shift+tab"), key.WithHelp("⇧tab/⌃⇧tab", "prev tab")),
 			Enter:    key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "select / open")),
 			Back:     key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
-			Delete:   key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
+			Delete:   key.NewBinding(key.WithKeys("d", "backspace"), key.WithHelp("d/⌫", "delete")),
 			Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+			Paste:    key.NewBinding(key.WithKeys("ctrl+v"), key.WithHelp("⌘V", "paste")),
+			Edit:     key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("^O", "edit in $EDITOR")),
 		},
 		consolidationMsg: "Press [c] to find merge candidates",
 	}
@@ -240,15 +246,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, m.keys.Help):
 			m.help.ShowAll = !m.help.ShowAll
 		case key.Matches(msg, m.keys.Tab):
+			m.blurActiveInput()
 			m.activeTab = (m.activeTab + 1) % len(m.tabNames)
+			cmds = append(cmds, m.focusActiveInput()...)
 			if m.activeTab == 3 {
 				m.refreshConsolidation()
 			}
 			if m.activeTab == 5 {
-				return m, m.loadStats()
+				cmds = append(cmds, m.loadStats())
 			}
 		case key.Matches(msg, m.keys.ShiftTab):
+			m.blurActiveInput()
 			m.activeTab = (m.activeTab - 1 + len(m.tabNames)) % len(m.tabNames)
+			cmds = append(cmds, m.focusActiveInput()...)
 		}
 
 		if m.activeTab == 0 {
@@ -295,8 +305,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Type == tea.KeyEnter && !m.searchInput.Focused() && len(m.searchResults) > 0 {
 				return m, m.loadEpisodeDetail(m.searchResults[0].ID)
 			}
-			if !m.searchInput.Focused() && key.Matches(msg, m.keys.Back) {
-				cmds = append(cmds, m.searchInput.Focus())
+			if key.Matches(msg, m.keys.Back) {
 				m.searchResults = nil
 			}
 		}
@@ -305,9 +314,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Type == tea.KeyEnter && m.polishInput.Focused() {
 				return m, m.runPolish()
 			}
-			if key.Matches(msg, m.keys.Back) && !m.polishInput.Focused() {
-				cmds = append(cmds, m.polishInput.Focus())
+			if key.Matches(msg, m.keys.Back) {
 				m.polishResult = nil
+			}
+			if key.Matches(msg, m.keys.Edit) {
+				return m, m.editInEditor()
 			}
 		}
 
@@ -389,6 +400,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.consolidationMsg = msg.report
 	case statsMsg:
 		m.statsData = msg.stats
+	case editContentMsg:
+		if msg.err != nil {
+			m.errMsg = fmt.Sprintf("Editor: %v", msg.err)
+			break
+		}
+		m.polishInput.SetValue(msg.content)
 	}
 
 	if m.activeTab == 2 && m.searchInput.Focused() {
@@ -433,6 +450,26 @@ func (m *model) refreshPatTable() {
 	m.patTable.SetRows(rows)
 }
 
+func (m *model) blurActiveInput() {
+	switch m.activeTab {
+	case 2:
+		m.searchInput.Blur()
+	case 4:
+		m.polishInput.Blur()
+	}
+}
+
+func (m *model) focusActiveInput() []tea.Cmd {
+	var cmds []tea.Cmd
+	switch m.activeTab {
+	case 2:
+		cmds = append(cmds, m.searchInput.Focus())
+	case 4:
+		cmds = append(cmds, m.polishInput.Focus())
+	}
+	return cmds
+}
+
 func (m model) loadEpisodeDetail(id string) tea.Cmd {
 	return func() tea.Msg {
 		ep, err := m.es.GetEpisode(id)
@@ -463,6 +500,45 @@ func (m model) deleteEpisode(id string) tea.Cmd {
 func (m model) deletePattern(id string) tea.Cmd {
 	return func() tea.Msg {
 		return deleteMsg{m.es.DeletePattern(id)}
+	}
+}
+
+type editContentMsg struct {
+	content string
+	err     error
+}
+
+func (m model) editInEditor() tea.Cmd {
+	return func() tea.Msg {
+		editor := os.Getenv("EDITOR")
+		if editor == "" {
+			editor = "vi"
+		}
+		f, err := os.CreateTemp("", "polish-*.md")
+		if err != nil {
+			return editContentMsg{"", err}
+		}
+		tmpPath := f.Name()
+		if m.polishInput.Value() != "" {
+			if _, err := f.WriteString(m.polishInput.Value()); err != nil {
+				return editContentMsg{"", err}
+			}
+		}
+		f.Close()
+		defer os.Remove(tmpPath)
+
+		cmd := exec.Command("/bin/sh", "-c", editor+" "+tmpPath)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return editContentMsg{"", err}
+		}
+		data, err := os.ReadFile(tmpPath)
+		if err != nil {
+			return editContentMsg{"", err}
+		}
+		return editContentMsg{string(data), nil}
 	}
 }
 
@@ -576,6 +652,8 @@ func (m model) loadStats() tea.Cmd {
 		dbSize, _ := m.es.DBSizeMB()
 		ftsSize, _ := m.es.FTSSizeMB()
 		lastCons, _ := m.es.LastConsolidationTS()
+		summary, _ := m.es.SummaryStats()
+		epByDay, _ := m.es.EpisodesByDay(7)
 
 		var lc *string
 		if lastCons != nil {
@@ -583,7 +661,7 @@ func (m model) loadStats() tea.Cmd {
 			lc = &s
 		}
 
-		return statsMsg{&models.StatsResult{
+		sr := &models.StatsResult{
 			EpisodesTotal:         epTotal,
 			PatternsTotal:         patTotal,
 			EpisodesByDomain:      byDomain,
@@ -595,7 +673,17 @@ func (m model) loadStats() tea.Cmd {
 			LastConsolidationTS:   lc,
 			AvgEpisodeLenChars:    avgProb,
 			AvgThinkingTraceChars: avgTrace,
-		}}
+		}
+		if summary != nil {
+			sr.SuccessRate = summary.SuccessRate
+			sr.ConsolidationRatio = summary.ConsolidationRatio
+			sr.TopDomain = summary.TopDomain
+			sr.AvgDurationSec = summary.AvgDurationSec
+		}
+		if epByDay != nil {
+			sr.EpisodesByDay = epByDay
+		}
+		return statsMsg{sr}
 	}
 }
 
@@ -721,7 +809,7 @@ func (m model) patternsView() string {
 
 func (m model) searchView() string {
 	var b strings.Builder
-	b.WriteString(m.searchInput.View())
+	b.WriteString(m.searchInput.View() + "  [enter: search]")
 	b.WriteString("\n")
 
 	if len(m.searchResults) > 0 {
@@ -733,7 +821,7 @@ func (m model) searchView() string {
 				break
 			}
 		}
-	} else if !m.searchInput.Focused() && m.searchInput.Value() != "" {
+	} else if m.searchInput.Value() != "" {
 		b.WriteString("  No results found\n")
 	}
 
@@ -747,7 +835,7 @@ func (m model) consolidationView() string {
 func (m model) polishView() string {
 	var b strings.Builder
 	b.WriteString(m.polishInput.View())
-	b.WriteString("\n")
+	b.WriteString("  [enter: polish | ^O: $EDITOR]\n")
 
 	if m.polishResult != nil {
 		fmt.Fprintf(&b, "\n  Type: %s  |  Domain: %s  |  Skill: %s\n",
@@ -784,27 +872,45 @@ func (m model) statsView() string {
 	fmt.Fprintf(&b, "  %s\n", strings.Repeat("─", 50))
 	fmt.Fprintf(&b, "  %-30s %d\n", "Episodes (total)", m.statsData.EpisodesTotal)
 	fmt.Fprintf(&b, "  %-30s %d\n", "Patterns (total)", m.statsData.PatternsTotal)
+	fmt.Fprintf(&b, "  %-30s %s\n", "Top domain", m.statsData.TopDomain)
+	fmt.Fprintf(&b, "  %-30s %.1f%%\n", "Success rate", m.statsData.SuccessRate*100)
+	fmt.Fprintf(&b, "  %-30s %.1f%%\n", "Consolidation ratio", m.statsData.ConsolidationRatio*100)
+	fmt.Fprintf(&b, "  %-30s %.1f s\n", "Avg duration", m.statsData.AvgDurationSec)
+	maybeNA := func(v float64) string {
+		if v == 0 {
+			return "N/A"
+		}
+		return fmt.Sprintf("%.0f", v)
+	}
+	fmt.Fprintf(&b, "  %-30s %s\n", "Avg episode length (chars)", maybeNA(m.statsData.AvgEpisodeLenChars))
+	fmt.Fprintf(&b, "  %-30s %s\n", "Avg trace length (chars)", maybeNA(m.statsData.AvgThinkingTraceChars))
 
 	if m.statsData.EpisodesByDomain != nil {
+		fmt.Fprintf(&b, "\n  By Domain:\n")
 		for domain, count := range m.statsData.EpisodesByDomain {
-			fmt.Fprintf(&b, "  %-30s %d\n", "Domain: "+domain, count)
+			fmt.Fprintf(&b, "    %-20s %d\n", domain, count)
 		}
 	}
 	if m.statsData.EpisodesByOutcome != nil {
+		fmt.Fprintf(&b, "\n  By Outcome:\n")
 		for outcome, count := range m.statsData.EpisodesByOutcome {
-			fmt.Fprintf(&b, "  %-30s %d\n", "Outcome: "+outcome, count)
+			fmt.Fprintf(&b, "    %-20s %d\n", outcome, count)
 		}
 	}
 
-	fmt.Fprintf(&b, "  %-30s %.1f MB\n", "DB size", m.statsData.DBSizeMB)
+	fmt.Fprintf(&b, "\n  %-30s %.1f MB\n", "DB size", m.statsData.DBSizeMB)
 	fmt.Fprintf(&b, "  %-30s %.1f MB\n", "FTS5 index", m.statsData.FTSSizeMB)
 
 	if m.statsData.LastConsolidationTS != nil {
 		fmt.Fprintf(&b, "  %-30s %s\n", "Last consolidation", *m.statsData.LastConsolidationTS)
 	}
 
-	fmt.Fprintf(&b, "  %-30s %.0f\n", "Avg episode length", m.statsData.AvgEpisodeLenChars)
-	fmt.Fprintf(&b, "  %-30s %.0f\n", "Avg trace length", m.statsData.AvgThinkingTraceChars)
+	if len(m.statsData.EpisodesByDay) > 0 {
+		fmt.Fprintf(&b, "\n  Last 7 Days:\n")
+		for _, d := range m.statsData.EpisodesByDay {
+			fmt.Fprintf(&b, "    %s: %d eps, %d ok, %.0f s avg\n", d.Date, d.Count, d.Successes, d.AvgDuration)
+		}
+	}
 
 	if len(m.statsData.TopTags) > 0 {
 		fmt.Fprintf(&b, "\n  Top Tags:\n")
