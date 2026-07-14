@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"time"
@@ -519,7 +520,8 @@ func (es *EpisodeStore) SummaryStats() (*models.SummaryStats, error) {
 			SELECT COALESCE(SUM(json_array_length(sources)), 0)
 			FROM patterns`).Scan(&patternSourced)
 		if stats.TotalEpisodes > 0 {
-			stats.ConsolidationRatio = float64(patternSourced) / float64(stats.TotalEpisodes) * 100
+			stats.ConsolidationRatio = math.Min(
+				float64(patternSourced)/float64(stats.TotalEpisodes)*100, 100)
 		}
 	}
 
