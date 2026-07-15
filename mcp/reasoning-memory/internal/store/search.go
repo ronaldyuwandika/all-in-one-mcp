@@ -16,6 +16,7 @@ type searchRow struct {
 	ThinkingTrace   string
 	Domain          string
 	Outcome         string
+	Tier            string
 	TagsJSON        string
 	Repo            string
 	LabelsJSON      string
@@ -252,6 +253,7 @@ func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, rep
 					Problem:         truncate(r.Problem, 200),
 					Domain:          r.Domain,
 					Outcome:         r.Outcome,
+					Tier:            models.MemoryTier(r.Tier),
 					Tags:            parseTags(r.TagsJSON),
 					Repo:            r.Repo,
 					Labels:          labels,
@@ -284,7 +286,7 @@ func (es *EpisodeStore) searchFTS(query, repoFilter string) ([]searchRow, error)
 	var q string
 	var args []interface{}
 	if repoFilter != "" {
-		q = `SELECT e.id, e.problem, e.thinking_trace, e.domain, e.outcome, e.tags,
+		q = `SELECT e.id, e.problem, e.thinking_trace, e.domain, e.outcome, e.tier, e.tags,
 		            e.repo, e.labels, e.steps, e.tool_calls, e.created_at, e.model_id, e.duration_seconds
 		     FROM episodes_fts f
 		     JOIN episodes e ON e.rowid = f.rowid
@@ -292,7 +294,7 @@ func (es *EpisodeStore) searchFTS(query, repoFilter string) ([]searchRow, error)
 		     LIMIT 50`
 		args = append(args, ftsQuery, repoFilter)
 	} else {
-		q = `SELECT e.id, e.problem, e.thinking_trace, e.domain, e.outcome, e.tags,
+		q = `SELECT e.id, e.problem, e.thinking_trace, e.domain, e.outcome, e.tier, e.tags,
 		            e.repo, e.labels, e.steps, e.tool_calls, e.created_at, e.model_id, e.duration_seconds
 		     FROM episodes_fts f
 		     JOIN episodes e ON e.rowid = f.rowid
@@ -311,7 +313,7 @@ func (es *EpisodeStore) searchFTS(query, repoFilter string) ([]searchRow, error)
 	for rows.Next() {
 		var r searchRow
 		if err := rows.Scan(
-			&r.ID, &r.Problem, &r.ThinkingTrace, &r.Domain, &r.Outcome,
+			&r.ID, &r.Problem, &r.ThinkingTrace, &r.Domain, &r.Outcome, &r.Tier,
 			&r.TagsJSON, &r.Repo, &r.LabelsJSON, &r.StepsJSON, &r.ToolCallsJSON, &r.CreatedAt,
 			&r.ModelID, &r.DurationSeconds,
 		); err != nil {
@@ -330,7 +332,7 @@ func (es *EpisodeStore) fallbackSearch(query, repoFilter string) ([]searchRow, e
 	var q string
 	var args []interface{}
 	if repoFilter != "" {
-		q = `SELECT id, problem, thinking_trace, domain, outcome, tags,
+		q = `SELECT id, problem, thinking_trace, domain, outcome, tier, tags,
 		            repo, labels, steps, tool_calls, created_at, model_id, duration_seconds
 		     FROM episodes
 		     WHERE (problem LIKE ? ESCAPE '\' OR thinking_trace LIKE ? ESCAPE '\')
@@ -338,7 +340,7 @@ func (es *EpisodeStore) fallbackSearch(query, repoFilter string) ([]searchRow, e
 		     LIMIT 50`
 		args = append(args, likePattern, likePattern, repoFilter)
 	} else {
-		q = `SELECT id, problem, thinking_trace, domain, outcome, tags,
+		q = `SELECT id, problem, thinking_trace, domain, outcome, tier, tags,
 		            repo, labels, steps, tool_calls, created_at, model_id, duration_seconds
 		     FROM episodes WHERE problem LIKE ? ESCAPE '\' OR thinking_trace LIKE ? ESCAPE '\'
 		     LIMIT 50`
@@ -355,7 +357,7 @@ func (es *EpisodeStore) fallbackSearch(query, repoFilter string) ([]searchRow, e
 	for rows.Next() {
 		var r searchRow
 		if err := rows.Scan(
-			&r.ID, &r.Problem, &r.ThinkingTrace, &r.Domain, &r.Outcome,
+			&r.ID, &r.Problem, &r.ThinkingTrace, &r.Domain, &r.Outcome, &r.Tier,
 			&r.TagsJSON, &r.Repo, &r.LabelsJSON, &r.StepsJSON, &r.ToolCallsJSON, &r.CreatedAt,
 			&r.ModelID, &r.DurationSeconds,
 		); err != nil {

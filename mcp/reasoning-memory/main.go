@@ -5,9 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
+	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -25,6 +30,8 @@ var cfg *models.Config
 var cfgPath string
 
 func main() {
+	store.SetupLogger()
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = "."
@@ -50,7 +57,7 @@ func main() {
 		cfg.Embedding.Enabled,
 	)
 	if vecErr != nil {
-		log.Printf("⚠ vector store disabled: %v", vecErr)
+		slog.Warn("vector store disabled", "error", vecErr)
 		vec = nil
 	}
 
@@ -62,17 +69,20 @@ func main() {
 	if loadErr != nil {
 		log.Fatalf("open store: %v", loadErr)
 	}
+	store.SetGlobalStore(es)
 	defer func() { _ = es.Close() }()
 
 	if vec != nil {
-		log.Printf("Vector search enabled (provider=%s, model=%s)", cfg.Embedding.Provider, cfg.Embedding.Model)
+		slog.Info("vector search enabled", "provider", cfg.Embedding.Provider, "model", cfg.Embedding.Model)
 		epCount, _ := es.EpisodeCount()
 		if epCount > 0 && vec.Count() == 0 {
-			log.Printf("Reindexing %d episodes into vector DB...", epCount)
+			slog.Info("reindexing episodes into vector DB", "count", epCount)
 			ctx := context.Background()
 			reindexEpisodes(ctx, es, vec)
 		}
 	}
+
+	go startMetricsEndpoint()
 
 	rootCmd := &cobra.Command{
 		Use:   "reasoning-memory",
@@ -101,7 +111,7 @@ func main() {
 }
 
 func runMCPServer() error {
-	log.SetFlags(0)
+	go handleSignals()
 
 	s := server.NewMCPServer(
 		"reasoning-memory",
@@ -119,6 +129,7 @@ func runMCPServer() error {
 			mcp.WithString("outcome", mcp.Description("Overall task outcome: success, partial, or failure."), mcp.Required()),
 			mcp.WithArray("tags", mcp.Description("Domain tags e.g. [\"coding\", \"resilience\", \"retry\"].")),
 			mcp.WithString("domain", mcp.Description("Broad domain: \"coding\" or \"agentic\". Defaults to \"coding\".")),
+			mcp.WithString("tier", mcp.Description("Memory tier: \"episodic\" (default, short-term) or \"semantic\" (long-term, survives pruning).")),
 			mcp.WithNumber("duration_seconds", mcp.Description("Total task duration in seconds.")),
 			mcp.WithString("model_id", mcp.Description("Model identifier e.g. \"claude-sonnet-4-20260514\".")),
 			mcp.WithString("repo", mcp.Description("Optional repository/project name for filtering. Auto-detected from git remote if omitted.")),
@@ -181,6 +192,50 @@ func runMCPServer() error {
 		handlePolish(es, cfg),
 	)
 
+	s.AddTool(
+		mcp.NewTool("memorize_concept",
+			mcp.WithDescription("Store an entity/concept as a standalone semantic memory (not a full episode).\n\n"+
+				"Use for atomic facts, entities, or definitions that don't need a full reasoning trace."),
+			mcp.WithString("entity_name", mcp.Description("The entity or concept name."), mcp.Required()),
+			mcp.WithString("concept_type", mcp.Description("Concept type/category e.g. 'tool', 'service', 'library', 'pattern'.")),
+			mcp.WithString("description", mcp.Description("Description or definition of the concept."), mcp.Required()),
+			mcp.WithArray("tags", mcp.Description("Optional tags for filtering.")),
+			mcp.WithString("source_episode_id", mcp.Description("Optional source episode ID this concept was extracted from.")),
+		),
+		handleMemorizeConcept(es),
+	)
+
+	s.AddTool(
+		mcp.NewTool("recall_semantic",
+			mcp.WithDescription("Retrieve top-k semantic concepts by semantic similarity to a query string."),
+			mcp.WithString("query", mcp.Description("Query string to match against concepts."), mcp.Required()),
+			mcp.WithNumber("limit", mcp.Description("Max results (default 5, max 20).")),
+			mcp.WithString("type_filter", mcp.Description("Optional filter by concept type.")),
+		),
+		handleRecallSemantic(es),
+	)
+
+	s.AddTool(
+		mcp.NewTool("link_entities",
+			mcp.WithDescription("Create a directed relationship between two semantic concepts or episodes."),
+			mcp.WithString("source_id", mcp.Description("Source concept/episode ID."), mcp.Required()),
+			mcp.WithString("target_id", mcp.Description("Target concept/episode ID."), mcp.Required()),
+			mcp.WithString("relationship", mcp.Description("Relationship type e.g. 'depends_on', 'implements', 'fixes', 'references'."), mcp.Required()),
+			mcp.WithNumber("weight", mcp.Description("Relationship weight (default 1.0).")),
+		),
+		handleLinkEntities(es),
+	)
+
+	s.AddTool(
+		mcp.NewTool("traverse_concepts",
+			mcp.WithDescription("Traverse the knowledge graph from a starting entity up to max_hops, returning reachable concepts."),
+			mcp.WithString("start_id", mcp.Description("Starting entity/concept/episode ID."), mcp.Required()),
+			mcp.WithString("relationship", mcp.Description("Optional filter by relationship type. Empty to match all.")),
+			mcp.WithNumber("max_hops", mcp.Description("Maximum traversal depth (default 3, max 10).")),
+		),
+		handleTraverseConcepts(es),
+	)
+
 	if err := server.ServeStdio(s); err != nil {
 		log.Fatalf("server: %v", err)
 	}
@@ -223,11 +278,17 @@ func reindexEpisodes(ctx context.Context, es *store.EpisodeStore, vec *store.Vec
 		}
 		offset += batchSize
 	}
-	log.Printf("✓ Reindexed %d episodes", total)
+	slog.Info("reindex complete", "total", total)
 }
 
 func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		start := time.Now()
+		defer func() {
+			store.GlobalMetrics.CaptureDurations.Record(time.Since(start))
+			store.GlobalMetrics.EpisodesCaptured.Add(1)
+		}()
+
 		args := req.Params.Arguments
 
 		problem := getString(args, "problem")
@@ -240,6 +301,10 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 		tags := getStringSlice(args, "tags")
 		repo := getString(args, "repo")
 		labels := getStringMap(args, "labels")
+		tier := getString(args, "tier")
+		if tier == "" {
+			tier = "episodic"
+		}
 
 		var durationSeconds int
 		if ds, err := getFloat64(args, "duration_seconds"); err == nil {
@@ -253,6 +318,7 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 			ID:              es.NextID(),
 			Domain:          domain,
 			Outcome:         outcome,
+			Tier:            models.MemoryTier(tier),
 			Tags:            tags,
 			Repo:            repo,
 			Labels:          labels,
@@ -275,6 +341,12 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 
 func handleRetrieve(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		start := time.Now()
+		defer func() {
+			store.GlobalMetrics.SearchDurations.Record(time.Since(start))
+			store.GlobalMetrics.SearchesPerformed.Add(1)
+		}()
+
 		args := req.Params.Arguments
 
 		problem := getString(args, "problem")
@@ -387,6 +459,12 @@ func handleInject(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerFu
 
 func handleConsolidate(es *store.EpisodeStore, cfg *models.Config) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		start := time.Now()
+		defer func() {
+			store.GlobalMetrics.ConsolidationDurs.Record(time.Since(start))
+			store.GlobalMetrics.ConsolidationsRan.Add(1)
+		}()
+
 		args := req.Params.Arguments
 		strategy := getString(args, "strategy")
 		if strategy == "" {
@@ -630,4 +708,127 @@ func extractSteps(thinkingTrace string) []models.Step {
 	}
 
 	return steps
+}
+
+func handleMemorizeConcept(es *store.EpisodeStore) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		store.GlobalMetrics.ConceptsMemorized.Add(1)
+
+		args := req.Params.Arguments
+		entityName := getString(args, "entity_name")
+		conceptType := getString(args, "concept_type")
+		description := getString(args, "description")
+		tags := getStringSlice(args, "tags")
+		sourceEpisodeID := getString(args, "source_episode_id")
+
+		id, err := es.MemorizeConcept(ctx, entityName, conceptType, description, tags, sourceEpisodeID)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("memorize failed: %v", err)), nil
+		}
+		return mcp.NewToolResultText(id), nil
+	}
+}
+
+func handleRecallSemantic(es *store.EpisodeStore) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args := req.Params.Arguments
+		query := getString(args, "query")
+		limit := 5
+		if v, err := getFloat64(args, "limit"); err == nil {
+			limit = int(v)
+		}
+		typeFilter := getString(args, "type_filter")
+
+		results, err := es.RecallSemantic(ctx, query, limit, typeFilter)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("recall failed: %v", err)), nil
+		}
+		data, _ := json.Marshal(results)
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+func handleLinkEntities(es *store.EpisodeStore) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		store.GlobalMetrics.EdgesCreated.Add(1)
+
+		args := req.Params.Arguments
+		sourceID := getString(args, "source_id")
+		targetID := getString(args, "target_id")
+		relationship := getString(args, "relationship")
+		weight := 1.0
+		if v, err := getFloat64(args, "weight"); err == nil && v > 0 {
+			weight = v
+		}
+		if weight > 1.0 {
+			weight = 1.0
+		}
+
+		id, err := es.AddEdge(sourceID, targetID, relationship, weight)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("link failed: %v", err)), nil
+		}
+		return mcp.NewToolResultText(id), nil
+	}
+}
+
+func handleTraverseConcepts(es *store.EpisodeStore) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args := req.Params.Arguments
+		startID := getString(args, "start_id")
+		relationship := getString(args, "relationship")
+		maxHops := 3
+		if v, err := getFloat64(args, "max_hops"); err == nil && v > 0 {
+			maxHops = int(v)
+		}
+
+		results, err := es.Traverse(startID, relationship, maxHops)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("traverse failed: %v", err)), nil
+		}
+		data, _ := json.Marshal(results)
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+func startMetricsEndpoint() {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", store.MetricsHandler())
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		if es != nil {
+			if err := es.Readiness(); err != nil {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(err.Error()))
+				return
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ready"))
+	})
+
+	port := os.Getenv("METRICS_PORT")
+	if port == "" {
+		port = "9464"
+	}
+	slog.Info("metrics endpoint starting", "addr", ":"+port)
+	if err := http.ListenAndServe(":"+port, mux); err != nil {
+		slog.Error("metrics server", "error", err)
+	}
+}
+
+func handleSignals() {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-sigCh
+	slog.Info("received signal, shutting down", "signal", sig.String())
+	if es != nil {
+		if err := es.Shutdown(); err != nil {
+			slog.Error("shutdown error", "error", err)
+		}
+	}
+	os.Exit(0)
 }
