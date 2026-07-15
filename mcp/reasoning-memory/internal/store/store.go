@@ -147,6 +147,11 @@ func migrate(db *sql.DB) error {
 			return fmt.Errorf("add labels column: %w", err)
 		}
 	}
+	if !hasCol("tier") {
+		if _, err := db.Exec("ALTER TABLE episodes ADD COLUMN tier TEXT NOT NULL DEFAULT 'episodic'"); err != nil {
+			return fmt.Errorf("add tier column: %w", err)
+		}
+	}
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS metadata_idx (
 		episode_id TEXT NOT NULL,
 		key TEXT NOT NULL,
@@ -159,6 +164,13 @@ func migrate(db *sql.DB) error {
 	}
 	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_meta_eid ON metadata_idx(episode_id)"); err != nil {
 		return fmt.Errorf("create idx_meta_eid: %w", err)
+	}
+
+	if err := migrateGraph(db); err != nil {
+		return fmt.Errorf("migrate graph: %w", err)
+	}
+	if err := migrateConcepts(db); err != nil {
+		return fmt.Errorf("migrate concepts: %w", err)
 	}
 
 	return nil
@@ -189,7 +201,24 @@ func detectGitRepo() string {
 }
 
 func (es *EpisodeStore) Close() error {
+	if es.vec != nil {
+		_ = es.vec.Close()
+	}
 	return es.db.Close()
+}
+
+func (es *EpisodeStore) Readiness() error {
+	if err := es.db.Ping(); err != nil {
+		return fmt.Errorf("db: %w", err)
+	}
+	if es.vec != nil && es.vec.Enabled() {
+		return es.vec.Ready()
+	}
+	return nil
+}
+
+func (es *EpisodeStore) Shutdown() error {
+	return es.Close()
 }
 
 func (es *EpisodeStore) CreateEpisode(ep *models.Episode) (string, error) {
@@ -198,6 +227,9 @@ func (es *EpisodeStore) CreateEpisode(ep *models.Episode) (string, error) {
 	}
 	if ep.Domain == "" {
 		ep.Domain = "coding"
+	}
+	if ep.Tier == "" {
+		ep.Tier = models.TierEpisodic
 	}
 
 	stepsJSON, _ := json.Marshal(ep.Steps)
@@ -225,12 +257,13 @@ func (es *EpisodeStore) CreateEpisode(ep *models.Episode) (string, error) {
 	labelsJSON, _ := json.Marshal(labels)
 
 	_, err := es.db.Exec(
-		`INSERT INTO episodes (id, created_at, domain, outcome, tags, repo, labels, problem, thinking_trace, steps, tool_calls, model_id, duration_seconds)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO episodes (id, created_at, domain, outcome, tier, tags, repo, labels, problem, thinking_trace, steps, tool_calls, model_id, duration_seconds)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ep.ID,
 		ep.CreatedAt.Format(time.RFC3339),
 		ep.Domain,
 		ep.Outcome,
+		string(ep.Tier),
 		string(tagsJSON),
 		ep.Repo,
 		string(labelsJSON),
@@ -269,7 +302,7 @@ func (es *EpisodeStore) CreateEpisodeContext(ctx context.Context, ep *models.Epi
 
 func (es *EpisodeStore) GetEpisode(id string) (*models.Episode, error) {
 	row := es.db.QueryRow(
-		`SELECT id, created_at, domain, outcome, tags, repo, labels, problem, thinking_trace, steps, tool_calls, model_id, duration_seconds
+		`SELECT id, created_at, domain, outcome, tier, tags, repo, labels, problem, thinking_trace, steps, tool_calls, model_id, duration_seconds
 		FROM episodes WHERE id = ?`, id,
 	)
 
@@ -280,10 +313,11 @@ func (es *EpisodeStore) GetEpisode(id string) (*models.Episode, error) {
 		toolCallsJSON string
 		createdAt     string
 		ep            models.Episode
+		tier          string
 	)
 
 	err := row.Scan(
-		&ep.ID, &createdAt, &ep.Domain, &ep.Outcome, &tagsJSON,
+		&ep.ID, &createdAt, &ep.Domain, &ep.Outcome, &tier, &tagsJSON,
 		&ep.Repo, &labelsJSON, &ep.Problem, &ep.ThinkingTrace, &stepsJSON, &toolCallsJSON,
 		&ep.ModelID, &ep.DurationSeconds,
 	)
@@ -295,6 +329,7 @@ func (es *EpisodeStore) GetEpisode(id string) (*models.Episode, error) {
 	}
 
 	ep.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	ep.Tier = models.MemoryTier(tier)
 	ep.Labels = es.parseLabelsJSON(labelsJSON)
 	_ = json.Unmarshal([]byte(tagsJSON), &ep.Tags)
 	_ = json.Unmarshal([]byte(stepsJSON), &ep.Steps)
@@ -305,7 +340,7 @@ func (es *EpisodeStore) GetEpisode(id string) (*models.Episode, error) {
 
 func (es *EpisodeStore) GetSummary(id string) (*models.EpisodeSummary, error) {
 	row := es.db.QueryRow(
-		`SELECT id, created_at, problem, domain, outcome, tags, repo, labels, steps, tool_calls, model_id, duration_seconds
+		`SELECT id, created_at, problem, domain, outcome, tier, tags, repo, labels, steps, tool_calls, model_id, duration_seconds
 		FROM episodes WHERE id = ?`, id,
 	)
 
@@ -317,11 +352,12 @@ func (es *EpisodeStore) GetSummary(id string) (*models.EpisodeSummary, error) {
 		createdAt     string
 		steps         []models.Step
 		summary       models.EpisodeSummary
+		tier          string
 	)
 
 	err := row.Scan(
 		&summary.ID, &createdAt, &summary.Problem, &summary.Domain,
-		&summary.Outcome, &tagsJSON, &summary.Repo, &labelsJSON, &stepsJSON, &toolCallsJSON,
+		&summary.Outcome, &tier, &tagsJSON, &summary.Repo, &labelsJSON, &stepsJSON, &toolCallsJSON,
 		&summary.ModelID, &summary.DurationSeconds,
 	)
 	if err == sql.ErrNoRows {
@@ -332,6 +368,7 @@ func (es *EpisodeStore) GetSummary(id string) (*models.EpisodeSummary, error) {
 	}
 
 	summary.CreatedAt = createdAt
+	summary.Tier = models.MemoryTier(tier)
 	summary.Labels = es.parseLabelsJSON(labelsJSON)
 	_ = json.Unmarshal([]byte(tagsJSON), &summary.Tags)
 	_ = json.Unmarshal([]byte(stepsJSON), &steps)
@@ -348,7 +385,7 @@ func (es *EpisodeStore) GetSummary(id string) (*models.EpisodeSummary, error) {
 
 func (es *EpisodeStore) ListEpisodes(limit, offset int) ([]models.EpisodeSummary, error) {
 	rows, err := es.db.Query(
-		`SELECT id, created_at, problem, domain, outcome, tags, repo, labels, steps, tool_calls, model_id, duration_seconds
+		`SELECT id, created_at, problem, domain, outcome, tier, tags, repo, labels, steps, tool_calls, model_id, duration_seconds
 		FROM episodes ORDER BY created_at DESC LIMIT ? OFFSET ?`, limit, offset,
 	)
 	if err != nil {
@@ -365,15 +402,16 @@ func (es *EpisodeStore) ListEpisodes(limit, offset int) ([]models.EpisodeSummary
 			toolCallsJSON string
 			steps         []models.Step
 			s             models.EpisodeSummary
+			tier          string
 		)
 		if err := rows.Scan(
 			&s.ID, &s.CreatedAt, &s.Problem, &s.Domain,
-			&s.Outcome, &tagsJSON, &s.Repo, &labelsJSON, &stepsJSON, &toolCallsJSON,
+			&s.Outcome, &tier, &tagsJSON, &s.Repo, &labelsJSON, &stepsJSON, &toolCallsJSON,
 			&s.ModelID, &s.DurationSeconds,
 		); err != nil {
 			return nil, fmt.Errorf("scan episode: %w", err)
 		}
-		s.Labels = es.parseLabelsJSON(labelsJSON)
+		s.Tier = models.MemoryTier(tier)
 		_ = json.Unmarshal([]byte(tagsJSON), &s.Tags)
 		_ = json.Unmarshal([]byte(stepsJSON), &steps)
 		s.StepCount = len(steps)

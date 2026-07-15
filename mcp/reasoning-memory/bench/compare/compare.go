@@ -14,6 +14,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	thresholdStr := os.Getenv("BENCH_REGRESSION_THRESHOLD")
+	threshold := 20.0
+	if thresholdStr != "" {
+		if v, err := strconv.ParseFloat(thresholdStr, 64); err == nil {
+			threshold = v
+		}
+	}
+
 	baseMetrics := readMetrics(os.Args[1])
 	currMetrics := readMetrics(os.Args[2])
 
@@ -28,19 +36,19 @@ func main() {
 			diffPercent := ((currVal - baseVal) / baseVal) * 100.0
 			fmt.Printf("%s: Base=%.3fms, Current=%.3fms (Diff=%.2f%%)\n", k, baseVal, currVal, diffPercent)
 
-			if diffPercent > 20.0 {
-				fmt.Printf("⚠ REGRESSION: %s regressed by > 20%% (%.2f%%)\n", k, diffPercent)
+			if diffPercent > threshold {
+				fmt.Printf("⚠ REGRESSION: %s regressed by > %.0f%% (%.2f%%)\n", k, threshold, diffPercent)
 				regressed = true
 			}
 		}
 	}
 
 	if regressed {
-		fmt.Println("🔴 Pull request rejected due to performance regression (> 20% on p99 latency).")
+		fmt.Printf("🔴 Pull request rejected due to performance regression (> %.0f%% on p99 latency).\n", threshold)
 		os.Exit(1)
 	}
 
-	fmt.Println("🟢 Performance verification passed (no regressions > 20% on p99 latency).")
+	fmt.Printf("🟢 Performance verification passed (no regressions > %.0f%% on p99 latency).\n", threshold)
 }
 
 func readMetrics(path string) map[string]float64 {

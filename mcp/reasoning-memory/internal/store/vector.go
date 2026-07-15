@@ -17,6 +17,7 @@ type VectorStore struct {
 	collection *chromem.Collection
 	enabled    bool
 	provider   string
+	embedFunc  chromem.EmbeddingFunc
 }
 
 func NewVectorStore(dataDir string, provider, model, baseURL, apiKey string, enabled bool) (*VectorStore, error) {
@@ -98,6 +99,8 @@ func NewVectorStore(dataDir string, provider, model, baseURL, apiKey string, ena
 	default:
 		return nil, fmt.Errorf("unsupported embedding provider: %s (supported: openai, openai-compat, ollama)", provider)
 	}
+
+	vs.embedFunc = ef
 
 	col, err := db.GetOrCreateCollection("episodes", map[string]string{
 		"description": "Reasoning-memory episode embeddings for semantic search",
@@ -194,13 +197,30 @@ func (vs *VectorStore) Enabled() bool {
 	return vs.enabled
 }
 
+func (vs *VectorStore) embed(ctx context.Context, text string) ([]float32, error) {
+	if vs.embedFunc == nil {
+		return nil, fmt.Errorf("vector store not configured")
+	}
+	return vs.embedFunc(ctx, text)
+}
+
 func (vs *VectorStore) Provider() string {
 	return vs.provider
 }
 
 func (vs *VectorStore) Close() error {
 	if vs.db != nil {
-		return vs.db.Reset()
+		_ = vs.db.Reset()
+	}
+	return nil
+}
+
+func (vs *VectorStore) Ready() error {
+	if !vs.enabled {
+		return nil
+	}
+	if vs.db == nil {
+		return fmt.Errorf("vector store not initialized")
 	}
 	return nil
 }

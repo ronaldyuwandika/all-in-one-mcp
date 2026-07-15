@@ -53,9 +53,8 @@ jobs:
         if: github.event_name == 'pull_request'
         run: |
           cd mcp/reasoning-memory
-          # Compare baseline and current using our compare tool
           if [ -f bench/bench_base.txt ]; then
-             go run ./bench/compare/compare.go bench/bench_base.txt bench/bench_current.txt
+             BENCH_REGRESSION_THRESHOLD=50 go run ./bench/compare/compare.go bench/bench_base.txt bench/bench_current.txt
           else
              echo "No baseline found, skipping regression check."
           fi

@@ -15,11 +15,19 @@ type Step struct {
 	Content string `json:"content" yaml:"content"`
 }
 
+type MemoryTier string
+
+const (
+	TierEpisodic MemoryTier = "episodic"
+	TierSemantic MemoryTier = "semantic"
+)
+
 type Episode struct {
 	ID              string              `json:"id" yaml:"id"`
 	CreatedAt       time.Time           `json:"created_at" yaml:"created_at"`
 	Domain          string              `json:"domain" yaml:"domain"`
 	Outcome         string              `json:"outcome" yaml:"outcome"`
+	Tier            MemoryTier          `json:"tier" yaml:"tier"`
 	Tags            []string            `json:"tags" yaml:"tags"`
 	Repo            string              `json:"repo,omitempty" yaml:"repo,omitempty"`
 	Labels          map[string][]string `json:"labels,omitempty" yaml:"labels,omitempty"`
@@ -37,6 +45,7 @@ type EpisodeSummary struct {
 	Problem         string              `json:"problem" yaml:"problem"`
 	Domain          string              `json:"domain" yaml:"domain"`
 	Outcome         string              `json:"outcome" yaml:"outcome"`
+	Tier            MemoryTier          `json:"tier" yaml:"tier"`
 	Tags            []string            `json:"tags" yaml:"tags"`
 	Repo            string              `json:"repo,omitempty" yaml:"repo,omitempty"`
 	Labels          map[string][]string `json:"labels,omitempty" yaml:"labels,omitempty"`
@@ -47,6 +56,14 @@ type EpisodeSummary struct {
 	DurationSeconds int                 `json:"duration_seconds" yaml:"duration_seconds"`
 	LocalScore      float64             `json:"_local_score,omitempty" yaml:"_local_score,omitempty"`
 	VectorScore     float64             `json:"_vector_score,omitempty" yaml:"_vector_score,omitempty"`
+}
+
+func (e *Episode) IsSemantic() bool {
+	return e.Tier == TierSemantic
+}
+
+func (e *Episode) IsEpisodic() bool {
+	return e.Tier == "" || e.Tier == TierEpisodic
 }
 
 type Pattern struct {
