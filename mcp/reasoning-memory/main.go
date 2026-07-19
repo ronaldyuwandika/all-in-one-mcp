@@ -289,7 +289,7 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 			store.GlobalMetrics.EpisodesCaptured.Add(1)
 		}()
 
-		args := req.Params.Arguments
+		args := toolArguments(req)
 
 		problem := getString(args, "problem")
 		thinkingTrace := getString(args, "thinking_trace")
@@ -347,7 +347,7 @@ func handleRetrieve(es *store.EpisodeStore, _ *models.Config) server.ToolHandler
 			store.GlobalMetrics.SearchesPerformed.Add(1)
 		}()
 
-		args := req.Params.Arguments
+		args := toolArguments(req)
 
 		problem := getString(args, "problem")
 		domain := getString(args, "domain")
@@ -376,7 +376,7 @@ func handleRetrieve(es *store.EpisodeStore, _ *models.Config) server.ToolHandler
 
 func handleEnrich(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		args := req.Params.Arguments
+		args := toolArguments(req)
 		episodeID := getString(args, "episode_id")
 
 		ep, err := es.GetEpisode(episodeID)
@@ -409,7 +409,7 @@ func handleEnrich(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerFu
 
 func handleInject(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		args := req.Params.Arguments
+		args := toolArguments(req)
 
 		problem := getString(args, "problem")
 		topK := 3
@@ -465,7 +465,7 @@ func handleConsolidate(es *store.EpisodeStore, cfg *models.Config) server.ToolHa
 			store.GlobalMetrics.ConsolidationsRan.Add(1)
 		}()
 
-		args := req.Params.Arguments
+		args := toolArguments(req)
 		strategy := getString(args, "strategy")
 		if strategy == "" {
 			strategy = "auto"
@@ -515,7 +515,7 @@ func handleConsolidate(es *store.EpisodeStore, cfg *models.Config) server.ToolHa
 
 func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		args := req.Params.Arguments
+		args := toolArguments(req)
 
 		rawPrompt := getString(args, "raw_prompt")
 		domain := getString(args, "domain")
@@ -564,6 +564,14 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 
 		return mcp.NewToolResultText(string(data)), nil
 	}
+}
+
+func toolArguments(req mcp.CallToolRequest) map[string]interface{} {
+	args, ok := req.Params.Arguments.(map[string]interface{})
+	if !ok {
+		return map[string]interface{}{}
+	}
+	return args
 }
 
 func getString(args map[string]interface{}, key string) string {
@@ -714,7 +722,7 @@ func handleMemorizeConcept(es *store.EpisodeStore) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		store.GlobalMetrics.ConceptsMemorized.Add(1)
 
-		args := req.Params.Arguments
+		args := toolArguments(req)
 		entityName := getString(args, "entity_name")
 		conceptType := getString(args, "concept_type")
 		description := getString(args, "description")
@@ -731,7 +739,7 @@ func handleMemorizeConcept(es *store.EpisodeStore) server.ToolHandlerFunc {
 
 func handleRecallSemantic(es *store.EpisodeStore) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		args := req.Params.Arguments
+		args := toolArguments(req)
 		query := getString(args, "query")
 		limit := 5
 		if v, err := getFloat64(args, "limit"); err == nil {
@@ -752,7 +760,7 @@ func handleLinkEntities(es *store.EpisodeStore) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		store.GlobalMetrics.EdgesCreated.Add(1)
 
-		args := req.Params.Arguments
+		args := toolArguments(req)
 		sourceID := getString(args, "source_id")
 		targetID := getString(args, "target_id")
 		relationship := getString(args, "relationship")
@@ -774,7 +782,7 @@ func handleLinkEntities(es *store.EpisodeStore) server.ToolHandlerFunc {
 
 func handleTraverseConcepts(es *store.EpisodeStore) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		args := req.Params.Arguments
+		args := toolArguments(req)
 		startID := getString(args, "start_id")
 		relationship := getString(args, "relationship")
 		maxHops := 3
