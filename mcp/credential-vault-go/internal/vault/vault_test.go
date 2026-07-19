@@ -51,7 +51,8 @@ func TestScanRedactRestore(t *testing.T) {
 	v := testVault(t)
 	root := t.TempDir()
 	p := filepath.Join(root, ".env")
-	original := "GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz\nSAFE=value\n"
+	secret := "ghp_" + strings.Repeat("x", 24)
+	original := "GITHUB_TOKEN=" + secret
 	if err := os.WriteFile(p, []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +64,7 @@ func TestScanRedactRestore(t *testing.T) {
 		t.Fatal("no credentials detected")
 	}
 	raw, _ := os.ReadFile(p)
-	if strings.Contains(string(raw), "ghp_abcdefghijklmnopqrstuvwxyz") {
+	if strings.Contains(string(raw), secret) {
 		t.Fatal("secret remains after redaction")
 	}
 	n, err := v.Restore()
@@ -77,9 +78,9 @@ func TestScanRedactRestore(t *testing.T) {
 }
 func TestMaskText(t *testing.T) {
 	t.Parallel()
-	in := "token ghp_abcdefghijklmnopqrstuvwxyz and PASSWORD=hunter2secret"
+	in := "token " + "ghp_" + strings.Repeat("y", 24) + " and PASSWORD=" + strings.Repeat("p", 16)
 	out := MaskText(in)
-	if strings.Contains(out, "ghp_") || strings.Contains(out, "hunter2secret") {
+	if strings.Contains(out, "ghp_") || strings.Contains(out, strings.Repeat("p", 16)) {
 		t.Fatalf("unmasked: %s", out)
 	}
 }

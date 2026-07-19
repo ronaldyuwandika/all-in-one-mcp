@@ -46,7 +46,7 @@ func BenchmarkDecrypt(b *testing.B) {
 	}
 }
 func BenchmarkMaskText(b *testing.B) {
-	text := strings.Repeat("ordinary application log line without credentials\n", 210) + "GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz\n"
+	text := strings.Repeat("ordinary application log line without credentials\n", 210) + "GITHUB_TOKEN=ghp_" + strings.Repeat("x", 24)
 	b.SetBytes(int64(len(text)))
 	b.ReportAllocs()
 	for b.Loop() {
@@ -56,7 +56,7 @@ func BenchmarkMaskText(b *testing.B) {
 func BenchmarkScanFiles(b *testing.B) {
 	root := b.TempDir()
 	for i := 0; i < 100; i++ {
-		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("%03d.env", i)), []byte(fmt.Sprintf("API_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz%d\n", i)), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("%03d.env", i)), []byte("API_TOKEN=ghp_"+strings.Repeat("x", 24)+fmt.Sprintf("%03d", i)), 0o600); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -69,7 +69,7 @@ func BenchmarkScanFiles(b *testing.B) {
 	}
 }
 func BenchmarkRedactFile1MB(b *testing.B) {
-	content := bytes.Repeat([]byte("API_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz\n"), 25000)
+	content := bytes.Repeat([]byte("API_TOKEN=ghp_"+strings.Repeat("x", 24)+"\n"), 25000)
 	b.SetBytes(int64(len(content)))
 	for b.Loop() {
 		root := b.TempDir()

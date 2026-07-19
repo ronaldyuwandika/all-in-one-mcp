@@ -65,6 +65,18 @@ vaultctl import backup.json
 vaultctl chat-clear
 ```
 
+## Migrating the Python vault
+
+The Go vault uses a separate keychain service and directory so migration cannot overwrite the legacy Fernet key. Stream the legacy vault directly into the installed Go CLI; do not redirect the stream to disk or a terminal:
+
+```bash
+python3 scripts/migrate_credential_vault.py \
+  --legacy-dir ~/.credential-vault \
+  | vaultctl migrate-stdin
+```
+
+The migration re-encrypts credential values, file backups, and audit records locally. It is additive: existing Go records are retained, and the legacy vault remains available as a rollback source until you explicitly remove it.
+
 ## Configuration
 
 The optional file is `~/.config/vaultctl/config.yaml`; flags override environment, environment overrides file, and file overrides defaults.

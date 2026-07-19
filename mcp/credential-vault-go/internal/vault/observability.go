@@ -136,6 +136,44 @@ type Export struct {
 	Encrypted string    `json:"encrypted"`
 }
 
+// LegacyImport is the value-only stream accepted from the Python vault migrator.
+type LegacyImport struct {
+	Credentials map[string]string     `json:"credentials"`
+	Files       map[string]FileBackup `json:"files"`
+	Audit       []AuditEntry          `json:"audit"`
+}
+
+// ImportLegacy merges decrypted legacy records into the encrypted Go vault.
+func (v *Vault) ImportLegacy(in LegacyImport) (int, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	d, err := v.loadUnlocked()
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for name, value := range in.Credentials {
+		if _, exists := d.Credentials[name]; !exists {
+			d.Credentials[name] = Credential{Value: value, Source: "legacy-python", CreatedAt: time.Now().UTC()}
+			count++
+		}
+	}
+	for path, backup := range in.Files {
+		if _, exists := d.Files[path]; !exists {
+			d.Files[path] = backup
+		}
+	}
+	if err = v.saveUnlocked(d); err != nil {
+		return 0, err
+	}
+	for _, entry := range in.Audit {
+		if err = v.auditUnlocked(entry); err != nil {
+			return 0, err
+		}
+	}
+	return count, nil
+}
+
 func (v *Vault) Export(path string) error {
 	d, err := v.Load()
 	if err != nil {

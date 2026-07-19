@@ -32,8 +32,26 @@ func NewRoot() *cobra.Command {
 		}
 		return vault.New(expand(c.VaultDir), newCrypt()), nil
 	}
-	root.AddCommand(statusCmd(open), getCmd(open), setCmd(open), scanCmd(open), restoreCmd(open), auditCmd(open), statsCmd(open), doctorCmd(open), dashboardCmd(open), exportCmd(open), importCmd(open), clearCmd(open))
+	root.AddCommand(statusCmd(open), getCmd(open), setCmd(open), scanCmd(open), restoreCmd(open), auditCmd(open), statsCmd(open), doctorCmd(open), dashboardCmd(open), exportCmd(open), importCmd(open), clearCmd(open), migrateStdinCmd(open))
 	return root
+}
+
+func migrateStdinCmd(o opener) *cobra.Command {
+	return &cobra.Command{Use: "migrate-stdin", Hidden: true, Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error {
+		var in vault.LegacyImport
+		if err := json.NewDecoder(c.InOrStdin()).Decode(&in); err != nil {
+			return fmt.Errorf("decode legacy migration stream: %w", err)
+		}
+		v, err := o()
+		if err != nil {
+			return err
+		}
+		count, err := v.ImportLegacy(in)
+		if err == nil {
+			fmt.Fprintf(c.OutOrStdout(), "migrated %d credentials and %d file backups\n", count, len(in.Files))
+		}
+		return err
+	}}
 }
 
 func newCrypt() *vaultcrypto.Fernet { return vaultcrypto.New(vaultcrypto.SystemKeyStore{}) }

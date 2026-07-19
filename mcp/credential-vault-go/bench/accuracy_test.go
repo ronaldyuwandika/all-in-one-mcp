@@ -11,7 +11,7 @@ import (
 func TestDetectionAccuracy(t *testing.T) {
 	positives := make([]string, 0, 500)
 	for i := 0; i < 500; i++ {
-		positives = append(positives, fmt.Sprintf("SERVICE_%03d_API_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz%03d", i, i))
+		positives = append(positives, fmt.Sprintf("SERVICE_%03d_API_TOKEN=%s%03d", i, "ghp_"+strings.Repeat("x", 24), i))
 	}
 	benign := make([]string, 0, 1000)
 	for i := 0; i < 1000; i++ {
