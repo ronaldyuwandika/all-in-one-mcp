@@ -1,0 +1,4 @@
+vault_dir: ~/.credential-vault-go
+scan_targets:
+  - .
+dashboard_interval_seconds: 2
