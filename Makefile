@@ -4,7 +4,7 @@ RUFF := ruff
 
 MCP_DIRS := reasoning-memory credential-vault pr-reviewer
 
-.PHONY: all setup install-mcp-% validate lint test clean bench-reasoning-memory bench-go
+.PHONY: all setup install-mcp-% validate lint test clean bench-reasoning-memory bench-credential-vault bench-go
 
 all: setup
 
@@ -18,11 +18,8 @@ install-mcp-reasoning-memory:
 	cd $(REPO_ROOT)/mcp/reasoning-memory && go build -o reasoning-memory .
 
 install-mcp-credential-vault:
-	@echo "→ Installing credential-vault..."
-	cd $(REPO_ROOT)/mcp/credential-vault && \
-		$(PYTHON) -m venv .venv && \
-		.venv/bin/pip install --quiet --upgrade pip && \
-		.venv/bin/pip install --quiet -e ".[dev]"
+	@echo "→ Building credential-vault (Go)..."
+	cd $(REPO_ROOT)/mcp/credential-vault-go && GOWORK=off go build -o vault ./cmd/vault && GOWORK=off go build -o vaultctl ./cmd/vaultctl
 
 install-mcp-pr-reviewer:
 	@echo "→ Installing pr-reviewer..."
@@ -45,6 +42,12 @@ validate:
 			if [ -f $(REPO_ROOT)/mcp/$$dir/main.go ]; then \
 				echo "  ✓ mcp/$$dir/main.go"; \
 			fi; \
+		elif [ $$dir = "credential-vault" ]; then \
+			if [ -f $(REPO_ROOT)/mcp/credential-vault-go/go.mod ]; then \
+				echo "  ✓ mcp/credential-vault-go/go.mod"; \
+			else \
+				echo "  ✗ mcp/credential-vault-go/go.mod MISSING"; \
+			fi; \
 		else \
 			if [ -f $(REPO_ROOT)/mcp/$$dir/pyproject.toml ]; then \
 				echo "  ✓ mcp/$$dir/pyproject.toml"; \
@@ -66,13 +69,15 @@ validate:
 lint:
 	@echo "→ Running linters..."
 	cd $(REPO_ROOT)/mcp/reasoning-memory && golangci-lint run ./... || true
-	$(RUFF) check $(REPO_ROOT)/mcp/credential-vault $(REPO_ROOT)/mcp/pr-reviewer --fix
+	cd $(REPO_ROOT)/mcp/credential-vault-go && GOWORK=off golangci-lint run ./...
+	$(RUFF) check $(REPO_ROOT)/mcp/pr-reviewer --fix
 	@echo "✓ Lint complete"
 
 lint-check:
 	@echo "→ Running lint checks (no fixes)..."
 	cd $(REPO_ROOT)/mcp/reasoning-memory && golangci-lint run ./...
-	$(RUFF) check $(REPO_ROOT)/mcp/credential-vault $(REPO_ROOT)/mcp/pr-reviewer
+	cd $(REPO_ROOT)/mcp/credential-vault-go && GOWORK=off golangci-lint run ./...
+	$(RUFF) check $(REPO_ROOT)/mcp/pr-reviewer
 	@echo "✓ Lint check complete"
 
 # ── Test ─────────────────────────────────────────────────────────────────────
@@ -83,9 +88,7 @@ test-mcp-reasoning-memory:
 	cd $(REPO_ROOT)/mcp/reasoning-memory && go test -v -count=1 -short ./...
 
 test-mcp-credential-vault:
-	cd $(REPO_ROOT)/mcp/credential-vault && \
-		.venv/bin/python -m pytest tests/ -v 2>/dev/null || \
-		echo "  ℹ No tests found for credential-vault"
+	cd $(REPO_ROOT)/mcp/credential-vault-go && GOWORK=off go test -race -count=1 ./...
 
 test-mcp-pr-reviewer:
 	cd $(REPO_ROOT)/mcp/pr-reviewer && \
@@ -98,7 +101,10 @@ bench-reasoning-memory:
 	@echo "→ Running accuracy/effectiveness benchmarks..."
 	cd $(REPO_ROOT)/mcp/reasoning-memory && go test -v -run="TestRetrievalRelevance|TestConsolidationQuality|TestPolishAccuracy" ./bench/...
 
-bench-go: bench-reasoning-memory
+bench-credential-vault:
+	cd $(REPO_ROOT)/mcp/credential-vault-go && GOWORK=off go test -bench=. -benchmem ./bench/...
+
+bench-go: bench-reasoning-memory bench-credential-vault
 
 # ── Run MCP servers ──────────────────────────────────────────────────────────
 
@@ -106,7 +112,7 @@ run-mcp-reasoning-memory:
 	cd $(REPO_ROOT)/mcp/reasoning-memory && go run .
 
 run-mcp-credential-vault:
-	cd $(REPO_ROOT)/mcp/credential-vault && .venv/bin/python server.py
+	cd $(REPO_ROOT)/mcp/credential-vault-go && go run ./cmd/vault
 
 run-mcp-pr-reviewer:
 	cd $(REPO_ROOT)/mcp/pr-reviewer && .venv/bin/python server.py

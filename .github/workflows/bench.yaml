@@ -4,12 +4,32 @@ on:
   pull_request:
     paths:
       - 'mcp/reasoning-memory/**'
+      - 'mcp/credential-vault-go/**'
   schedule:
     # Weekly accuracy test (every Sunday at midnight)
     - cron: '0 0 * * 0'
   workflow_dispatch:
 
 jobs:
+  credential-vault:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: mcp/credential-vault-go/go.sum
+      - name: Test accuracy and race safety
+        working-directory: mcp/credential-vault-go
+        run: GOWORK=off go test -race -count=1 ./...
+      - name: Run credential-vault benchmarks
+        working-directory: mcp/credential-vault-go
+        run: GOWORK=off go test -bench=. -benchmem ./bench/... | tee bench/results/latest.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: credential-vault-benchmark-reports
+          path: mcp/credential-vault-go/bench/results/
+
   benchmark:
     runs-on: ubuntu-latest
     steps:
