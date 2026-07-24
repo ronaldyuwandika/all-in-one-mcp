@@ -266,9 +266,10 @@ func buildPromptModel(opts Options, target, taskType, language string, warnings 
 		model.Requirements = append(model.Requirements, "Keep documentation consistent with behavior verified in the repository.")
 	}
 
-	if target == "codex" {
+	switch target {
+	case "codex":
 		model.Requirements = append(model.Requirements, "Complete the implementation in the current run and ask for confirmation only when genuinely blocked.")
-	} else if target == "claude" {
+	case "claude":
 		model.Context = append(model.Context, "Explain architectural assumptions and verify documentation claims against the implementation.")
 		model.Constraints = append(model.Constraints, "Keep mandatory work separate from optional improvements and disclose uncertainty.")
 	}
@@ -286,9 +287,10 @@ func renderMarkdown(model PromptModel, language string) string {
 	case "analysis", "code_review":
 		title = "# Analysis Task"
 	}
-	if model.TargetAgent == "codex" {
+	switch model.TargetAgent {
+	case "codex":
 		title += " — Codex"
-	} else if model.TargetAgent == "claude" {
+	case "claude":
 		title += " — Claude"
 	}
 	b.WriteString(title + "\n\n")
