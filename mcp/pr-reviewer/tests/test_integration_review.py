@@ -91,6 +91,18 @@ MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC
 
         assert mask_text(clean) == clean
 
+    def test_generic_credentials_are_fully_redacted(self):
+        from core.secrets import mask_text
+
+        credentials = [
+            "api_key=abcdefgh-super-secret-tail",
+            "password=correct-horse-battery-staple",
+            "token=abcdefghijklmnop-secret-tail",
+        ]
+        for credential in credentials:
+            assert credential not in mask_text(credential)
+            assert credential.split("=", 1)[1][:8] not in mask_text(credential)
+
 
 class TestInputValidation:
     def test_validate_url_valid(self):
@@ -142,9 +154,8 @@ class TestInputValidation:
 
 class TestAuditLogging:
     def test_log_operation_writes_entry(self, tmp_path):
-        from core.audit import log_operation, read_audit_log
-
         import core.audit as audit_mod
+        from core.audit import log_operation, read_audit_log
 
         original = audit_mod.AUDIT_FILE
         audit_mod.AUDIT_FILE = tmp_path / "audit.jsonl"
@@ -166,9 +177,8 @@ class TestAuditLogging:
             audit_mod.AUDIT_FILE = original
 
     def test_clear_audit_log(self, tmp_path):
-        from core.audit import log_operation, clear_audit_log
-
         import core.audit as audit_mod
+        from core.audit import clear_audit_log, log_operation
 
         original = audit_mod.AUDIT_FILE
         audit_mod.AUDIT_FILE = tmp_path / "audit.jsonl"

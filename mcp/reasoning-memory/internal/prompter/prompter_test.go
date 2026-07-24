@@ -102,3 +102,83 @@ func TestBuildXMLEpisodeBlockEmpty(t *testing.T) {
 		t.Errorf("expected empty string, got %q", xml)
 	}
 }
+
+func TestAgentProfilesAndSecretRedaction(t *testing.T) {
+	secret := "ghp_abcdefghijklmnopqrstuvwxyz"
+	for _, agent := range []string{"codex", "claude", "generic"} {
+		result, err := PolishPromptWithOptions(Options{
+			RawPrompt:    "fix auth bug using " + secret,
+			TargetAgent:  agent,
+			Context:      "previous attempt used " + secret,
+			OutputFormat: "markdown",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.TargetAgent != agent {
+			t.Fatalf("target = %q, want %q", result.TargetAgent, agent)
+		}
+		if strings.Contains(result.PolishedPrompt, secret) {
+			t.Fatalf("%s prompt leaked secret", agent)
+		}
+		for _, section := range []string{"Objective", "Acceptance Criteria"} {
+			if !strings.Contains(result.PolishedPrompt, section) {
+				t.Errorf("%s prompt missing %q", agent, section)
+			}
+		}
+	}
+}
+
+func TestOutputFormatsAndBudget(t *testing.T) {
+	for _, format := range []string{"json", "xml"} {
+		result, err := PolishPromptWithOptions(Options{
+			RawPrompt: "document the API", TargetAgent: "generic",
+			OutputFormat: format, MaxChars: 20000,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(result.PolishedPrompt, "document the API") {
+			t.Errorf("%s output lost user intent", format)
+		}
+	}
+
+	result, err := PolishPromptWithOptions(Options{
+		RawPrompt:   strings.Repeat("implement safely ", 100),
+		TargetAgent: "codex", OutputFormat: "markdown", MaxChars: 500,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Truncated || len([]rune(result.PolishedPrompt)) > 500 {
+		t.Fatalf("budget not enforced: truncated=%v chars=%d", result.Truncated, len([]rune(result.PolishedPrompt)))
+	}
+}
+
+func TestPolishDeterministic(t *testing.T) {
+	opts := Options{RawPrompt: "add database migration tests", TargetAgent: "claude", OutputFormat: "markdown"}
+	a, err := PolishPromptWithOptions(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := PolishPromptWithOptions(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.PolishedPrompt != b.PolishedPrompt {
+		t.Fatal("polishing is not deterministic")
+	}
+}
+
+func TestContextCountPreserved(t *testing.T) {
+	result, err := PolishPromptWithOptions(Options{
+		RawPrompt: "fix auth", Context: "two concise memories",
+		ContextCount: 2, OutputFormat: "markdown",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ContextCount != 2 {
+		t.Fatalf("context count = %d, want 2", result.ContextCount)
+	}
+}

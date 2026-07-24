@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	chromem "github.com/philippgille/chromem-go"
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/security"
 )
 
 type VectorStore struct {
@@ -118,7 +119,7 @@ func (vs *VectorStore) AddEpisode(ctx context.Context, id, problem, thinkingTrac
 		return nil
 	}
 
-	content := problem + "\n" + thinkingTrace
+	content := security.Text(problem + "\n" + thinkingTrace)
 	doc := chromem.Document{
 		ID:      id,
 		Content: content,
@@ -138,7 +139,7 @@ func (vs *VectorStore) AddEpisodes(ctx context.Context, episodes []EpisodeConten
 	for i, ep := range episodes {
 		docs[i] = chromem.Document{
 			ID:      ep.ID,
-			Content: ep.Content,
+			Content: security.Text(ep.Content),
 			Metadata: map[string]string{
 				"source": "reasoning-memory",
 			},
@@ -157,6 +158,7 @@ func (vs *VectorStore) Search(ctx context.Context, query string, topK int) ([]Ve
 		return nil, nil
 	}
 
+	query = security.Text(query)
 	results, err := vs.collection.Query(ctx, query, topK, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("vector search: %w", err)
@@ -201,7 +203,7 @@ func (vs *VectorStore) embed(ctx context.Context, text string) ([]float32, error
 	if vs.embedFunc == nil {
 		return nil, fmt.Errorf("vector store not configured")
 	}
-	return vs.embedFunc(ctx, text)
+	return vs.embedFunc(ctx, security.Text(text))
 }
 
 func (vs *VectorStore) Provider() string {

@@ -2,9 +2,12 @@ module github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault-go
 
 go 1.24.2
 
+replace github.com/ronaldyuwandika/all-in-one-mcp/pkg/secretdetect => ../../pkg/secretdetect
+
 require (
 	github.com/charmbracelet/bubbletea v1.3.6
 	github.com/mark3labs/mcp-go v0.41.1
+	github.com/ronaldyuwandika/all-in-one-mcp/pkg/secretdetect v0.0.0
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/viper v1.20.1
 	github.com/zalando/go-keyring v0.2.6

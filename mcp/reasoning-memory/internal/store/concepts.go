@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/models"
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/security"
 )
 
 type SemanticConcept struct {
@@ -48,6 +49,11 @@ func migrateConcepts(db *sql.DB) error {
 }
 
 func (es *EpisodeStore) MemorizeConcept(ctx context.Context, entityName, conceptType, description string, tags []string, sourceEpisodeID string) (string, error) {
+	entityName = security.Text(entityName)
+	conceptType = security.Text(conceptType)
+	description = security.Text(description)
+	tags = security.Strings(tags)
+	sourceEpisodeID = security.Text(sourceEpisodeID)
 	id := fmt.Sprintf("sc-%s-%03d", time.Now().UTC().Format("20060102"), time.Now().UnixNano()%1000)
 
 	tagsJSON, _ := json.Marshal(tags)
@@ -77,6 +83,8 @@ func (es *EpisodeStore) MemorizeConcept(ctx context.Context, entityName, concept
 }
 
 func (es *EpisodeStore) RecallSemantic(ctx context.Context, query string, limit int, typeFilter string) ([]SemanticConcept, error) {
+	query = security.Text(query)
+	typeFilter = security.Text(typeFilter)
 	if limit <= 0 {
 		limit = 5
 	}
@@ -135,6 +143,7 @@ func (es *EpisodeStore) recallWithEmbedding(ctx context.Context, query string, l
 		if lastAcc.Valid {
 			c.LastAccessedAt = lastAcc.String
 		}
+		sanitizeConcept(&c)
 
 		var score float64
 		if embBlob != nil {
@@ -194,6 +203,7 @@ func (es *EpisodeStore) recallFallback(query string, limit int, typeFilter strin
 		if lastAcc.Valid {
 			c.LastAccessedAt = lastAcc.String
 		}
+		sanitizeConcept(&c)
 		results = append(results, c)
 	}
 	return results, rows.Err()
@@ -221,6 +231,7 @@ func (es *EpisodeStore) GetConcept(id string) (*SemanticConcept, error) {
 	if lastAcc.Valid {
 		c.LastAccessedAt = lastAcc.String
 	}
+	sanitizeConcept(c)
 	return c, nil
 }
 
@@ -267,9 +278,18 @@ func (es *EpisodeStore) ListConcepts(limit, offset int, typeFilter string) ([]Se
 		if lastAcc.Valid {
 			c.LastAccessedAt = lastAcc.String
 		}
+		sanitizeConcept(&c)
 		results = append(results, c)
 	}
 	return results, rows.Err()
+}
+
+func sanitizeConcept(c *SemanticConcept) {
+	c.EntityName = security.Text(c.EntityName)
+	c.Type = security.Text(c.Type)
+	c.Description = security.Text(c.Description)
+	c.Tags = security.Strings(c.Tags)
+	c.SourceEpisode = security.Text(c.SourceEpisode)
 }
 
 func (es *EpisodeStore) PromoteEpisodeToSemantic(episodeID string) error {

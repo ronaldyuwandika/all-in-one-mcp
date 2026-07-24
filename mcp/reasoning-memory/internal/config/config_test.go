@@ -23,6 +23,15 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Consolidation.PruneAfterDays != 90 {
 		t.Errorf("expected prune_after_days 90, got %d", cfg.Consolidation.PruneAfterDays)
 	}
+	if !cfg.Security.RedactSecrets || !cfg.Security.RedactBeforeEmbedding ||
+		!cfg.Security.RedactOnRetrieval || !cfg.Security.RedactPolishedPrompts {
+		t.Fatal("expected secure redaction defaults")
+	}
+	if cfg.PromptPolishing.DefaultTargetAgent != "generic" ||
+		cfg.PromptPolishing.DefaultOutputFormat != "markdown" ||
+		cfg.PromptPolishing.IncludeFullTraces {
+		t.Fatalf("unexpected prompt-polishing defaults: %#v", cfg.PromptPolishing)
+	}
 }
 
 func TestLoadFromFile(t *testing.T) {

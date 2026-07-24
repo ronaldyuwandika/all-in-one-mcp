@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/models"
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/security"
 )
 
 func (es *EpisodeStore) FindMergeCandidates(minTagOverlap int) ([]MergeCandidate, error) {
@@ -95,6 +96,8 @@ func (es *EpisodeStore) MergeToPattern(c MergeCandidate) (string, error) {
 	if err != nil || epB == nil {
 		return "", fmt.Errorf("get episode B %s: %w", c.B, err)
 	}
+	security.Episode(epA)
+	security.Episode(epB)
 
 	patternID := fmt.Sprintf("pat-%s-%s", epA.ID, epB.ID)
 
@@ -207,6 +210,7 @@ func (es *EpisodeStore) GetPattern(id string) (*models.Pattern, error) {
 	_ = json.Unmarshal([]byte(sourcesJSON), &p.Sources)
 	_ = json.Unmarshal([]byte(toolsJSON), &p.MasterToolCalls)
 	_ = json.Unmarshal([]byte(tagsJSON), &p.Tags)
+	security.Pattern(&p)
 
 	return &p, nil
 }
@@ -238,6 +242,7 @@ func (es *EpisodeStore) ListPatterns() ([]models.Pattern, error) {
 		_ = json.Unmarshal([]byte(sourcesJSON), &p.Sources)
 		_ = json.Unmarshal([]byte(toolsJSON), &p.MasterToolCalls)
 		_ = json.Unmarshal([]byte(tagsJSON), &p.Tags)
+		security.Pattern(&p)
 		patterns = append(patterns, p)
 	}
 	return patterns, rows.Err()

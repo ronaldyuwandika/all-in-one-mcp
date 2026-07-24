@@ -4,6 +4,7 @@ go 1.24.2
 // Add new Go modules here as they are introduced.
 use ./mcp/reasoning-memory
 use ./mcp/credential-vault-go
+use ./pkg/secretdetect
 
 // Future modules (to be added when implemented as Go):
 // ./mcp/pr-reviewer-go

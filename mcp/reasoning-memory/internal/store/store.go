@@ -16,6 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/models"
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/security"
 )
 
 type EpisodeStore struct {
@@ -222,6 +223,13 @@ func (es *EpisodeStore) Shutdown() error {
 }
 
 func (es *EpisodeStore) CreateEpisode(ep *models.Episode) (string, error) {
+	return es.createEpisode(context.Background(), ep)
+}
+
+func (es *EpisodeStore) createEpisode(ctx context.Context, ep *models.Episode) (string, error) {
+	// This is the authoritative persistence boundary. Sanitizing here protects
+	// SQLite, FTS5, label enrichment, and vector indexing for every caller.
+	security.Episode(ep)
 	if ep.CreatedAt.IsZero() {
 		ep.CreatedAt = time.Now().UTC()
 	}
@@ -283,21 +291,14 @@ func (es *EpisodeStore) CreateEpisode(ep *models.Episode) (string, error) {
 	}
 
 	if es.vec != nil && es.vec.Enabled() {
-		_ = es.vec.AddEpisode(context.Background(), ep.ID, ep.Problem, ep.ThinkingTrace)
+		_ = es.vec.AddEpisode(ctx, ep.ID, ep.Problem, ep.ThinkingTrace)
 	}
 
 	return ep.ID, nil
 }
 
 func (es *EpisodeStore) CreateEpisodeContext(ctx context.Context, ep *models.Episode) (string, error) {
-	id, err := es.CreateEpisode(ep)
-	if err != nil {
-		return "", err
-	}
-	if es.vec != nil && es.vec.Enabled() {
-		return id, es.vec.AddEpisode(ctx, ep.ID, ep.Problem, ep.ThinkingTrace)
-	}
-	return id, nil
+	return es.createEpisode(ctx, ep)
 }
 
 func (es *EpisodeStore) GetEpisode(id string) (*models.Episode, error) {
@@ -334,6 +335,7 @@ func (es *EpisodeStore) GetEpisode(id string) (*models.Episode, error) {
 	_ = json.Unmarshal([]byte(tagsJSON), &ep.Tags)
 	_ = json.Unmarshal([]byte(stepsJSON), &ep.Steps)
 	_ = json.Unmarshal([]byte(toolCallsJSON), &ep.ToolCalls)
+	security.Episode(&ep)
 
 	return &ep, nil
 }
@@ -379,6 +381,7 @@ func (es *EpisodeStore) GetSummary(id string) (*models.EpisodeSummary, error) {
 	var toolCalls []models.ToolCall
 	_ = json.Unmarshal([]byte(toolCallsJSON), &toolCalls)
 	summary.ToolCount = len(toolCalls)
+	security.Summary(&summary)
 
 	return &summary, nil
 }
@@ -421,6 +424,7 @@ func (es *EpisodeStore) ListEpisodes(limit, offset int) ([]models.EpisodeSummary
 		var toolCalls []models.ToolCall
 		_ = json.Unmarshal([]byte(toolCallsJSON), &toolCalls)
 		s.ToolCount = len(toolCalls)
+		security.Summary(&s)
 		summaries = append(summaries, s)
 	}
 

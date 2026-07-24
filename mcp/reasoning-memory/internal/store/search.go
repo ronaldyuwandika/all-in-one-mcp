@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/models"
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/security"
 )
 
 type searchRow struct {
@@ -28,13 +29,18 @@ type searchRow struct {
 }
 
 func (es *EpisodeStore) SearchLocal(query string, domainFilter, outcomeFilter, repoFilter string, tagsFilter []string, topK int, metadataFilter ...map[string][]string) ([]models.EpisodeSummary, error) {
+	query = security.Text(query)
+	domainFilter = security.Text(domainFilter)
+	outcomeFilter = security.Text(outcomeFilter)
+	repoFilter = security.Text(repoFilter)
+	tagsFilter = security.Strings(tagsFilter)
 	if topK <= 0 {
 		topK = 5
 	}
 
 	var mf map[string][]string
 	if len(metadataFilter) > 0 {
-		mf = metadataFilter[0]
+		mf = security.Labels(metadataFilter[0])
 	}
 
 	ftsResults, err := es.ftsSearch(query, domainFilter, outcomeFilter, repoFilter, tagsFilter, topK, mf)
@@ -43,11 +49,17 @@ func (es *EpisodeStore) SearchLocal(query string, domainFilter, outcomeFilter, r
 	}
 
 	if es.vec == nil || !es.vec.Enabled() {
+		for i := range ftsResults {
+			security.Summary(&ftsResults[i])
+		}
 		return ftsResults, nil
 	}
 
 	vecResults, err := es.vec.Search(context.Background(), query, topK*2)
 	if err != nil || len(vecResults) == 0 {
+		for i := range ftsResults {
+			security.Summary(&ftsResults[i])
+		}
 		return ftsResults, nil
 	}
 
@@ -112,6 +124,9 @@ func (es *EpisodeStore) SearchLocal(query string, domainFilter, outcomeFilter, r
 
 	if topK < len(ftsResults) {
 		ftsResults = ftsResults[:topK]
+	}
+	for i := range ftsResults {
+		security.Summary(&ftsResults[i])
 	}
 
 	return ftsResults, nil

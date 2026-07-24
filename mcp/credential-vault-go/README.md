@@ -103,7 +103,8 @@ flowchart LR
 ```
 
 - `internal/crypto` — authenticated encryption and keyring adapter.
-- `internal/vault` — storage, scanning, redaction, restore, audit, masking, stats, and doctor.
+- `internal/vault` — storage, scanning, restore, audit, masking integration, stats, and doctor.
+- `pkg/secretdetect` — shared deterministic detection and redaction used by the vault and reasoning-memory; provider patterns are defined only here.
 - `internal/mcp` — local stdio tools.
 - `internal/cli` and `internal/tui` — command and dashboard interfaces.
 
@@ -116,6 +117,8 @@ Measured results are environment-dependent, so this README does not claim synthe
 ## Security limits
 
 - Detection is pattern-based and cannot guarantee discovery of every custom secret format.
+- Shared findings contain only type, byte range, confidence, and a truncated SHA-256 fingerprint; they never contain the detected value.
+- High-entropy detection is intentionally conservative to reduce false positives. Git hashes, UUIDs, ordinary checksums, and low-diversity identifiers are excluded.
 - Directory scans skip files larger than 2 MiB, binary files, `.git`, and `node_modules`.
 - `run_safe` invokes `/bin/sh -c`; only run trusted commands. Its output is local and masked, but the child command may itself access the network.
 - A user who can access the unlocked host keyring can decrypt the vault.

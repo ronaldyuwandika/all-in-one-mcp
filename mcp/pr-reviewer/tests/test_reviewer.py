@@ -3,8 +3,9 @@
 import json
 
 import pytest
-from core.reviewer import Reviewer
+
 from core.models import ReviewRequest
+from core.reviewer import Reviewer
 
 
 class TestUrlParsing:
@@ -20,7 +21,7 @@ class TestUrlParsing:
         assert number == 42
 
     def test_parse_github_url_trailing_slash(self, reviewer):
-        source, owner, repo, number = reviewer._parse_url("https://github.com/owner/repo/pull/42/")
+        source, _owner, _repo, number = reviewer._parse_url("https://github.com/owner/repo/pull/42/")
         assert source == "github"
         assert number == 42
 
@@ -32,7 +33,9 @@ class TestUrlParsing:
         assert number == 99
 
     def test_parse_gitlab_subgroup(self, reviewer):
-        source, owner, repo, number = reviewer._parse_url("https://gitlab.com/group/subgroup/repo/-/merge_requests/5")
+        source, _owner, repo, number = reviewer._parse_url(
+            "https://gitlab.com/group/subgroup/repo/-/merge_requests/5"
+        )
         assert source == "gitlab"
         assert repo == "repo"
         assert number == 5
@@ -96,6 +99,17 @@ class TestBuildReviewPrompt:
         )
         prompt = reviewer._build_review_prompt(req)
         assert "(no description)" in prompt
+
+    def test_build_prompt_redacts_secrets_before_llm(self, reviewer):
+        secret = "ghp_abcdefghijklmnopqrstuvwxyz"
+        req = ReviewRequest(
+            title=f"Fix auth {secret}",
+            description=f"Authorization: Bearer {secret}",
+            diff=f"+TOKEN={secret}",
+        )
+        prompt = reviewer._build_review_prompt(req)
+        assert secret not in prompt
+        assert "[REDACTED" in prompt
 
     def test_build_prompt_no_rules(self):
         reviewer = Reviewer({})

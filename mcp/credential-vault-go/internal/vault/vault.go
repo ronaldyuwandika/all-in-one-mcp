@@ -10,13 +10,13 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	vaultcrypto "github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault-go/internal/crypto"
+	"github.com/ronaldyuwandika/all-in-one-mcp/pkg/secretdetect"
 )
 
 var ErrNotFound = errors.New("credential not found")
@@ -205,115 +205,12 @@ func (v *Vault) Audit(limit int) ([]AuditEntry, error) {
 	return out, nil
 }
 
-var assignment = regexp.MustCompile(`(?m)^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*(?:TOKEN|PASSWORD|PASSWD|SECRET|API_KEY|PRIVATE_KEY|ACCESS_KEY)[A-Za-z0-9_]*)\s*=\s*["']?([^\s"']{4,})["']?\s*$`)
-var inlineAssignment = regexp.MustCompile(`(?i)((?:[A-Z0-9_]+_)?(?:TOKEN|PASSWORD|PASSWD|SECRET|API_KEY|PRIVATE_KEY|ACCESS_KEY)(?:_[A-Z0-9_]+)*)\s*=\s*["']?([^\s"']{4,})`)
-var masks = []*regexp.Regexp{regexp.MustCompile(`(?:AKIA|ASIA)[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{10,}|github_pat_[A-Za-z0-9_]{10,}|glpat-[A-Za-z0-9_-]{10,}|sk_live_[A-Za-z0-9]{10,}`), regexp.MustCompile(`-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----`)}
-
 func MaskText(text string) string {
-	text = maskProviderTokens(text)
-	if strings.Contains(text, "PRIVATE KEY-----") {
-		text = masks[1].ReplaceAllString(text, "[REDACTED]")
-	}
-	return maskAssignments(text)
+	return secretdetect.Redact(text).Text
 }
 
-func maskProviderTokens(text string) string {
-	var out strings.Builder
-	out.Grow(len(text))
-	changed, cursor := false, 0
-	for i := 0; i < len(text); i++ {
-		prefix := ""
-		for _, candidate := range []string{"AKIA", "ASIA", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "glpat-", "sk_live_"} {
-			if text[i] == candidate[0] && strings.HasPrefix(text[i:], candidate) {
-				prefix = candidate
-				break
-			}
-		}
-		if prefix == "" {
-			continue
-		}
-		end := i + len(prefix)
-		for end < len(text) && (isKeyByte(text[end]) || text[end] == '-') {
-			end++
-		}
-		minimum := 10
-		if prefix == "AKIA" || prefix == "ASIA" {
-			minimum = 16
-		}
-		if end-i-len(prefix) < minimum {
-			continue
-		}
-		out.WriteString(text[cursor:i])
-		out.WriteString("[REDACTED]")
-		cursor, i, changed = end, end-1, true
-	}
-	if !changed {
-		return text
-	}
-	out.WriteString(text[cursor:])
-	return out.String()
-}
-
-func maskAssignments(text string) string {
-	var out strings.Builder
-	out.Grow(len(text))
-	for cursor := 0; cursor < len(text); {
-		eq := strings.IndexByte(text[cursor:], '=')
-		if eq < 0 {
-			out.WriteString(text[cursor:])
-			break
-		}
-		eq += cursor
-		start := eq
-		for start > cursor && isKeyByte(text[start-1]) {
-			start--
-		}
-		key := strings.ToUpper(text[start:eq])
-		if !credentialKey(key) {
-			out.WriteString(text[cursor : eq+1])
-			cursor = eq + 1
-			continue
-		}
-		end := eq + 1
-		for end < len(text) && (text[end] == ' ' || text[end] == '\t' || text[end] == '\'' || text[end] == '"') {
-			end++
-		}
-		for end < len(text) && text[end] != '\n' && text[end] != '\r' && text[end] != ' ' && text[end] != '\t' && text[end] != '\'' && text[end] != '"' {
-			end++
-		}
-		out.WriteString(text[cursor:start])
-		out.WriteString(text[start:eq])
-		out.WriteString("=[REDACTED]")
-		cursor = end
-	}
-	return out.String()
-}
-
-func isKeyByte(b byte) bool {
-	return b == '_' || b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' || b >= '0' && b <= '9'
-}
-func credentialKey(key string) bool {
-	for _, marker := range []string{"TOKEN", "PASSWORD", "PASSWD", "SECRET", "API_KEY", "PRIVATE_KEY", "ACCESS_KEY"} {
-		if strings.Contains(key, marker) {
-			return true
-		}
-	}
-	return false
-}
 func Detect(text string) map[string]string {
-	out := map[string]string{}
-	for _, m := range assignment.FindAllStringSubmatch(text, -1) {
-		out[m[1]] = m[2]
-	}
-	for _, m := range inlineAssignment.FindAllStringSubmatch(text, -1) {
-		out[m[1]] = m[2]
-	}
-	for i, r := range masks {
-		for j, s := range r.FindAllString(text, -1) {
-			out[fmt.Sprintf("pattern_%d_%d", i, j)] = s
-		}
-	}
-	return out
+	return secretdetect.DetectValues(text)
 }
 func (v *Vault) ScanDir(root string, redact bool) (map[string]string, error) {
 	v.mu.Lock()
