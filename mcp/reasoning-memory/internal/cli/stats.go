@@ -93,6 +93,8 @@ func runStats(es *store.EpisodeStore) error {
 		result.TopLabelKey = summary.TopLabelKey
 		result.LabelCardinality = summary.LabelCardinality
 		result.UnlabeledCount = summary.UnlabeledCount
+		result.ArchivedTotal = summary.TotalArchived
+		result.PrunedTotal = summary.TotalPruned
 	}
 	if epByDay != nil {
 		result.EpisodesByDay = epByDay
@@ -125,6 +127,8 @@ func renderStatsTable(s models.StatsResult) {
 	fmt.Println(strings.Repeat("─", 50))
 	fmt.Printf("  %-30s %d\n", "Episodes (total)", s.EpisodesTotal)
 	fmt.Printf("  %-30s %d\n", "Patterns (total)", s.PatternsTotal)
+	fmt.Printf("  %-30s %d\n", "Archived (total)", s.ArchivedTotal)
+	fmt.Printf("  %-30s %d\n", "Pruned (total)", s.PrunedTotal)
 	fmt.Printf("  %-30s %s\n", "Top domain", s.TopDomain)
 	if s.TopRepo != "" {
 		fmt.Printf("  %-30s %s\n", "Top repo", s.TopRepo)
