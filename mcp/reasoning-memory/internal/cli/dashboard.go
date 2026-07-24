@@ -56,6 +56,12 @@ type model struct {
 	patTable table.Model
 	patterns []models.Pattern
 
+	conTable table.Model
+	concepts []store.SemanticConcept
+
+	graphTable table.Model
+	graphEdges []store.GraphEdge
+
 	searchInput   textinput.Model
 	repoInput     textinput.Model
 	searchResults []models.EpisodeSummary
@@ -84,6 +90,8 @@ type keyMap struct {
 	Help     key.Binding
 	Paste    key.Binding
 	Edit     key.Binding
+	Promote  key.Binding
+	Traverse key.Binding
 }
 
 func (k keyMap) ShortHelp() []key.Binding {
@@ -93,7 +101,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Tab, k.ShiftTab, k.Enter, k.Back},
-		{k.Delete, k.Paste, k.Edit, k.Help, k.Quit},
+		{k.Delete, k.Paste, k.Edit, k.Promote, k.Traverse, k.Help, k.Quit},
 	}
 }
 
@@ -128,6 +136,23 @@ func initialModel(es *store.EpisodeStore, cfgPath string, cfg *models.Config) mo
 	}
 	patTable := table.New(table.WithColumns(patColumns), table.WithFocused(true))
 
+	conColumns := []table.Column{
+		{Title: "ID", Width: 18},
+		{Title: "Entity", Width: 15},
+		{Title: "Type", Width: 12},
+		{Title: "Description", Width: 35},
+		{Title: "Accesses", Width: 10},
+	}
+	conTable := table.New(table.WithColumns(conColumns), table.WithFocused(true))
+
+	graphColumns := []table.Column{
+		{Title: "Source", Width: 20},
+		{Title: "Target", Width: 20},
+		{Title: "Relation", Width: 15},
+		{Title: "Weight", Width: 8},
+	}
+	graphTable := table.New(table.WithColumns(graphColumns), table.WithFocused(true))
+
 	si := textinput.New()
 	si.Placeholder = "Type a search query..."
 	si.Width = 50
@@ -150,9 +175,12 @@ func initialModel(es *store.EpisodeStore, cfgPath string, cfg *models.Config) mo
 		tabNames: []string{
 			"Episodes", "Patterns", "Search",
 			"Consolidation", "Polish", "Stats",
+			"Concepts", "Graph",
 		},
 		epTable:     epTable,
 		patTable:    patTable,
+		conTable:    conTable,
+		graphTable:  graphTable,
 		searchInput: si,
 		repoInput:   ri,
 		polishInput: pi,
@@ -168,6 +196,8 @@ func initialModel(es *store.EpisodeStore, cfgPath string, cfg *models.Config) mo
 			Help:     key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 			Paste:    key.NewBinding(key.WithKeys("ctrl+v"), key.WithHelp("⌘V", "paste")),
 			Edit:     key.NewBinding(key.WithKeys("ctrl+o"), key.WithHelp("^O", "edit in $EDITOR")),
+			Promote:  key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "promote to concept")),
+			Traverse: key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "traverse graph")),
 		},
 		consolidationMsg: "Press [c] to find merge candidates",
 	}
@@ -177,6 +207,8 @@ func (m model) Init() tea.Cmd {
 	return tea.Batch(
 		m.loadEpisodes(),
 		m.loadPatterns(),
+		m.loadConcepts(),
+		m.loadEdges(),
 	)
 }
 
@@ -200,6 +232,26 @@ func (m model) loadPatterns() tea.Cmd {
 	}
 }
 
+func (m model) loadConcepts() tea.Cmd {
+	return func() tea.Msg {
+		cons, err := m.es.ListConcepts(100, 0, "")
+		if err != nil {
+			return loadConceptsMsg{nil, err}
+		}
+		return loadConceptsMsg{cons, nil}
+	}
+}
+
+func (m model) loadEdges() tea.Cmd {
+	return func() tea.Msg {
+		edges, err := m.es.ListEdges("")
+		if err != nil {
+			return loadEdgesMsg{nil, err}
+		}
+		return loadEdgesMsg{edges, nil}
+	}
+}
+
 type loadEpisodesMsg struct {
 	episodes []models.EpisodeSummary
 	err      error
@@ -208,6 +260,16 @@ type loadEpisodesMsg struct {
 type loadPatternsMsg struct {
 	patterns []models.Pattern
 	err      error
+}
+
+type loadConceptsMsg struct {
+	concepts []store.SemanticConcept
+	err      error
+}
+
+type loadEdgesMsg struct {
+	edges []store.GraphEdge
+	err   error
 }
 
 type errorMsg string
@@ -227,6 +289,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detailVP.Height = msg.Height - 10
 		m.epTable.SetWidth(msg.Width - 4)
 		m.patTable.SetWidth(msg.Width - 4)
+		m.conTable.SetWidth(msg.Width - 4)
+		m.graphTable.SetWidth(msg.Width - 4)
 		m.ready = true
 
 	case tea.KeyMsg:
@@ -261,23 +325,51 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activeTab == 5 {
 				cmds = append(cmds, m.loadStats())
 			}
+			if m.activeTab == 6 {
+				cmds = append(cmds, m.loadConcepts())
+			}
+			if m.activeTab == 7 {
+				cmds = append(cmds, m.loadEdges())
+			}
 		case key.Matches(msg, m.keys.ShiftTab):
 			m.blurActiveInput()
 			m.activeTab = (m.activeTab - 1 + len(m.tabNames)) % len(m.tabNames)
 			cmds = append(cmds, m.focusActiveInput()...)
+			if m.activeTab == 3 {
+				m.refreshConsolidation()
+			}
+			if m.activeTab == 5 {
+				cmds = append(cmds, m.loadStats())
+			}
+			if m.activeTab == 6 {
+				cmds = append(cmds, m.loadConcepts())
+			}
+			if m.activeTab == 7 {
+				cmds = append(cmds, m.loadEdges())
+			}
 		}
 
 		if m.activeTab == 0 {
 			switch {
 			case key.Matches(msg, m.keys.Enter):
-				if len(m.episodes) > 0 && m.epTable.Cursor() < len(m.episodes) {
+				if len(m.episodes) > 0 && m.epTable.Cursor() >= 0 && m.epTable.Cursor() < len(m.episodes) {
 					ep := m.episodes[m.epTable.Cursor()]
 					return m, m.loadEpisodeDetail(ep.ID)
 				}
 			case key.Matches(msg, m.keys.Delete):
-				if len(m.episodes) > 0 && m.epTable.Cursor() < len(m.episodes) {
+				if len(m.episodes) > 0 && m.epTable.Cursor() >= 0 && m.epTable.Cursor() < len(m.episodes) {
 					ep := m.episodes[m.epTable.Cursor()]
 					return m, m.deleteEpisode(ep.ID)
+				}
+			case key.Matches(msg, m.keys.Promote):
+				if len(m.episodes) > 0 && m.epTable.Cursor() >= 0 && m.epTable.Cursor() < len(m.episodes) {
+					ep := m.episodes[m.epTable.Cursor()]
+					return m, m.promoteEpisode(ep.ID)
+				}
+			case key.Matches(msg, m.keys.Traverse):
+				if len(m.episodes) > 0 && m.epTable.Cursor() >= 0 && m.epTable.Cursor() < len(m.episodes) {
+					ep := m.episodes[m.epTable.Cursor()]
+					return m, m.runTraverse(ep.ID)
 				}
 			default:
 				var cmd tea.Cmd
@@ -289,12 +381,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.activeTab == 1 {
 			switch {
 			case key.Matches(msg, m.keys.Enter):
-				if len(m.patterns) > 0 && m.patTable.Cursor() < len(m.patterns) {
+				if len(m.patterns) > 0 && m.patTable.Cursor() >= 0 && m.patTable.Cursor() < len(m.patterns) {
 					pat := m.patterns[m.patTable.Cursor()]
 					return m, m.loadPatternDetail(pat.ID)
 				}
 			case key.Matches(msg, m.keys.Delete):
-				if len(m.patterns) > 0 && m.patTable.Cursor() < len(m.patterns) {
+				if len(m.patterns) > 0 && m.patTable.Cursor() >= 0 && m.patTable.Cursor() < len(m.patterns) {
 					return m, m.deletePattern(m.patterns[m.patTable.Cursor()].ID)
 				}
 			default:
@@ -348,6 +440,49 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		if m.activeTab == 6 {
+			switch {
+			case key.Matches(msg, m.keys.Enter):
+				if len(m.concepts) > 0 && m.conTable.Cursor() >= 0 && m.conTable.Cursor() < len(m.concepts) {
+					con := m.concepts[m.conTable.Cursor()]
+					return m, m.loadConceptDetail(con.ID)
+				}
+			case key.Matches(msg, m.keys.Delete):
+				if len(m.concepts) > 0 && m.conTable.Cursor() >= 0 && m.conTable.Cursor() < len(m.concepts) {
+					con := m.concepts[m.conTable.Cursor()]
+					return m, m.deleteConcept(con.ID)
+				}
+			case key.Matches(msg, m.keys.Traverse):
+				if len(m.concepts) > 0 && m.conTable.Cursor() >= 0 && m.conTable.Cursor() < len(m.concepts) {
+					con := m.concepts[m.conTable.Cursor()]
+					return m, m.runTraverse(con.ID)
+				}
+			default:
+				var cmd tea.Cmd
+				m.conTable, cmd = m.conTable.Update(msg)
+				return m, cmd
+			}
+		}
+
+		if m.activeTab == 7 {
+			switch {
+			case key.Matches(msg, m.keys.Enter) || key.Matches(msg, m.keys.Traverse):
+				if len(m.graphEdges) > 0 && m.graphTable.Cursor() >= 0 && m.graphTable.Cursor() < len(m.graphEdges) {
+					edge := m.graphEdges[m.graphTable.Cursor()]
+					return m, m.runTraverse(edge.SourceID)
+				}
+			case key.Matches(msg, m.keys.Delete):
+				if len(m.graphEdges) > 0 && m.graphTable.Cursor() >= 0 && m.graphTable.Cursor() < len(m.graphEdges) {
+					edge := m.graphEdges[m.graphTable.Cursor()]
+					return m, m.deleteEdge(edge.ID)
+				}
+			default:
+				var cmd tea.Cmd
+				m.graphTable, cmd = m.graphTable.Update(msg)
+				return m, cmd
+			}
+		}
+
 	case loadEpisodesMsg:
 		if msg.err == nil {
 			m.episodes = msg.episodes
@@ -358,10 +493,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.patterns = msg.patterns
 			m.refreshPatTable()
 		}
+	case loadConceptsMsg:
+		if msg.err == nil {
+			m.concepts = msg.concepts
+			m.refreshConTable()
+		}
+	case loadEdgesMsg:
+		if msg.err == nil {
+			m.graphEdges = msg.edges
+			m.refreshGraphTable()
+		}
 	case episodeDetailMsg:
 		if msg.err == nil {
 			m.showDetail = true
-			m.detailVP.SetContent(formatEpisode(msg.ep))
+			m.detailVP.SetContent(formatEpisode(msg.ep, msg.related, msg.edges))
 			m.detailVP.GotoTop()
 		}
 	case patternDetailMsg:
@@ -370,11 +515,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.detailVP.SetContent(formatPattern(msg.pat))
 			m.detailVP.GotoTop()
 		}
+	case conceptDetailMsg:
+		if msg.err == nil {
+			m.showDetail = true
+			m.detailVP.SetContent(formatConcept(msg.con, msg.edges))
+			m.detailVP.GotoTop()
+		}
+	case graphTraverseMsg:
+		if msg.err == nil {
+			m.showDetail = true
+			var b strings.Builder
+			fmt.Fprintf(&b, "Traversal Path Starting From: %s\n", msg.startID)
+			fmt.Fprintf(&b, "%s\n", strings.Repeat("─", m.width-2))
+			if len(msg.results) == 0 {
+				b.WriteString("No connected nodes found in traversal.\n")
+			} else {
+				for i, r := range msg.results {
+					fmt.Fprintf(&b, "%d. Target: %s [%s/%s] (weight/score: %.2f)\n", i+1, r.ID, r.Domain, r.Outcome, r.LocalScore)
+					fmt.Fprintf(&b, "   Problem: %s\n\n", truncate(r.Problem, 80))
+				}
+			}
+			m.detailVP.SetContent(b.String())
+			m.detailVP.GotoTop()
+		} else {
+			m.errMsg = fmt.Sprintf("Traverse failed: %v", msg.err)
+		}
 	case deleteMsg:
 		if msg.err == nil {
-			return m, tea.Batch(m.loadEpisodes(), m.loadPatterns())
+			return m, tea.Batch(m.loadEpisodes(), m.loadPatterns(), m.loadConcepts(), m.loadEdges())
 		}
-		m.errMsg = fmt.Sprintf("Delete failed: %v", msg.err)
+		m.errMsg = fmt.Sprintf("Action failed: %v", msg.err)
 	case polishResultMsg:
 		if msg.result == nil {
 			m.errMsg = "Polish failed"
@@ -472,6 +642,30 @@ func (m *model) refreshPatTable() {
 	m.patTable.SetRows(rows)
 }
 
+func (m *model) refreshConTable() {
+	var rows []table.Row
+	for _, con := range m.concepts {
+		desc := con.Description
+		if len(desc) > 33 {
+			desc = desc[:33] + ".."
+		}
+		rows = append(rows, table.Row{
+			con.ID, con.EntityName, con.Type, desc, fmt.Sprintf("%d", con.AccessCount),
+		})
+	}
+	m.conTable.SetRows(rows)
+}
+
+func (m *model) refreshGraphTable() {
+	var rows []table.Row
+	for _, edge := range m.graphEdges {
+		rows = append(rows, table.Row{
+			edge.SourceID, edge.TargetID, edge.Relationship, fmt.Sprintf("%.2f", edge.Weight),
+		})
+	}
+	m.graphTable.SetRows(rows)
+}
+
 func (m *model) blurActiveInput() {
 	switch m.activeTab {
 	case 2:
@@ -497,9 +691,11 @@ func (m model) loadEpisodeDetail(id string) tea.Cmd {
 	return func() tea.Msg {
 		ep, err := m.es.GetEpisode(id)
 		if err != nil {
-			return episodeDetailMsg{nil, err}
+			return episodeDetailMsg{err: err}
 		}
-		return episodeDetailMsg{ep, nil}
+		related, _ := m.es.GetRelatedEpisodes(id)
+		edges, _ := m.es.ListEdges(id)
+		return episodeDetailMsg{ep: ep, related: related, edges: edges}
 	}
 }
 
@@ -510,6 +706,17 @@ func (m model) loadPatternDetail(id string) tea.Cmd {
 			return patternDetailMsg{nil, err}
 		}
 		return patternDetailMsg{pat, nil}
+	}
+}
+
+func (m model) loadConceptDetail(id string) tea.Cmd {
+	return func() tea.Msg {
+		con, err := m.es.GetConcept(id)
+		if err != nil {
+			return conceptDetailMsg{err: err}
+		}
+		edges, _ := m.es.ListEdges(id)
+		return conceptDetailMsg{con: con, edges: edges}
 	}
 }
 
@@ -524,6 +731,77 @@ func (m model) deletePattern(id string) tea.Cmd {
 	return func() tea.Msg {
 		return deleteMsg{m.es.DeletePattern(id)}
 	}
+}
+
+func (m model) deleteConcept(id string) tea.Cmd {
+	return func() tea.Msg {
+		return deleteMsg{m.es.DeleteConcept(id)}
+	}
+}
+
+func (m model) deleteEdge(id string) tea.Cmd {
+	return func() tea.Msg {
+		return deleteMsg{m.es.DeleteEdge(id)}
+	}
+}
+
+func (m model) promoteEpisode(id string) tea.Cmd {
+	return func() tea.Msg {
+		conceptID, err := m.es.PromoteConceptFromEpisode(id)
+		if err != nil {
+			return errorMsg(fmt.Sprintf("Promote failed: %v", err))
+		}
+		_, _ = m.es.AddEdge(id, conceptID, "promoted_to", 1.0)
+		return deleteMsg{nil}
+	}
+}
+
+func (m model) runTraverse(startID string) tea.Cmd {
+	return func() tea.Msg {
+		results, err := m.es.Traverse(startID, "", 3)
+		return graphTraverseMsg{results: results, startID: startID, err: err}
+	}
+}
+
+type episodeDetailMsg struct {
+	ep      *models.Episode
+	related []string
+	edges   []store.GraphEdge
+	err     error
+}
+
+type patternDetailMsg struct {
+	pat *models.Pattern
+	err error
+}
+
+type conceptDetailMsg struct {
+	con   *store.SemanticConcept
+	edges []store.GraphEdge
+	err   error
+}
+
+type graphTraverseMsg struct {
+	results []models.EpisodeSummary
+	startID string
+	err     error
+}
+
+type deleteMsg struct {
+	err error
+}
+
+type searchResultsMsg struct {
+	results []models.EpisodeSummary
+	err     error
+}
+
+type consolidateMsg struct {
+	report string
+}
+
+type statsMsg struct {
+	stats *models.StatsResult
 }
 
 type editContentMsg struct {
@@ -638,33 +916,6 @@ func (m model) runReindex() tea.Cmd {
 	}
 }
 
-type episodeDetailMsg struct {
-	ep  *models.Episode
-	err error
-}
-
-type patternDetailMsg struct {
-	pat *models.Pattern
-	err error
-}
-
-type deleteMsg struct {
-	err error
-}
-
-type searchResultsMsg struct {
-	results []models.EpisodeSummary
-	err     error
-}
-
-type consolidateMsg struct {
-	report string
-}
-
-type statsMsg struct {
-	stats *models.StatsResult
-}
-
 func (m model) loadStats() tea.Cmd {
 	return func() tea.Msg {
 		epTotal, _ := m.es.EpisodeCount()
@@ -732,7 +983,7 @@ func (m *model) refreshConsolidation() {
 	m.consolidationMsg = report.String()
 }
 
-func formatEpisode(ep *models.Episode) string {
+func formatEpisode(ep *models.Episode, related []string, edges []store.GraphEdge) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Episode: %s\n\n", ep.ID)
 	fmt.Fprintf(&b, "Domain: %s  |  Outcome: %s  |  Duration: %ds\n", ep.Domain, ep.Outcome, ep.DurationSeconds)
@@ -744,12 +995,21 @@ func formatEpisode(ep *models.Episode) string {
 	if ep.Repo != "" {
 		fmt.Fprintf(&b, "Repo: %s\n", ep.Repo)
 	}
+	if len(related) > 0 {
+		fmt.Fprintf(&b, "Related: %s\n", strings.Join(related, ", "))
+	}
+	if len(edges) > 0 {
+		fmt.Fprintf(&b, "\nGraph Edges:\n")
+		for _, e := range edges {
+			fmt.Fprintf(&b, "  • %s —(%s, weight=%.2f)→ %s\n", e.SourceID, e.Relationship, e.Weight, e.TargetID)
+		}
+	}
 	fmt.Fprintf(&b, "\nProblem:\n%s\n", ep.Problem)
 	fmt.Fprintf(&b, "\nThinking Trace:\n%s\n", ep.ThinkingTrace)
 	if len(ep.ToolCalls) > 0 {
 		fmt.Fprintf(&b, "\nTool Calls (%d):\n", len(ep.ToolCalls))
 		for _, tc := range ep.ToolCalls {
-			fmt.Fprintf(&b, "  \u2022 %s \u2192 %s\n", tc.Tool, tc.Outcome)
+			fmt.Fprintf(&b, "  • %s → %s\n", tc.Tool, tc.Outcome)
 		}
 	}
 	return b.String()
@@ -762,6 +1022,30 @@ func formatPattern(pat *models.Pattern) string {
 	fmt.Fprintf(&b, "Sources: %s\n\n", strings.Join(pat.Sources, ", "))
 	fmt.Fprintf(&b, "Consolidated Prompt:\n%s\n\n", pat.ConsolidatedPrompt)
 	fmt.Fprintf(&b, "Master Thinking Path:\n%s\n", pat.MasterThinkingPath)
+	return b.String()
+}
+
+func formatConcept(con *store.SemanticConcept, edges []store.GraphEdge) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Semantic Concept: %s\n\n", con.ID)
+	fmt.Fprintf(&b, "Entity Name: %s  |  Type: %s\n", con.EntityName, con.Type)
+	fmt.Fprintf(&b, "Access Count: %d  |  Created: %s\n", con.AccessCount, con.CreatedAt)
+	if con.LastAccessedAt != "" {
+		fmt.Fprintf(&b, "Last Accessed: %s\n", con.LastAccessedAt)
+	}
+	if con.SourceEpisode != "" {
+		fmt.Fprintf(&b, "Source Episode: %s\n", con.SourceEpisode)
+	}
+	if len(con.Tags) > 0 {
+		fmt.Fprintf(&b, "Tags: %s\n", strings.Join(con.Tags, ", "))
+	}
+	if len(edges) > 0 {
+		fmt.Fprintf(&b, "\nRelationships:\n")
+		for _, e := range edges {
+			fmt.Fprintf(&b, "  • %s —(%s, weight=%.2f)→ %s\n", e.SourceID, e.Relationship, e.Weight, e.TargetID)
+		}
+	}
+	fmt.Fprintf(&b, "\nDescription:\n%s\n", con.Description)
 	return b.String()
 }
 
@@ -800,6 +1084,10 @@ func (m model) View() string {
 		b.WriteString(m.polishView())
 	case 5:
 		b.WriteString(m.statsView())
+	case 6:
+		b.WriteString(m.conceptsView())
+	case 7:
+		b.WriteString(m.graphView())
 	}
 
 	if m.errMsg != "" {
@@ -827,7 +1115,7 @@ func (m model) episodesView() string {
 	if len(m.episodes) == 0 {
 		return "  No episodes found\n"
 	}
-	return m.epTable.View() + "\n  d: delete | enter: detail"
+	return m.epTable.View() + "\n  d: delete | enter: detail | p: promote to concept | t: traverse"
 }
 
 func (m model) patternsView() string {
@@ -835,6 +1123,20 @@ func (m model) patternsView() string {
 		return "  No patterns found\n"
 	}
 	return m.patTable.View() + "\n  d: delete | enter: detail"
+}
+
+func (m model) conceptsView() string {
+	if len(m.concepts) == 0 {
+		return "  No semantic concepts found\n"
+	}
+	return m.conTable.View() + "\n  d: delete | enter: detail | t: traverse"
+}
+
+func (m model) graphView() string {
+	if len(m.graphEdges) == 0 {
+		return "  No graph edges found\n"
+	}
+	return m.graphTable.View() + "\n  d: delete | enter/t: traverse from source"
 }
 
 func (m model) searchView() string {

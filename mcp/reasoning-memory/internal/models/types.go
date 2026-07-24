@@ -109,6 +109,11 @@ type ConsolidationConfig struct {
 	PruneAfterDays        int  `yaml:"prune_after_days"`
 	MinEpisodesForPattern int  `yaml:"min_episodes_for_pattern"`
 	AutoRun               bool `yaml:"auto_run"`
+	IntervalHours         int  `yaml:"interval_hours"`
+	ArchiveAfterDays      int  `yaml:"archive_after_days"`
+	MaxArchiveDays        int  `yaml:"max_archive_days"`
+	SummarizeThreshold    int  `yaml:"summarize_threshold"`
+	MaxSummaryLength      int  `yaml:"max_summary_length"`
 }
 
 type SecurityConfig struct {
@@ -171,6 +176,8 @@ type SummaryStats struct {
 	TopLabelKey        string  `json:"top_label_key"`
 	LabelCardinality   int     `json:"label_cardinality"`
 	UnlabeledCount     int     `json:"unlabeled_count"`
+	TotalArchived      int     `json:"total_archived"`
+	TotalPruned        int     `json:"total_pruned"`
 }
 
 type LabelCount struct {
@@ -205,4 +212,6 @@ type StatsResult struct {
 	UnlabeledCount     int         `json:"unlabeled_count"`
 	AvgDurationSec     float64     `json:"avg_duration_sec"`
 	EpisodesByDay      []DayBucket `json:"episodes_by_day"`
+	ArchivedTotal      int         `json:"archived_total"`
+	PrunedTotal        int         `json:"pruned_total"`
 }

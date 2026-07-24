@@ -23,6 +23,21 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Consolidation.PruneAfterDays != 90 {
 		t.Errorf("expected prune_after_days 90, got %d", cfg.Consolidation.PruneAfterDays)
 	}
+	if cfg.Consolidation.IntervalHours != 24 {
+		t.Errorf("expected interval_hours 24, got %d", cfg.Consolidation.IntervalHours)
+	}
+	if cfg.Consolidation.ArchiveAfterDays != 30 {
+		t.Errorf("expected archive_after_days 30, got %d", cfg.Consolidation.ArchiveAfterDays)
+	}
+	if cfg.Consolidation.MaxArchiveDays != 90 {
+		t.Errorf("expected max_archive_days 90, got %d", cfg.Consolidation.MaxArchiveDays)
+	}
+	if cfg.Consolidation.SummarizeThreshold != 5 {
+		t.Errorf("expected summarize_threshold 5, got %d", cfg.Consolidation.SummarizeThreshold)
+	}
+	if cfg.Consolidation.MaxSummaryLength != 500 {
+		t.Errorf("expected max_summary_length 500, got %d", cfg.Consolidation.MaxSummaryLength)
+	}
 	if !cfg.Security.RedactSecrets || !cfg.Security.RedactBeforeEmbedding ||
 		!cfg.Security.RedactOnRetrieval || !cfg.Security.RedactPolishedPrompts {
 		t.Fatal("expected secure redaction defaults")

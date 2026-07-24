@@ -260,6 +260,11 @@ consolidation:
   min_episodes_for_pattern: 3
   prune_after_days: 90
   auto_run: true
+  interval_hours: 24          # run compaction background loop every N hours
+  archive_after_days: 30      # move episodes older than N days to episodes_archive
+  max_archive_days: 90        # permanently delete archived episodes older than N days
+  summarize_threshold: 5      # min episodes in pattern cluster to trigger trace summarization
+  max_summary_length: 500     # max trace character length after summarization
 ```
 
 ### Secret redaction

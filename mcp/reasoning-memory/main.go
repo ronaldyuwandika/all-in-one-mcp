@@ -106,6 +106,7 @@ func main() {
 	rootCmd.AddCommand(cli.NewStatsCmd(es))
 	rootCmd.AddCommand(cli.NewDoctorCmd(es, cfgPath))
 	rootCmd.AddCommand(cli.NewDashboardCmd(es, cfgPath, cfg))
+	rootCmd.AddCommand(cli.NewCompactCmd(es, cfg))
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -114,6 +115,10 @@ func main() {
 
 func runMCPServer() error {
 	go handleSignals()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	es.CompactionCancel = cancel
+	es.StartCompactionLoop(ctx, cfg.Consolidation)
 
 	s := server.NewMCPServer(
 		"reasoning-memory",

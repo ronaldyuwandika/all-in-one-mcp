@@ -194,3 +194,55 @@ func TestEmptyStats(t *testing.T) {
 		t.Errorf("EpisodesTotal = %d, want 0", sm.stats.EpisodesTotal)
 	}
 }
+
+func TestConceptsAndGraphTabs(t *testing.T) {
+	m, es := newTestDashboard(t)
+	// Go to Tab 6 (Concepts)
+	for i := 0; i < 6; i++ {
+		m = upd(m, tabMsg())
+	}
+	if m.activeTab != 6 {
+		t.Fatalf("expected tab 6 (Concepts), got %d", m.activeTab)
+	}
+	_ = m.conceptsView()
+
+	// Go to Tab 7 (Graph)
+	m = upd(m, tabMsg())
+	if m.activeTab != 7 {
+		t.Fatalf("expected tab 7 (Graph), got %d", m.activeTab)
+	}
+	_ = m.graphView()
+
+	// Load concepts
+	cmd := m.loadConcepts()
+	if cmd != nil {
+		msg := cmd()
+		m = upd(m, msg)
+	}
+
+	// Load edges
+	cmd = m.loadEdges()
+	if cmd != nil {
+		msg := cmd()
+		m = upd(m, msg)
+	}
+
+	// Test promote on episodes tab (tab 0)
+	m.activeTab = 0
+	eps, err := es.ListEpisodes(10, 0)
+	if err != nil || len(eps) == 0 {
+		t.Fatalf("failed to list episodes: %v", err)
+	}
+	m.episodes = eps
+	m.epTable.SetCursor(0)
+
+	// Send promote key msg
+	m = upd(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	// Trigger the resulting promoteEpisode cmd if any
+	// (note: Update returns cmd for promote, which we can call)
+	pCmd := m.promoteEpisode(eps[0].ID)
+	if pCmd != nil {
+		pMsg := pCmd()
+		m = upd(m, pMsg)
+	}
+}

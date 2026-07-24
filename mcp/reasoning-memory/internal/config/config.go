@@ -30,6 +30,11 @@ var DefaultConfig = models.Config{
 		PruneAfterDays:        90,
 		MinEpisodesForPattern: 3,
 		AutoRun:               true,
+		IntervalHours:         24,
+		ArchiveAfterDays:      30,
+		MaxArchiveDays:        90,
+		SummarizeThreshold:    5,
+		MaxSummaryLength:      500,
 	},
 	Security: models.SecurityConfig{
 		RedactSecrets:         true,
@@ -87,6 +92,21 @@ func Load(path string) (*models.Config, error) {
 	}
 	if cfg.Consolidation.PruneAfterDays == 0 {
 		cfg.Consolidation.PruneAfterDays = DefaultConfig.Consolidation.PruneAfterDays
+	}
+	if cfg.Consolidation.IntervalHours == 0 {
+		cfg.Consolidation.IntervalHours = DefaultConfig.Consolidation.IntervalHours
+	}
+	if cfg.Consolidation.ArchiveAfterDays == 0 {
+		cfg.Consolidation.ArchiveAfterDays = DefaultConfig.Consolidation.ArchiveAfterDays
+	}
+	if cfg.Consolidation.MaxArchiveDays == 0 {
+		cfg.Consolidation.MaxArchiveDays = DefaultConfig.Consolidation.MaxArchiveDays
+	}
+	if cfg.Consolidation.SummarizeThreshold == 0 {
+		cfg.Consolidation.SummarizeThreshold = DefaultConfig.Consolidation.SummarizeThreshold
+	}
+	if cfg.Consolidation.MaxSummaryLength == 0 {
+		cfg.Consolidation.MaxSummaryLength = DefaultConfig.Consolidation.MaxSummaryLength
 	}
 	if cfg.Security.Replacement == "" {
 		cfg.Security.Replacement = DefaultConfig.Security.Replacement

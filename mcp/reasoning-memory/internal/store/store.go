@@ -20,9 +20,10 @@ import (
 )
 
 type EpisodeStore struct {
-	db     *sql.DB
-	vec    *VectorStore
-	dbPath string
+	db               *sql.DB
+	vec              *VectorStore
+	dbPath           string
+	CompactionCancel context.CancelFunc
 }
 
 func New(dbPath string) (*EpisodeStore, error) {
@@ -98,6 +99,26 @@ func migrate(db *sql.DB) error {
 			master_thinking_path TEXT NOT NULL,
 			master_tool_calls TEXT NOT NULL DEFAULT '[]',
 			tags TEXT NOT NULL DEFAULT '[]'
+		)`,
+		`CREATE TABLE IF NOT EXISTS episodes_archive (
+			id TEXT PRIMARY KEY,
+			created_at TEXT NOT NULL,
+			domain TEXT NOT NULL DEFAULT 'coding',
+			outcome TEXT NOT NULL,
+			tags TEXT NOT NULL DEFAULT '[]',
+			problem TEXT NOT NULL,
+			thinking_trace TEXT NOT NULL,
+			steps TEXT NOT NULL DEFAULT '[]',
+			tool_calls TEXT NOT NULL DEFAULT '[]',
+			model_id TEXT NOT NULL DEFAULT '',
+			duration_seconds INTEGER NOT NULL DEFAULT 0,
+			repo TEXT NOT NULL DEFAULT '',
+			labels TEXT NOT NULL DEFAULT '{}',
+			tier TEXT NOT NULL DEFAULT 'episodic'
+		)`,
+		`CREATE TABLE IF NOT EXISTS compaction_stats (
+			key TEXT PRIMARY KEY,
+			value INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE TRIGGER IF NOT EXISTS episodes_ai AFTER INSERT ON episodes BEGIN
 			INSERT INTO episodes_fts(rowid, problem, thinking_trace, domain, outcome, tags)
@@ -202,6 +223,9 @@ func detectGitRepo() string {
 }
 
 func (es *EpisodeStore) Close() error {
+	if es.CompactionCancel != nil {
+		es.CompactionCancel()
+	}
 	if es.vec != nil {
 		_ = es.vec.Close()
 	}
@@ -713,6 +737,14 @@ func (es *EpisodeStore) SummaryStats() (*models.SummaryStats, error) {
 
 	unlabeled, _ := es.UnlabeledCount()
 	stats.UnlabeledCount = unlabeled
+
+	var archivedCount int
+	_ = es.db.QueryRow("SELECT COUNT(*) FROM episodes_archive").Scan(&archivedCount)
+	stats.TotalArchived = archivedCount
+
+	var prunedCount int
+	_ = es.db.QueryRow("SELECT COALESCE(value, 0) FROM compaction_stats WHERE key = 'pruned_count'").Scan(&prunedCount)
+	stats.TotalPruned = prunedCount
 
 	return stats, nil
 }
