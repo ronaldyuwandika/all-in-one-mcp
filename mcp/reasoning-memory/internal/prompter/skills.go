@@ -38,6 +38,10 @@ type SkillData struct {
 }
 
 func LoadSkill(skillName string) (*SkillData, error) {
+	if skillName == "" || filepath.Base(skillName) != skillName ||
+		strings.ContainsAny(skillName, `/\`) {
+		return nil, nil
+	}
 	for _, base := range SkillSearchPaths {
 		path := filepath.Join(base, skillName, "SKILL.md")
 		data, err := os.ReadFile(path) // #nosec G304 -- path constructed from predefined search paths

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/models"
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/security"
 )
 
 type EnrichCtx struct {
@@ -178,6 +179,7 @@ func detectEntities(text string) []string {
 }
 
 func (es *EpisodeStore) SetLabels(episodeID string, labels map[string][]string) error {
+	labels = security.Labels(labels)
 	lj, _ := json.Marshal(labels)
 	_, err := es.db.Exec("UPDATE episodes SET labels = ? WHERE id = ?", string(lj), episodeID)
 	if err != nil {

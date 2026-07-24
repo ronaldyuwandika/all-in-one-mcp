@@ -16,3 +16,20 @@ consolidation:
   prune_after_days: 90
   min_episodes_for_pattern: 3
   auto_run: true
+security:
+  redact_secrets: true
+  redact_before_embedding: true
+  redact_on_retrieval: true
+  redact_polished_prompts: true
+  replacement: "[REDACTED]"
+  audit_detection: true
+prompt_polishing:
+  enabled: true
+  default_target_agent: generic
+  default_output_format: markdown
+  include_memory_by_default: true
+  max_memories: 3
+  max_prompt_chars: 20000
+  include_failure_lessons: true
+  include_full_traces: false
+  deduplicate_context: true

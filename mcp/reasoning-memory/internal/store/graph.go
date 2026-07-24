@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/models"
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/security"
 )
 
 type GraphEdge struct {
@@ -40,6 +41,9 @@ func migrateGraph(db *sql.DB) error {
 }
 
 func (es *EpisodeStore) AddEdge(sourceID, targetID, relationship string, weight float64) (string, error) {
+	sourceID = security.Text(sourceID)
+	targetID = security.Text(targetID)
+	relationship = security.Text(relationship)
 	edge := GraphEdge{
 		ID:           fmt.Sprintf("ge-%d", time.Now().UnixNano()),
 		SourceID:     sourceID,
@@ -60,6 +64,8 @@ func (es *EpisodeStore) AddEdge(sourceID, targetID, relationship string, weight 
 }
 
 func (es *EpisodeStore) Traverse(startID, relationship string, maxHops int) ([]models.EpisodeSummary, error) {
+	startID = security.Text(startID)
+	relationship = security.Text(relationship)
 	if maxHops <= 0 {
 		maxHops = 3
 	}
@@ -164,6 +170,9 @@ func (es *EpisodeStore) ListEdges(sourceID string) ([]GraphEdge, error) {
 		if err := rows.Scan(&e.ID, &e.SourceID, &e.TargetID, &e.Relationship, &e.Weight, &e.CreatedAt); err != nil {
 			continue
 		}
+		e.SourceID = security.Text(e.SourceID)
+		e.TargetID = security.Text(e.TargetID)
+		e.Relationship = security.Text(e.Relationship)
 		edges = append(edges, e)
 	}
 	return edges, rows.Err()

@@ -25,7 +25,7 @@ reasoning-memory
 | `inject_reasoning_context` | Get XML block for prompt injection | `problem` |
 | `enrich_episode` | Auto-enrich labels for an existing episode | `episode_id` |
 | `consolidate_reasoning` | Cluster, merge, prune, reindex | — |
-| `polish_prompt` | Structure raw prompt + inject skill context | `raw_prompt` |
+| `polish_prompt` | Build a secret-safe agent prompt with optional memory and skill context | `raw_prompt` |
 
 ### `capture_reasoning_episode`
 
@@ -187,7 +187,7 @@ Query: `"Go middleware design patterns"` → XML block with 3 relevant episodes 
 
 ### Polished via `polish_prompt`
 
-Input: `"build a dockerfile for my go service"` + skill `docker-expert` → detected `coding` task type, injected docker-expert rules, appended relevant past reasoning.
+Input: `"build a dockerfile for my go service"` + target `codex` + skill `docker-expert` → detected the task type, applied the Codex profile, injected actionable skill rules, and appended concise relevant experience.
 
 ### Consolidated via `consolidate_reasoning`
 
@@ -210,7 +210,7 @@ Strategy `auto` → found 1 merge candidate, merged into pattern `pat-re-2026071
 - `enrich_episode` re-runs auto-enrichment for episodes captured without labels (or with partial labels).
 - `retrieve_reasoning` runs hybrid FTS5 + vector search, ranked by `_local_score`, optionally filtered by `metadata_filter`.
 - `inject_reasoning_context` wraps search results into a `<reasoning_memory>` XML block ready for prompt prepending.
-- `polish_prompt` auto-detects task type via keyword patterns → injects skill rules from `SKILL.md` → appends relevant past reasoning.
+- `polish_prompt` redacts input → classifies the task → retrieves concise relevant experience → extracts skill rules → renders a `codex`, `claude`, or `generic` profile → applies final redaction and the prompt budget.
 - `consolidate_reasoning` finds merge candidates → merges similar episodes → prunes stale failures → rebuilds FTS5 index.
 
 ## CLI Commands
@@ -239,6 +239,23 @@ retrieval:
   top_k_default: 3
   min_similarity: 0.15
   hybrid_weight: 0.5
+security:
+  redact_secrets: true
+  redact_before_embedding: true
+  redact_on_retrieval: true
+  redact_polished_prompts: true
+  replacement: "[REDACTED]"
+  audit_detection: true
+prompt_polishing:
+  enabled: true
+  default_target_agent: generic
+  default_output_format: markdown
+  include_memory_by_default: true
+  max_memories: 3
+  max_prompt_chars: 20000
+  include_failure_lessons: true
+  include_full_traces: false
+  deduplicate_context: true
 consolidation:
   min_episodes_for_pattern: 3
   prune_after_days: 90
@@ -249,6 +266,14 @@ consolidation:
   summarize_threshold: 5      # min episodes in pattern cluster to trigger trace summarization
   max_summary_length: 500     # max trace character length after summarization
 ```
+
+### Secret redaction
+
+Secret redaction is enabled by default and runs before normalization, SQLite/FTS5 storage, vector indexing, and external embedding requests. Retrieval also redacts legacy rows, and prompt rendering applies a final pass across raw requests, memory summaries, and skill guidance. The original secret is not retained by reasoning-memory.
+
+Detection is deterministic and pattern-based. It covers common provider tokens, JWTs, CLI credential arguments, environment and structured YAML/Terraform assignments, authorization headers, private keys, credential-bearing connection strings, and conservative high-entropy candidates. Findings expose only type, byte range, confidence, and a truncated SHA-256 fingerprint—not the detected value. Git hashes, UUIDs, ordinary checksums, and low-diversity identifiers are excluded, but no pattern-based detector can identify every custom credential format. Avoid intentionally including secrets in reasoning traces or prompts.
+
+The legacy `migrate.py` utility also passes imported episode and pattern JSON through the shared Go detector before opening SQLite. Running that migration therefore requires the Go toolchain in addition to Python.
 
 ### Environment Variables
 
@@ -272,11 +297,12 @@ mcp/reasoning-memory/
 │   │   ├── vector.go          # chromem-go integration
 │   │   └── patterns.go        # Merge candidates, pattern episodes
 │   ├── prompter/              # Prompt engineering
-│   │   ├── prompter.go        # Task detection, language detection
+│   │   ├── prompter.go        # Agent profiles, formats, and budgeting
 │   │   ├── detect.go          # Pattern-based task classifier
 │   │   └── skills.go          # Skill injection from SKILL.md
 │   ├── models/                # Shared types
 │   │   └── types.go           # Episode, Step, ToolCall, Config, Pattern
+│   ├── security/              # Shared-detector model sanitization
 │   └── config/                # YAML config loading
 │       └── config.go          # Load, defaults, dir helpers
 └── bench/                     # Performance + accuracy suite
@@ -310,7 +336,6 @@ go test -bench=. -benchmem ./...
 ## Accuracy & Effectiveness
 
 | Metric | Value | Method |
-|--------|-------|--------|
 | Retrieval nDCG@10 (hybrid) | 0.5453 | 200 labeled query/episode pairs |
 | Prompt polish task detection | 87.5% | 200 held-out test prompts |
 | Consolidation quality | 4.2 / 5 | Human evaluation (50 merged clusters) |
@@ -319,18 +344,21 @@ go test -bench=. -benchmem ./...
 
 ### Task Type Detection
 
-`polish_prompt` classifies input into one of four domains using keyword patterns:
+`polish_prompt` deterministically classifies common coding-agent work using keyword patterns:
 
 | Domain | Triggers |
 |--------|----------|
-| `coding` | test, implement, refactor, debug, write code, fix bug, ci/cd, pipeline |
-| `agentic` | deploy, run, execute, operate, monitor, orchestrate, schedule |
-| `analysis` | analyze, compare, investigate, audit, review, estimate, research |
+| `coding`, `bug_fix`, `refactor`, `testing`, `debugging` | implementation and code-change wording |
+| `code_review`, `analysis` | review, analysis, comparison, investigation |
+| `infrastructure`, `database`, `documentation` | domain-specific wording |
+| `agentic` | orchestration, workflow, automation, monitoring |
 | `general` | (fallback) |
 
 ### Skill Injection
 
-When `skill_name` is provided, the prompter loads `~/.agents/skills/<name>/SKILL.md` or `~/.config/opencode/skill/<name>/SKILL.md`. The skill's Intent, Core Principles, Validation Checklist, and Workflow rules are injected between the Task section and Execution Protocol in the polished prompt.
+When `skill_name` is provided, the prompter searches the supported local Claude, Agents, and OpenCode skill directories. It extracts actionable intent, principles, validation, workflow, and constraint rules; deduplicates prompt guidance; and redacts it before rendering. Skill content cannot override built-in security constraints.
+
+The `target_agent` field supports `codex`, `claude`, and `generic`. `output_format` supports `markdown`, `json`, and `xml`; all profiles contain equivalent objective, requirement, constraint, acceptance, validation, and deliverable fields. `max_prompt_chars` bounds output, with prior-memory and skill context removed before mandatory instructions.
 
 ### Best Practices: `thinking_trace` Format
 

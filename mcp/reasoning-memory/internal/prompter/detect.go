@@ -4,12 +4,32 @@ import (
 	"strings"
 )
 
-func DetectTaskType(rawPrompt string) string {
+func DetectTaskCategory(rawPrompt string) string {
 	lower := strings.ToLower(rawPrompt)
 
+	categories := []struct {
+		name       string
+		indicators []string
+	}{
+		{"bug_fix", []string{"fix bug", "bug fix", "regression", "broken", "incorrect behavior", "doesn't work", "does not work"}},
+		{"debugging", []string{"debug", "investigate failure", "root cause", "trace error"}},
+		{"testing", []string{"add test", "write test", "test coverage", "unit test", "integration test", "e2e test"}},
+		{"refactor", []string{"refactor", "restructure", "cleanup code", "simplify code"}},
+		{"code_review", []string{"code review", "review pr", "review pull request", "review this code"}},
+		{"infrastructure", []string{"terraform", "kubernetes", "helm", "deploy", "ci/cd", "pipeline", "infrastructure"}},
+		{"database", []string{"database", "schema", "migration", "postgres", "mysql", "mongodb", "sqlite", "sql query"}},
+		{"documentation", []string{"documentation", "readme", "docs", "document this", "write guide"}},
+	}
+	for _, category := range categories {
+		for _, indicator := range category.indicators {
+			if strings.Contains(lower, indicator) {
+				return category.name
+			}
+		}
+	}
+
 	codingIndicators := []string{
-		"implement", "refactor", "write code", "fix", "debug",
-		"add function", "create api", "optimize", "migrate",
+		"implement", "write code", "fix", "add function", "create api", "optimize", "migrate",
 		"golang", "python", "javascript", "typescript", "rust",
 		"sql", "bash", "script", "testing", "function ",
 	}
@@ -40,6 +60,20 @@ func DetectTaskType(rawPrompt string) string {
 	}
 
 	return "general"
+}
+
+// DetectTaskType preserves the original broad-domain API. Prompt polishing uses
+// DetectTaskCategory for the more actionable classification.
+func DetectTaskType(rawPrompt string) string {
+	category := DetectTaskCategory(rawPrompt)
+	switch category {
+	case "bug_fix", "debugging", "testing", "refactor", "code_review", "database", "documentation":
+		return "coding"
+	case "infrastructure":
+		return "agentic"
+	default:
+		return category
+	}
 }
 
 var languagePatterns = []struct {

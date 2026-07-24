@@ -36,6 +36,25 @@ var DefaultConfig = models.Config{
 		SummarizeThreshold:    5,
 		MaxSummaryLength:      500,
 	},
+	Security: models.SecurityConfig{
+		RedactSecrets:         true,
+		RedactBeforeEmbedding: true,
+		RedactOnRetrieval:     true,
+		RedactPolishedPrompts: true,
+		Replacement:           "[REDACTED]",
+		AuditDetection:        true,
+	},
+	PromptPolishing: models.PromptPolishingConfig{
+		Enabled:                true,
+		DefaultTargetAgent:     "generic",
+		DefaultOutputFormat:    "markdown",
+		IncludeMemoryByDefault: true,
+		MaxMemories:            3,
+		MaxPromptChars:         20000,
+		IncludeFailureLessons:  true,
+		IncludeFullTraces:      false,
+		DeduplicateContext:     true,
+	},
 }
 
 func Load(path string) (*models.Config, error) {
@@ -48,7 +67,7 @@ func Load(path string) (*models.Config, error) {
 		return nil, err
 	}
 
-	var cfg models.Config
+	cfg := DefaultConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
@@ -88,6 +107,21 @@ func Load(path string) (*models.Config, error) {
 	}
 	if cfg.Consolidation.MaxSummaryLength == 0 {
 		cfg.Consolidation.MaxSummaryLength = DefaultConfig.Consolidation.MaxSummaryLength
+	}
+	if cfg.Security.Replacement == "" {
+		cfg.Security.Replacement = DefaultConfig.Security.Replacement
+	}
+	if cfg.PromptPolishing.DefaultTargetAgent == "" {
+		cfg.PromptPolishing.DefaultTargetAgent = DefaultConfig.PromptPolishing.DefaultTargetAgent
+	}
+	if cfg.PromptPolishing.DefaultOutputFormat == "" {
+		cfg.PromptPolishing.DefaultOutputFormat = DefaultConfig.PromptPolishing.DefaultOutputFormat
+	}
+	if cfg.PromptPolishing.MaxMemories <= 0 {
+		cfg.PromptPolishing.MaxMemories = DefaultConfig.PromptPolishing.MaxMemories
+	}
+	if cfg.PromptPolishing.MaxPromptChars <= 0 {
+		cfg.PromptPolishing.MaxPromptChars = DefaultConfig.PromptPolishing.MaxPromptChars
 	}
 
 	return &cfg, nil

@@ -38,6 +38,15 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Consolidation.MaxSummaryLength != 500 {
 		t.Errorf("expected max_summary_length 500, got %d", cfg.Consolidation.MaxSummaryLength)
 	}
+	if !cfg.Security.RedactSecrets || !cfg.Security.RedactBeforeEmbedding ||
+		!cfg.Security.RedactOnRetrieval || !cfg.Security.RedactPolishedPrompts {
+		t.Fatal("expected secure redaction defaults")
+	}
+	if cfg.PromptPolishing.DefaultTargetAgent != "generic" ||
+		cfg.PromptPolishing.DefaultOutputFormat != "markdown" ||
+		cfg.PromptPolishing.IncludeFullTraces {
+		t.Fatalf("unexpected prompt-polishing defaults: %#v", cfg.PromptPolishing)
+	}
 }
 
 func TestLoadFromFile(t *testing.T) {

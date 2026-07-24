@@ -8,6 +8,8 @@ import (
 	"os"
 	"sync/atomic"
 	"time"
+
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/security"
 )
 
 type Metrics struct {
@@ -154,8 +156,59 @@ func (t *TracingCtx) End(err error) {
 }
 
 func SetupLogger() {
-	handler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+	base := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	})
-	slog.SetDefault(slog.New(handler))
+	slog.SetDefault(slog.New(redactingHandler{next: base}))
+}
+
+type redactingHandler struct {
+	next slog.Handler
+}
+
+func (h redactingHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.next.Enabled(ctx, level)
+}
+
+func (h redactingHandler) Handle(ctx context.Context, record slog.Record) error {
+	clean := slog.NewRecord(record.Time, record.Level, security.Text(record.Message), record.PC)
+	record.Attrs(func(attr slog.Attr) bool {
+		clean.AddAttrs(redactAttr(attr))
+		return true
+	})
+	return h.next.Handle(ctx, clean)
+}
+
+func (h redactingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	clean := make([]slog.Attr, len(attrs))
+	for i, attr := range attrs {
+		clean[i] = redactAttr(attr)
+	}
+	return redactingHandler{next: h.next.WithAttrs(clean)}
+}
+
+func (h redactingHandler) WithGroup(name string) slog.Handler {
+	return redactingHandler{next: h.next.WithGroup(security.Text(name))}
+}
+
+func redactAttr(attr slog.Attr) slog.Attr {
+	attr.Key = security.Text(attr.Key)
+	switch attr.Value.Kind() {
+	case slog.KindString:
+		attr.Value = slog.StringValue(security.Text(attr.Value.String()))
+	case slog.KindGroup:
+		group := attr.Value.Group()
+		for i := range group {
+			group[i] = redactAttr(group[i])
+		}
+		attr.Value = slog.GroupValue(group...)
+	case slog.KindAny:
+		switch value := attr.Value.Any().(type) {
+		case error:
+			attr.Value = slog.StringValue(security.Text(value.Error()))
+		case string:
+			attr.Value = slog.StringValue(security.Text(value))
+		}
+	}
+	return attr
 }

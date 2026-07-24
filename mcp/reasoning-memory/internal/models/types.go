@@ -79,14 +79,16 @@ type Pattern struct {
 }
 
 type Config struct {
-	Version       string              `yaml:"version"`
-	EpisodesDir   string              `yaml:"episodes_dir"`
-	IndexDir      string              `yaml:"index_dir"`
-	PatternsDir   string              `yaml:"patterns_dir"`
-	VectorDir     string              `yaml:"vector_dir"`
-	Embedding     EmbeddingConfig     `yaml:"embedding"`
-	Retrieval     RetrievalConfig     `yaml:"retrieval"`
-	Consolidation ConsolidationConfig `yaml:"consolidation"`
+	Version         string                `yaml:"version"`
+	EpisodesDir     string                `yaml:"episodes_dir"`
+	IndexDir        string                `yaml:"index_dir"`
+	PatternsDir     string                `yaml:"patterns_dir"`
+	VectorDir       string                `yaml:"vector_dir"`
+	Embedding       EmbeddingConfig       `yaml:"embedding"`
+	Retrieval       RetrievalConfig       `yaml:"retrieval"`
+	Consolidation   ConsolidationConfig   `yaml:"consolidation"`
+	Security        SecurityConfig        `yaml:"security"`
+	PromptPolishing PromptPolishingConfig `yaml:"prompt_polishing"`
 }
 
 type EmbeddingConfig struct {
@@ -114,14 +116,39 @@ type ConsolidationConfig struct {
 	MaxSummaryLength      int  `yaml:"max_summary_length"`
 }
 
+type SecurityConfig struct {
+	RedactSecrets         bool   `yaml:"redact_secrets"`
+	RedactBeforeEmbedding bool   `yaml:"redact_before_embedding"`
+	RedactOnRetrieval     bool   `yaml:"redact_on_retrieval"`
+	RedactPolishedPrompts bool   `yaml:"redact_polished_prompts"`
+	Replacement           string `yaml:"replacement"`
+	AuditDetection        bool   `yaml:"audit_detection"`
+}
+
+type PromptPolishingConfig struct {
+	Enabled                bool   `yaml:"enabled"`
+	DefaultTargetAgent     string `yaml:"default_target_agent"`
+	DefaultOutputFormat    string `yaml:"default_output_format"`
+	IncludeMemoryByDefault bool   `yaml:"include_memory_by_default"`
+	MaxMemories            int    `yaml:"max_memories"`
+	MaxPromptChars         int    `yaml:"max_prompt_chars"`
+	IncludeFailureLessons  bool   `yaml:"include_failure_lessons"`
+	IncludeFullTraces      bool   `yaml:"include_full_traces"`
+	DeduplicateContext     bool   `yaml:"deduplicate_context"`
+}
+
 type PolishResult struct {
-	PolishedPrompt string `json:"polished_prompt"`
-	TaskType       string `json:"task_type"`
-	Language       string `json:"language,omitempty"`
-	Domain         string `json:"domain"`
-	SkillInjected  bool   `json:"skill_injected"`
-	SkillName      string `json:"skill_name,omitempty"`
-	ContextCount   int    `json:"context_count"`
+	PolishedPrompt string   `json:"polished_prompt"`
+	TargetAgent    string   `json:"target_agent"`
+	TaskType       string   `json:"task_type"`
+	Language       string   `json:"language,omitempty"`
+	Domain         string   `json:"domain"`
+	SkillInjected  bool     `json:"skill_injected"`
+	SkillName      string   `json:"skill_name,omitempty"`
+	ContextCount   int      `json:"context_count"`
+	OutputFormat   string   `json:"output_format"`
+	Warnings       []string `json:"warnings,omitempty"`
+	Truncated      bool     `json:"truncated,omitempty"`
 }
 
 type TagCount struct {

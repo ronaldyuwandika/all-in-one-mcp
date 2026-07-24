@@ -22,6 +22,7 @@ import (
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/config"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/models"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/prompter"
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/security"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/store"
 )
 
@@ -46,6 +47,7 @@ func main() {
 	if loadErr != nil {
 		log.Fatalf("load config: %v", loadErr)
 	}
+	security.Configure(cfg.Security.Replacement)
 
 	vecDataDir := dataDir
 	vec, vecErr := store.NewVectorStore(
@@ -171,7 +173,7 @@ func runMCPServer() error {
 				"Use this at the START of a task. Returns a formatted <reasoning_memory> block."),
 			mcp.WithString("problem", mcp.Description("The task/problem description to match against."), mcp.Required()),
 			mcp.WithNumber("top_k", mcp.Description("Number of past episodes to include (default 3, max 10).")),
-			mcp.WithBoolean("include_traces", mcp.Description("Include full thinking traces (true) or just summaries (false).")),
+			mcp.WithBoolean("include_traces", mcp.Description("Include full thinking traces (default false) or just summaries.")),
 		),
 		handleInject(es, cfg),
 	)
@@ -187,12 +189,15 @@ func runMCPServer() error {
 	s.AddTool(
 		mcp.NewTool("polish_prompt",
 			mcp.WithDescription("Take an unstructured user prompt and return a polished, structured version.\n\n"+
-				"Detects task type, applies domain-specific architectural rules, optionally injects skill context."),
+				"Redacts secrets, detects task type, applies an agent profile, and optionally injects concise memory and skill context."),
 			mcp.WithString("raw_prompt", mcp.Description("The user's raw/unstructured input."), mcp.Required()),
-			mcp.WithString("domain", mcp.Description("Optional override (\"coding\", \"agentic\", \"analysis\", \"general\"). Auto-detected if omitted.")),
+			mcp.WithString("target_agent", mcp.Description("Target profile: \"codex\", \"claude\", or \"generic\" (default).")),
+			mcp.WithString("domain", mcp.Description("Optional task/domain override. Auto-detected if omitted.")),
+			mcp.WithString("repo", mcp.Description("Optional repository or project scope.")),
 			mcp.WithBoolean("include_context", mcp.Description("If true, search RMN for relevant past episodes (default true).")),
 			mcp.WithNumber("top_k", mcp.Description("Number of context episodes to include (default 3, max 5).")),
 			mcp.WithString("skill_name", mcp.Description("Optional skill name to load and inject.")),
+			mcp.WithString("output_format", mcp.Description("Output format: \"markdown\" (default), \"json\", or \"xml\".")),
 		),
 		handlePolish(es, cfg),
 	)
@@ -277,7 +282,7 @@ func reindexEpisodes(ctx context.Context, es *store.EpisodeStore, vec *store.Vec
 		}
 		if len(contents) > 0 {
 			if err := vec.AddEpisodes(ctx, contents); err != nil {
-				log.Printf("⚠ reindex batch: %v", err)
+				log.Printf("⚠ reindex batch: %s", security.Text(err.Error()))
 			}
 			total += len(contents)
 		}
@@ -329,11 +334,12 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 			Labels:          labels,
 			Problem:         problem,
 			ThinkingTrace:   thinkingTrace,
-			Steps:           extractSteps(thinkingTrace),
 			ToolCalls:       toolCalls,
 			ModelID:         modelID,
 			DurationSeconds: durationSeconds,
 		}
+		security.Episode(ep)
+		ep.Steps = extractSteps(ep.ThinkingTrace)
 
 		episodeID, err := es.CreateEpisode(ep)
 		if err != nil {
@@ -412,7 +418,7 @@ func handleEnrich(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerFu
 	}
 }
 
-func handleInject(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerFunc {
+func handleInject(es *store.EpisodeStore, cfg *models.Config) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := toolArguments(req)
 
@@ -424,7 +430,7 @@ func handleInject(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerFu
 		if topK > 10 {
 			topK = 10
 		}
-		includeTraces := true
+		includeTraces := cfg.PromptPolishing.IncludeFullTraces
 		if b, ok := args["include_traces"].(bool); ok {
 			includeTraces = b
 		}
@@ -525,23 +531,40 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 		rawPrompt := getString(args, "raw_prompt")
 		domain := getString(args, "domain")
 		skillName := getString(args, "skill_name")
+		targetAgent := getString(args, "target_agent")
+		repo := getString(args, "repo")
+		outputFormat := getString(args, "output_format")
+		if targetAgent == "" {
+			targetAgent = cfg.PromptPolishing.DefaultTargetAgent
+		}
+		if outputFormat == "" {
+			outputFormat = cfg.PromptPolishing.DefaultOutputFormat
+		}
 
-		includeContext := true
+		includeContext := cfg.PromptPolishing.IncludeMemoryByDefault
 		if b, ok := args["include_context"].(bool); ok {
 			includeContext = b
 		}
-		topK := 3
+		topK := cfg.PromptPolishing.MaxMemories
 		if tk, err := getFloat64(args, "top_k"); err == nil {
 			topK = int(tk)
 		}
-		if topK > 5 {
-			topK = 5
+		if topK <= 0 {
+			topK = 3
+		}
+		maxMemories := cfg.PromptPolishing.MaxMemories
+		if maxMemories <= 0 || maxMemories > 5 {
+			maxMemories = 5
+		}
+		if topK > maxMemories {
+			topK = maxMemories
 		}
 
 		var contextStr string
+		contextCount := 0
 		if includeContext {
-			results, err := es.SearchLocal(rawPrompt, domain, "success", "", nil, topK)
-			if err == nil && len(results) > 0 {
+			results, err := es.SearchLocal(rawPrompt, domain, "success", repo, nil, topK)
+			if err == nil {
 				var ctxEpisodes []prompter.EpisodeContext
 				for _, r := range results {
 					ctxEpisodes = append(ctxEpisodes, prompter.EpisodeContext{
@@ -551,29 +574,42 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 						Tags:    r.Tags,
 					})
 				}
+				if cfg.PromptPolishing.IncludeFailureLessons && len(ctxEpisodes) < topK {
+					failures, failureErr := es.SearchLocal(rawPrompt, domain, "failure", repo, nil, 1)
+					if failureErr == nil && len(failures) > 0 {
+						r := failures[0]
+						ctxEpisodes = append(ctxEpisodes, prompter.EpisodeContext{
+							Problem: r.Problem, Domain: r.Domain, Outcome: r.Outcome, Tags: r.Tags,
+						})
+					}
+				}
+				contextCount = len(ctxEpisodes)
 				contextStr = prompter.BuildXMLEpisodeBlock(ctxEpisodes)
 			}
 		}
 
-		result, _ := prompter.PolishPrompt(rawPrompt, domain, contextStr, skillName, false)
-
-		data, _ := json.Marshal(map[string]interface{}{
-			"polished_prompt": result.PolishedPrompt,
-			"task_type":       result.TaskType,
-			"language":        result.Language,
-			"domain":          result.Domain,
-			"skill_injected":  result.SkillInjected,
-			"skill_name":      result.SkillName,
-			"context_count":   result.ContextCount,
+		result, err := prompter.PolishPromptWithOptions(prompter.Options{
+			RawPrompt: rawPrompt, TargetAgent: targetAgent, Domain: domain,
+			Repo: repo, Context: contextStr, SkillName: skillName,
+			OutputFormat: outputFormat, MaxChars: cfg.PromptPolishing.MaxPromptChars,
+			ContextCount: contextCount,
 		})
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("polish failed: %v", err)), nil
+		}
 
+		data, _ := json.Marshal(result)
 		return mcp.NewToolResultText(string(data)), nil
 	}
 }
 
 func toolArguments(req mcp.CallToolRequest) map[string]interface{} {
-	args, ok := req.Params.Arguments.(map[string]interface{})
-	if !ok {
+	data, err := json.Marshal(req.Params.Arguments)
+	if err != nil {
+		return map[string]interface{}{}
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(data, &args); err != nil || args == nil {
 		return map[string]interface{}{}
 	}
 	return args

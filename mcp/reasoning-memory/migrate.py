@@ -11,6 +11,7 @@ Usage:
 import json
 import os
 import sqlite3
+import subprocess
 import sys
 import re
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ DB_PATH = BASE_DIR / "store.db"
 EPISODES_DIR = BASE_DIR / "episodes"
 INDEX_PATH = BASE_DIR / "index" / "episodes.json"
 PATTERNS_DIR = BASE_DIR / "patterns"
+SECRETDETECT_DIR = Path(__file__).resolve().parents[2] / "pkg" / "secretdetect"
 
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:
@@ -35,6 +37,22 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
 
 def safe_json(data) -> str:
     return json.dumps(data or [], ensure_ascii=False)
+
+
+def redact_payload(data):
+    """Redact all nested strings through the shared Go detector before storage."""
+    process = subprocess.run(
+        ["go", "run", "./cmd/secretdetect"],
+        cwd=SECRETDETECT_DIR,
+        input=json.dumps(data, ensure_ascii=False),
+        text=True,
+        capture_output=True,
+        check=False,
+        env={**os.environ, "GOWORK": "off"},
+    )
+    if process.returncode != 0:
+        raise RuntimeError("shared secret redaction failed; migration aborted")
+    return json.loads(process.stdout)
 
 
 def migrate(dry_run: bool = False):
@@ -65,6 +83,10 @@ def migrate(dry_run: bool = False):
 
     if dry_run:
         return
+
+    sanitized = redact_payload({"episodes": episodes, "patterns": patterns})
+    episodes = sanitized["episodes"]
+    patterns = sanitized["patterns"]
 
     db = sqlite3.connect(str(DB_PATH))
 

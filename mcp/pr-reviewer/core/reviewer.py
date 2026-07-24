@@ -2,15 +2,15 @@
 
 import logging
 import time
-from typing import Optional
 
-from core.models import ReviewRequest, ReviewResult, Comment, PendingReview
+from core.models import Comment, PendingReview, ReviewRequest, ReviewResult
+from core.secrets import mask_text
+from llm.base import BaseLLM
+from llm.claude import ClaudeLLM
+from llm.gemini import GeminiLLM
+from llm.openai import OpenAILLM
 from providers.github import GitHubProvider
 from providers.gitlab import GitLabProvider
-from llm.base import BaseLLM
-from llm.gemini import GeminiLLM
-from llm.claude import ClaudeLLM
-from llm.openai import OpenAILLM
 
 logger = logging.getLogger("pr-reviewer.reviewer")
 
@@ -20,7 +20,7 @@ class Reviewer:
         self.config = config
         self.github_provider = GitHubProvider(config.get("github", {}))
         self.gitlab_provider = GitLabProvider(config.get("gitlab", {}))
-        self._llm: Optional[BaseLLM] = None
+        self._llm: BaseLLM | None = None
         self._init_llm()
 
     def _init_llm(self):
@@ -155,7 +155,7 @@ class Reviewer:
         rules = self.config.get("review", {}).get("rules", [])
         rules_str = "\n".join(f"- {r}" for r in rules)
 
-        return f"""Review the following code change.
+        prompt = f"""Review the following code change.
 
 Title: {req.title}
 Description: {req.description or "(no description)"}
@@ -188,6 +188,7 @@ Example:
                  "rule": "security"}}]}}
 
 Return ONLY valid JSON, no other text."""
+        return mask_text(prompt)
 
     def _parse_llm_response(self, response: str) -> ReviewResult:
         import json

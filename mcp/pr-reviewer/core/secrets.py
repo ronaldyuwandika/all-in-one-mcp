@@ -2,7 +2,6 @@
 
 import re
 import urllib.parse
-from typing import Optional
 
 MAX_DIFF_SIZE = 50_000
 MAX_TITLE_LENGTH = 200
@@ -20,7 +19,7 @@ CRED_PATTERNS = [
     ),
     (
         re.compile(r'(?i)(?:aws[_-])?secret[_-]access[_-]key[= ]+["\']?([^"\' \n]{8})([^"\' \n]+)'),
-        lambda m: f"secret_access_key={m.group(1)}{'*' * min(len(m.group(2)), 32)}",
+        "AWS_SECRET_ACCESS_KEY",
     ),
     (
         re.compile(r'(?i)(?:aws[_-])?session[_-]token[= ]+["\']?[^"\' \n]{10}([^"\' \n]+)'),
@@ -56,7 +55,7 @@ CRED_PATTERNS = [
     (re.compile(r"cfat_[A-Za-z0-9_]{10,}"), "CLOUDFLARE_TOKEN"),
     (
         re.compile(r'(?i)(api[_-]?key|apikey|api_secret|secret_key)[=: ]+["\']?([^"\' \n]{8})([^"\' \n]+)'),
-        lambda m: f"{m.group(1)}={m.group(2)}{'*' * min(len(m.group(3)), 32)}",
+        "API_KEY",
     ),
     (
         re.compile(r'(?i)(bearer|jwt)[=: ]+["\']?[^"\' \n]{10}([^"\' \n]{10,})'),
@@ -64,11 +63,11 @@ CRED_PATTERNS = [
     ),
     (
         re.compile(r'(?i)(token|secret)[=: ]+["\']?([^"\' \n]{10})([^"\' \n]+)'),
-        lambda m: f"{m.group(1)}={m.group(2)}{'*' * min(len(m.group(3)), 32)}",
+        "TOKEN",
     ),
     (
         re.compile(r'(?i)(password|passwd|pass|pwd)[=: ]+["\']?([^"\' \n]{3})([^"\' \n]+)'),
-        lambda m: f"{m.group(1)}={m.group(2)}{'*' * min(len(m.group(3)), 32)}",
+        "PASSWORD",
     ),
     (
         re.compile(r"(postgresql|mysql|redis|mongodb|rediss|amqp|rabbitmq)://[^@]+@"),
@@ -76,7 +75,7 @@ CRED_PATTERNS = [
     ),
     (
         re.compile(r'(DATABASE_URL|REDIS_URL|MONGO_URI|MONGODB_URI)[=: ]+["\']?[^"\' \n]{8}([^"\' \n]+)'),
-        lambda m: f"{m.group(1)}={'*' * min(len(m.group(2)), 40)}",
+        "CONNECTION_URL",
     ),
     (
         re.compile(r'(?i)Authorization[=: ]+["\']?(Bearer|Basic|Bearer)\s+[^"\' \n]+'),
@@ -97,7 +96,7 @@ def mask_text(text: str) -> str:
     return result
 
 
-def validate_url(url: str) -> Optional[str]:
+def validate_url(url: str) -> str | None:
     """Validate a PR/MR URL. Returns error message or None if valid."""
     if not url or not url.strip():
         return "url is required"
@@ -108,7 +107,7 @@ def validate_url(url: str) -> Optional[str]:
 
     try:
         parsed = urllib.parse.urlparse(url)
-    except Exception:
+    except ValueError:
         return "invalid URL format"
 
     if parsed.scheme not in ("https", "http"):
@@ -133,7 +132,7 @@ def validate_url(url: str) -> Optional[str]:
     return f"not a recognized PR/MR URL: {hostname}{path}"
 
 
-def validate_title(title: str) -> Optional[str]:
+def validate_title(title: str) -> str | None:
     if not title or not title.strip():
         return "title is required"
     if len(title) > MAX_TITLE_LENGTH:
@@ -141,7 +140,7 @@ def validate_title(title: str) -> Optional[str]:
     return None
 
 
-def validate_diff(diff: str) -> Optional[str]:
+def validate_diff(diff: str) -> str | None:
     if not diff or not diff.strip():
         return "diff is required"
     if len(diff) > MAX_DIFF_SIZE:
@@ -149,25 +148,25 @@ def validate_diff(diff: str) -> Optional[str]:
     return None
 
 
-def validate_provider(provider: str) -> Optional[str]:
+def validate_provider(provider: str) -> str | None:
     if provider not in ALLOWED_PROVIDERS:
         return f"provider must be one of: {', '.join(sorted(ALLOWED_PROVIDERS))}"
     return None
 
 
-def validate_llm_provider(provider: str) -> Optional[str]:
+def validate_llm_provider(provider: str) -> str | None:
     if provider not in ALLOWED_LLM_PROVIDERS:
         return f"llm provider must be one of: {', '.join(sorted(ALLOWED_LLM_PROVIDERS))}"
     return None
 
 
-def validate_severity(severity: str) -> Optional[str]:
+def validate_severity(severity: str) -> str | None:
     if severity not in ALLOWED_SEVERITIES:
         return f"severity must be one of: {', '.join(sorted(ALLOWED_SEVERITIES))}"
     return None
 
 
-def validate_model_name(model: str) -> Optional[str]:
+def validate_model_name(model: str) -> str | None:
     if not model or not model.strip():
         return "model name is required"
     if len(model) > 100:
