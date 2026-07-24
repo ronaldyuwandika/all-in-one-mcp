@@ -528,11 +528,11 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		args := toolArguments(req)
 
-		rawPrompt := getString(args, "raw_prompt")
-		domain := getString(args, "domain")
-		skillName := getString(args, "skill_name")
+		rawPrompt := security.Text(getString(args, "raw_prompt"))
+		domain := security.Text(getString(args, "domain"))
+		skillName := security.Text(getString(args, "skill_name"))
 		targetAgent := getString(args, "target_agent")
-		repo := getString(args, "repo")
+		repo := security.Text(getString(args, "repo"))
 		outputFormat := getString(args, "output_format")
 		if targetAgent == "" {
 			targetAgent = cfg.PromptPolishing.DefaultTargetAgent
@@ -560,10 +560,18 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 			topK = maxMemories
 		}
 
+		taskType := domain
+		if taskType == "" {
+			taskType = prompter.DetectTaskCategory(rawPrompt)
+		}
+		language := prompter.DetectLanguage(rawPrompt)
+		scope := prompter.ExtractScope(rawPrompt, repo, language)
+		constraints := prompter.ExtractConstraints(rawPrompt)
+
 		var contextStr string
 		contextCount := 0
 		if includeContext {
-			results, err := es.SearchLocal(rawPrompt, domain, "success", repo, nil, topK)
+			results, err := es.SearchLocal(rawPrompt, taskType, "success", repo, nil, topK)
 			if err == nil {
 				var ctxEpisodes []prompter.EpisodeContext
 				for _, r := range results {
@@ -575,7 +583,7 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 					})
 				}
 				if cfg.PromptPolishing.IncludeFailureLessons && len(ctxEpisodes) < topK {
-					failures, failureErr := es.SearchLocal(rawPrompt, domain, "failure", repo, nil, 1)
+					failures, failureErr := es.SearchLocal(rawPrompt, taskType, "failure", repo, nil, 1)
 					if failureErr == nil && len(failures) > 0 {
 						r := failures[0]
 						ctxEpisodes = append(ctxEpisodes, prompter.EpisodeContext{
@@ -589,10 +597,10 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 		}
 
 		result, err := prompter.PolishPromptWithOptions(prompter.Options{
-			RawPrompt: rawPrompt, TargetAgent: targetAgent, Domain: domain,
+			RawPrompt: rawPrompt, TargetAgent: targetAgent, Domain: taskType,
 			Repo: repo, Context: contextStr, SkillName: skillName,
 			OutputFormat: outputFormat, MaxChars: cfg.PromptPolishing.MaxPromptChars,
-			ContextCount: contextCount,
+			ContextCount: contextCount, ExtractedScope: scope, ExtractedConstraints: constraints,
 		})
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("polish failed: %v", err)), nil

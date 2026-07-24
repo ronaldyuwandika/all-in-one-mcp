@@ -13,16 +13,18 @@ import (
 const defaultMaxPromptChars = 20000
 
 type Options struct {
-	RawPrompt    string
-	TargetAgent  string
-	Domain       string
-	Repo         string
-	Context      string
-	SkillName    string
-	CompactSkill bool
-	OutputFormat string
-	MaxChars     int
-	ContextCount int
+	RawPrompt            string
+	TargetAgent          string
+	Domain               string
+	Repo                 string
+	Context              string
+	SkillName            string
+	CompactSkill         bool
+	OutputFormat         string
+	MaxChars             int
+	ContextCount         int
+	ExtractedScope       []string
+	ExtractedConstraints []string
 }
 
 type PromptModel struct {
@@ -30,6 +32,7 @@ type PromptModel struct {
 	TaskType           string   `json:"task_type" xml:"task_type,attr"`
 	Objective          string   `json:"objective" xml:"objective"`
 	Context            []string `json:"context,omitempty" xml:"context>item,omitempty"`
+	Scope              []string `json:"scope,omitempty" xml:"scope>item,omitempty"`
 	Requirements       []string `json:"requirements" xml:"requirements>item"`
 	Constraints        []string `json:"constraints" xml:"constraints>item"`
 	NonGoals           []string `json:"non_goals,omitempty" xml:"non_goals>item,omitempty"`
@@ -66,6 +69,7 @@ func PolishPrompt(rawPrompt, domain, context, skillName string, compact bool) (*
 }
 
 func PolishPromptWithOptions(opts Options) (*PolishResult, error) {
+	// Pipeline: raw prompt -> secret redaction.
 	opts.RawPrompt = security.Text(strings.TrimSpace(opts.RawPrompt))
 	opts.Context = security.Text(strings.TrimSpace(opts.Context))
 	opts.Repo = security.Text(strings.TrimSpace(opts.Repo))
@@ -93,11 +97,21 @@ func PolishPromptWithOptions(opts Options) (*PolishResult, error) {
 		opts.MaxChars = defaultMaxPromptChars
 	}
 
+	// Pipeline: task classification -> language/framework detection ->
+	// scope extraction -> constraint extraction.
 	taskType := opts.Domain
 	if taskType == "" {
 		taskType = DetectTaskCategory(opts.RawPrompt)
 	}
 	language := DetectLanguage(opts.RawPrompt)
+	scope := opts.ExtractedScope
+	if len(scope) == 0 {
+		scope = ExtractScope(opts.RawPrompt, opts.Repo, language)
+	}
+	constraints := opts.ExtractedConstraints
+	if len(constraints) == 0 {
+		constraints = ExtractConstraints(opts.RawPrompt)
+	}
 	objectiveLimit := opts.MaxChars / 4
 	if objectiveLimit < 200 {
 		objectiveLimit = 200
@@ -107,7 +121,7 @@ func PolishPromptWithOptions(opts Options) (*PolishResult, error) {
 		opts.RawPrompt = string(runes[:objectiveLimit]) + "…"
 		warnings = append(warnings, "The raw objective was shortened to preserve the configured prompt budget.")
 	}
-	model := buildPromptModel(opts, target, taskType, language, warnings)
+	model := buildPromptModel(opts, target, taskType, language, scope, constraints, warnings)
 
 	result := &PolishResult{
 		TargetAgent: target, TaskType: taskType, Domain: taskType,
@@ -121,6 +135,7 @@ func PolishPromptWithOptions(opts Options) (*PolishResult, error) {
 	}
 
 	if opts.SkillName != "" {
+		// Pipeline: load relevant skill rules.
 		data, _ := LoadSkill(opts.SkillName)
 		result.SkillName = opts.SkillName
 		if data != nil {
@@ -143,6 +158,7 @@ func PolishPromptWithOptions(opts Options) (*PolishResult, error) {
 	}
 
 	var rendered string
+	// Pipeline: agent-specific prompt rendering.
 	switch format {
 	case "json":
 		rendered, result.Truncated = renderStructuredWithBudget(model, format, opts.MaxChars)
@@ -153,6 +169,7 @@ func PolishPromptWithOptions(opts Options) (*PolishResult, error) {
 		rendered, result.Truncated = applyBudget(rendered, opts.MaxChars)
 	}
 
+	// Pipeline: final safety redaction.
 	rendered = security.Text(rendered)
 	if result.Truncated {
 		result.Warnings = append(result.Warnings, "Prompt context was truncated to the configured size limit.")
@@ -201,11 +218,12 @@ func renderStructuredWithBudget(model PromptModel, format string, maxChars int) 
 	return render(), true
 }
 
-func buildPromptModel(opts Options, target, taskType, language string, warnings []string) PromptModel {
+func buildPromptModel(opts Options, target, taskType, language string, scope, extractedConstraints, warnings []string) PromptModel {
 	model := PromptModel{
 		TargetAgent: target,
 		TaskType:    taskType,
 		Objective:   opts.RawPrompt,
+		Scope:       append([]string(nil), scope...),
 		Requirements: []string{
 			"Inspect the actual repository and relevant code paths before editing.",
 			"Implement the requested behavior with minimal, targeted changes.",
@@ -250,6 +268,7 @@ func buildPromptModel(opts Options, target, taskType, language string, warnings 
 	if opts.Context != "" {
 		model.Context = append(model.Context, "Relevant prior experience (treat as guidance, verify against current code):\n"+opts.Context)
 	}
+	model.Constraints = append(model.Constraints, extractedConstraints...)
 
 	switch taskType {
 	case "bug_fix", "debugging":
@@ -316,6 +335,7 @@ func renderMarkdown(model PromptModel, language string) string {
 		deliverablesHeading = "Expected Final Report"
 	}
 	writeTextSection(&b, "Objective", model.Objective)
+	writeListSection(&b, "Scope", model.Scope)
 	writeListSection(&b, requirementsHeading, model.Requirements)
 	writeListSection(&b, constraintsHeading, model.Constraints)
 	writeListSection(&b, "Acceptance Criteria", model.AcceptanceCriteria)

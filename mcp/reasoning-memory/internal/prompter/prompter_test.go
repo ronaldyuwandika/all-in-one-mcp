@@ -182,3 +182,31 @@ func TestContextCountPreserved(t *testing.T) {
 		t.Fatalf("context count = %d, want 2", result.ContextCount)
 	}
 }
+
+func TestPromptPipelineExtractsScopeAndConstraintsAfterRedaction(t *testing.T) {
+	secret := "ghp_" + "abcdefghijklmnopqrstuvwxyz"
+	result, err := PolishPromptWithOptions(Options{
+		RawPrompt:   "Fix mcp/reasoning-memory/main.go without breaking compatibility and keep token=" + secret + " secret",
+		TargetAgent: "codex",
+		Repo:        "all-in-one-mcp",
+		MaxChars:    20000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(result.PolishedPrompt, secret) || strings.Contains(result.PolishedPrompt, "token="+secret) {
+		t.Fatal("polished prompt leaked the raw secret")
+	}
+	for _, want := range []string{
+		"## Scope",
+		"Repository: all-in-one-mcp",
+		"Likely affected path or artifact: mcp/reasoning-memory/main.go",
+		"Preserve backward compatibility",
+		"Treat all credentials and secret-like values as sensitive",
+		"Coding Task — Codex",
+	} {
+		if !strings.Contains(result.PolishedPrompt, want) {
+			t.Fatalf("polished prompt missing %q:\n%s", want, result.PolishedPrompt)
+		}
+	}
+}

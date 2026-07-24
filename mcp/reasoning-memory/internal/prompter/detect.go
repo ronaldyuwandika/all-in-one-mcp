@@ -100,3 +100,57 @@ func DetectLanguage(rawPrompt string) string {
 	}
 	return ""
 }
+
+func ExtractScope(rawPrompt, repo, language string) []string {
+	var scope []string
+	if strings.TrimSpace(repo) != "" {
+		scope = append(scope, "Repository: "+strings.TrimSpace(repo))
+	}
+	if strings.TrimSpace(language) != "" {
+		scope = append(scope, "Language/framework: "+strings.TrimSpace(language))
+	}
+
+	lower := strings.ToLower(rawPrompt)
+	fileHints := []string{".go", ".py", ".ts", ".tsx", ".js", ".jsx", ".rs", ".java", ".yaml", ".yml", ".json", ".toml", ".md"}
+	for _, field := range strings.Fields(rawPrompt) {
+		cleaned := strings.Trim(field, "`'\".,;:()[]{}")
+		if cleaned == "" || strings.Contains(cleaned, "[REDACTED") {
+			continue
+		}
+		for _, hint := range fileHints {
+			if strings.Contains(strings.ToLower(cleaned), hint) || strings.Contains(cleaned, "/") {
+				scope = append(scope, "Likely affected path or artifact: "+cleaned)
+				break
+			}
+		}
+	}
+	if strings.Contains(lower, "this repo") || strings.Contains(lower, "current repo") || strings.Contains(lower, "workspace") {
+		scope = append(scope, "Current workspace/repository")
+	}
+	return deduplicate(scope)
+}
+
+func ExtractConstraints(rawPrompt string) []string {
+	lower := strings.ToLower(rawPrompt)
+	rules := []struct {
+		match []string
+		text  string
+	}{
+		{[]string{"no breaking", "without breaking", "preserve compatibility", "backward compatible"}, "Preserve backward compatibility and avoid breaking existing behavior."},
+		{[]string{"no external", "without external", "no dependency", "no dependencies", "don't add dependencies", "do not add dependencies"}, "Do not add external dependencies unless explicitly approved."},
+		{[]string{"no network", "offline"}, "Do not require network access for normal operation or validation."},
+		{[]string{"secret", "credential", "token", "api key", "password"}, "Treat all credentials and secret-like values as sensitive; redact them before storage, retrieval, logs, and prompts."},
+		{[]string{"2x", "twice", "two pass", "two-pass", "loop review"}, "Run review and verification in two passes where practical."},
+		{[]string{"make pr", "pull request", "push"}, "Keep git and GitHub actions scoped to the requested branch and PR."},
+	}
+	var constraints []string
+	for _, rule := range rules {
+		for _, needle := range rule.match {
+			if strings.Contains(lower, needle) {
+				constraints = append(constraints, rule.text)
+				break
+			}
+		}
+	}
+	return deduplicate(constraints)
+}
