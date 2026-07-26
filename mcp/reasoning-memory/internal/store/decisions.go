@@ -37,13 +37,14 @@ func (es *EpisodeStore) CreateDecision(ctx context.Context, d *models.Decision) 
 	if d.EpisodeID == "" || d.Title == "" || d.Selected == "" || d.Rationale == "" {
 		return "", fmt.Errorf("episode_id, title, selected, and rationale are required")
 	}
-	if d.Repo == "" {
-		var repo string
-		if err := es.db.QueryRowContext(ctx, "SELECT repo FROM episodes WHERE id = ?", d.EpisodeID).Scan(&repo); err != nil {
-			return "", fmt.Errorf("resolve episode: %w", err)
-		}
-		d.Repo = repo
+	var episodeRepo string
+	if err := es.db.QueryRowContext(ctx, "SELECT repo FROM episodes WHERE id = ?", d.EpisodeID).Scan(&episodeRepo); err != nil {
+		return "", fmt.Errorf("resolve episode: %w", err)
 	}
+	if d.Repo != "" && d.Repo != episodeRepo {
+		return "", fmt.Errorf("repository mismatch: decision repo %q does not match episode repo %q", d.Repo, episodeRepo)
+	}
+	d.Repo = episodeRepo
 	encode := func(v any) string { b, _ := json.Marshal(v); return string(b) }
 	_, err := es.db.ExecContext(ctx, `INSERT INTO decisions
 		(id, episode_id, created_at, repo, title, selected, rationale, tradeoffs, assumptions, evidence, alternatives)
@@ -63,8 +64,11 @@ func (es *EpisodeStore) SearchDecisions(ctx context.Context, query, repo string,
 	if limit <= 0 || limit > 50 {
 		limit = 10
 	}
-	q := `SELECT id, episode_id, created_at, repo, title, selected, rationale, tradeoffs, assumptions, evidence, alternatives FROM decisions WHERE repo = ? AND (title LIKE ? OR selected LIKE ? OR rationale LIKE ? OR evidence LIKE ? OR alternatives LIKE ?) ORDER BY created_at DESC LIMIT ?`
-	like := "%" + strings.ReplaceAll(query, "%", "\\%") + "%"
+	q := `SELECT id, episode_id, created_at, repo, title, selected, rationale, tradeoffs, assumptions, evidence, alternatives FROM decisions WHERE repo = ? AND (title LIKE ? ESCAPE '\' OR selected LIKE ? ESCAPE '\' OR rationale LIKE ? ESCAPE '\' OR evidence LIKE ? ESCAPE '\' OR alternatives LIKE ? ESCAPE '\') ORDER BY created_at DESC LIMIT ?`
+	escaped := strings.ReplaceAll(query, "\\", "\\\\")
+	escaped = strings.ReplaceAll(escaped, "%", "\\%")
+	escaped = strings.ReplaceAll(escaped, "_", "\\_")
+	like := "%" + escaped + "%"
 	rows, err := es.db.QueryContext(ctx, q, repo, like, like, like, like, like, limit)
 	if err != nil {
 		return nil, fmt.Errorf("search decisions: %w", err)
