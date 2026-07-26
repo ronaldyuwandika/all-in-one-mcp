@@ -83,3 +83,31 @@ func TestDetectLanguage(t *testing.T) {
 		}
 	}
 }
+
+func TestDetectTaskTypeHoldoutPrompts(t *testing.T) {
+	tests := []struct {
+		prompt string
+		want   string
+	}{
+		{"Please repair the broken cache invalidation path in Go", "coding"},
+		{"Coordinate a staged release and notify the on-call channel", "agentic"},
+		{"What explains the latency increase after the schema change?", "analysis"},
+		{"Could you draft a friendly note for the project team?", "general"},
+		{"Review this deployment manifest and explain the capacity trade-offs", "analysis"},
+		{"Build a scheduled workflow that rotates credentials nightly", "agentic"},
+	}
+	for _, test := range tests {
+		if got := DetectTaskType(test.prompt); got != test.want {
+			t.Errorf("DetectTaskType(%q) = %q, want %q", test.prompt, got, test.want)
+		}
+	}
+}
+
+func TestDetectTaskTypeIgnoresPromptIdentifiers(t *testing.T) {
+	base := "analyze the root cause of intermittent request failures"
+	for _, suffix := range []string{"", " (id: 7)", " [holdout-204]", " #case-19"} {
+		if got := DetectTaskType(base + suffix); got != "analysis" {
+			t.Errorf("DetectTaskType(%q) = %q, want analysis", base+suffix, got)
+		}
+	}
+}

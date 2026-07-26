@@ -34,6 +34,9 @@ func New(dbPath string) (*EpisodeStore, error) {
 
 	db.SetMaxOpenConns(1)
 
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		return nil, fmt.Errorf("enable foreign keys: %w", err)
+	}
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		return nil, fmt.Errorf("enable wal: %w", err)
 	}
@@ -53,6 +56,9 @@ func NewWithVector(dbPath string, vec *VectorStore) (*EpisodeStore, error) {
 
 	db.SetMaxOpenConns(1)
 
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		return nil, fmt.Errorf("enable foreign keys: %w", err)
+	}
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
 		return nil, fmt.Errorf("enable wal: %w", err)
 	}
@@ -193,6 +199,9 @@ func migrate(db *sql.DB) error {
 	}
 	if err := migrateConcepts(db); err != nil {
 		return fmt.Errorf("migrate concepts: %w", err)
+	}
+	if err := migrateDecisions(db); err != nil {
+		return fmt.Errorf("migrate decisions: %w", err)
 	}
 
 	return nil

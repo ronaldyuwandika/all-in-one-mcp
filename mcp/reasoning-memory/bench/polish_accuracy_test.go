@@ -16,13 +16,7 @@ type LabeledPromptTest struct {
 }
 
 func TestPolishAccuracy(t *testing.T) {
-	// 1. Setup data
-	err := EnsureTestData(".")
-	if err != nil {
-		t.Fatalf("ensure test data failed: %v", err)
-	}
-
-	data, err := os.ReadFile("testdata/polish_prompts.json")
+	data, err := os.ReadFile("testdata/holdout_prompts.json")
 	if err != nil {
 		t.Fatalf("failed to read prompts: %v", err)
 	}
@@ -32,7 +26,20 @@ func TestPolishAccuracy(t *testing.T) {
 		t.Fatalf("failed to unmarshal prompts: %v", err)
 	}
 
-	// 2. Classify and count
+	if len(prompts) == 0 {
+		t.Fatal("holdout dataset is empty")
+	}
+	seen := make(map[string]struct{}, len(prompts))
+	for _, p := range prompts {
+		if p.Prompt == "" || p.Type == "" {
+			t.Fatalf("holdout contains an incomplete record: %+v", p)
+		}
+		if _, ok := seen[p.Prompt]; ok {
+			t.Fatalf("holdout contains duplicate prompt: %q", p.Prompt)
+		}
+		seen[p.Prompt] = struct{}{}
+	}
+
 	correct := 0
 	total := len(prompts)
 	categoryTotal := make(map[string]int)
@@ -105,4 +112,15 @@ func TestPolishAccuracy(t *testing.T) {
 	}
 
 	t.Logf("Polish accuracy test completed: %.2f%% accuracy", overallAccuracy)
+
+	const minAccuracy = 75.0
+	if overallAccuracy < minAccuracy {
+		t.Errorf("overall accuracy %.2f%% is below regression threshold %.2f%%", overallAccuracy, minAccuracy)
+	}
+
+	for _, cat := range []string{"coding", "agentic", "analysis", "general"} {
+		if categoryTotal[cat] == 0 {
+			t.Errorf("holdout dataset has no prompts for category %q", cat)
+		}
+	}
 }

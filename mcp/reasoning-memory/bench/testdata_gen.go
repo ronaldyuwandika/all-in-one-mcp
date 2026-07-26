@@ -107,16 +107,14 @@ func EnsureTestData(dir string) error {
 		}
 	}
 
-	// Generate polish_prompts.json
-	if _, err := os.Stat(promptsPath); os.IsNotExist(err) {
-		prompts := generatePolishPrompts()
-		data, err := json.MarshalIndent(prompts, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshal prompts: %w", err)
-		}
-		if err := os.WriteFile(promptsPath, data, 0644); err != nil {
-			return fmt.Errorf("write prompts: %w", err)
-		}
+	// Generate polish_prompts.json (always overwrite to prevent caching stale bias)
+	prompts := generatePolishPrompts()
+	pdata, err := json.MarshalIndent(prompts, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal prompts: %w", err)
+	}
+	if err := os.WriteFile(promptsPath, pdata, 0644); err != nil {
+		return fmt.Errorf("write prompts: %w", err)
 	}
 
 	return nil
@@ -258,84 +256,90 @@ type LabeledPrompt struct {
 func generatePolishPrompts() []LabeledPrompt {
 	var prompts []LabeledPrompt
 
-	// 50 Coding Prompts
-	codingSamples := []string{
-		"write a python script to parse logs",
-		"implement jwt token authentication in go",
-		"refactor the handler function to reduce allocations",
-		"fix nil pointer exception in json parser",
-		"debug memory leak in the websocket routine",
-		"add function to compute cosine similarity",
-		"optimize sqlite query performance with indexes",
-		"migrate schema changes in postgresql",
-		"create unit test for the memory store",
-		"write code to serialize struct to yaml",
-	}
-	for i := 0; i < 50; i++ {
-		prompts = append(prompts, LabeledPrompt{
-			Prompt: fmt.Sprintf("%s (id: %d)", codingSamples[i%len(codingSamples)], i),
-			Type:   "coding",
-		})
-	}
-
-	// 50 Agentic Prompts
-	agenticSamples := []string{
-		"orchestrate data ingestion workflow with airflow",
-		"automate the deploy pipeline on github actions",
-		"trigger backup schedule every midnight",
-		"monitor service latency using prometheus",
-		"setup ci/cd pipeline for the rust package",
-		"create multi-agent routing workflow",
-		"automate container deployments on k8s",
-		"schedule daily summary reports via webhook",
-		"run container orchestration script on AWS ECS",
-		"integrate slack notification trigger in build cycle",
-	}
-	for i := 0; i < 50; i++ {
-		prompts = append(prompts, LabeledPrompt{
-			Prompt: fmt.Sprintf("%s (id: %d)", agenticSamples[i%len(agenticSamples)], i),
-			Type:   "agentic",
-		})
+	// Coding (50 unique prompts via combinations)
+	codingVerbs := []string{"implement", "refactor", "fix", "optimize", "write", "debug", "add", "migrate", "serialize", "parse"}
+	codingSubjects := []string{"jwt authentication", "memory leak", "json parser", "sqlite indexes", "concurrency locks"}
+	codingLangs := []string{"in go", "in python", "in rust", "in typescript"}
+	count := 0
+	for _, v := range codingVerbs {
+		for _, s := range codingSubjects {
+			for _, l := range codingLangs {
+				if count >= 50 {
+					break
+				}
+				prompts = append(prompts, LabeledPrompt{
+					Prompt: fmt.Sprintf("%s %s %s", v, s, l),
+					Type:   "coding",
+				})
+				count++
+			}
+		}
 	}
 
-	// 50 Analysis Prompts
-	analysisSamples := []string{
-		"analyze root cause of high memory usage in production",
-		"investigate why database lock times increased after migration",
-		"explain how the vector similarity calculation works",
-		"compare the throughput of sqlite vs postgresql",
-		"evaluate performance tradeoffs of hybrid search",
-		"audit the current security endpoints",
-		"review the architecture design doc for scalability",
-		"assess the impact of WAL mode on write latency",
-		"how does the FTS5 tokenizer behave with special characters",
-		"explain the system memory profile logs",
-	}
-	for i := 0; i < 50; i++ {
-		prompts = append(prompts, LabeledPrompt{
-			Prompt: fmt.Sprintf("%s (id: %d)", analysisSamples[i%len(analysisSamples)], i),
-			Type:   "analysis",
-		})
+	// Agentic (50 unique prompts via combinations)
+	agenticVerbs := []string{"orchestrate", "automate", "schedule", "monitor", "trigger", "deploy", "setup", "configure", "run", "integrate"}
+	agenticTasks := []string{"data pipeline", "deploy workflow", "cron job backups", "server scaling", "alert notifications"}
+	agenticPlatforms := []string{"on aws", "via github actions", "on kubernetes", "using docker compose"}
+	count = 0
+	for _, v := range agenticVerbs {
+		for _, t := range agenticTasks {
+			for _, p := range agenticPlatforms {
+				if count >= 50 {
+					break
+				}
+				prompts = append(prompts, LabeledPrompt{
+					Prompt: fmt.Sprintf("%s %s %s", v, t, p),
+					Type:   "agentic",
+				})
+				count++
+			}
+		}
 	}
 
-	// 50 General Prompts
-	generalSamples := []string{
-		"hello, can you assist me today",
-		"draft a short email to the engineering lead",
-		"summarize this article about technology trends",
-		"help me write a greeting message",
-		"what is the weather like in Seattle",
-		"suggest a good book on software design",
-		"rephrase this sentence to make it more professional",
-		"create a markdown table of major Go versions",
-		"write a short response to the pull request comment",
-		"explain the concept of recursion to a beginner",
+	// Analysis (50 unique prompts via combinations)
+	analysisVerbs := []string{"analyze", "investigate", "explain", "compare", "evaluate", "audit", "assess", "review", "how does", "why does"}
+	analysisSubjects := []string{"memory footprint", "query performance", "latency increase", "security policy", "lock contention"}
+	analysisScopes := []string{"in production", "after database migration", "under high concurrency", "for the new API"}
+	count = 0
+	for _, v := range analysisVerbs {
+		for _, s := range analysisSubjects {
+			for _, sc := range analysisScopes {
+				if count >= 50 {
+					break
+				}
+				var prompt string
+				if strings.HasSuffix(v, "does") {
+					prompt = fmt.Sprintf("%s %s behave %s", v, s, sc)
+				} else {
+					prompt = fmt.Sprintf("%s %s %s", v, s, sc)
+				}
+				prompts = append(prompts, LabeledPrompt{
+					Prompt: prompt,
+					Type:   "analysis",
+				})
+				count++
+			}
+		}
 	}
-	for i := 0; i < 50; i++ {
-		prompts = append(prompts, LabeledPrompt{
-			Prompt: fmt.Sprintf("%s (id: %d)", generalSamples[i%len(generalSamples)], i),
-			Type:   "general",
-		})
+
+	// General (50 unique prompts via combinations)
+	generalVerbs := []string{"draft", "summarize", "suggest", "translate", "rephrase", "write", "help me", "what is", "create", "how to"}
+	generalTopics := []string{"greeting message", "out-of-office email", "travel itinerary", "recipe", "project proposal"}
+	generalStyles := []string{"politely", "simply", "for a beginner", "concisely"}
+	count = 0
+	for _, v := range generalVerbs {
+		for _, t := range generalTopics {
+			for _, s := range generalStyles {
+				if count >= 50 {
+					break
+				}
+				prompts = append(prompts, LabeledPrompt{
+					Prompt: fmt.Sprintf("%s %s %s", v, t, s),
+					Type:   "general",
+				})
+				count++
+			}
+		}
 	}
 
 	return prompts
