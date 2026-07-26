@@ -324,7 +324,17 @@ func getAlternatives(args map[string]interface{}, key string) []models.Alternati
 func handleCreateDecision(es *store.EpisodeStore) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		a := toolArguments(req)
-		d := &models.Decision{EpisodeID: getString(a, "episode_id"), Repo: getString(a, "repo"), Title: getString(a, "title"), Selected: getString(a, "selected"), Rationale: getString(a, "rationale"), Tradeoffs: getStringSlice(a, "tradeoffs"), Assumptions: getStringSlice(a, "assumptions"), Evidence: getStringSlice(a, "evidence"), Alternatives: getAlternatives(a, "alternatives")}
+		d := &models.Decision{
+			EpisodeID:    getString(a, "episode_id"),
+			Repo:         getString(a, "repo"),
+			Title:        getString(a, "title"),
+			Selected:     getString(a, "selected"),
+			Rationale:    getString(a, "rationale"),
+			Tradeoffs:    getStringSlice(a, "tradeoffs"),
+			Assumptions:  getStringSlice(a, "assumptions"),
+			Evidence:     getStringSlice(a, "evidence"),
+			Alternatives: getAlternatives(a, "alternatives"),
+		}
 		id, err := es.CreateDecision(ctx, d)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -344,7 +354,10 @@ func handleSearchDecisions(es *store.EpisodeStore) server.ToolHandlerFunc {
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		b, _ := json.Marshal(results)
+		b, err := json.Marshal(results)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("marshal results: %v", err)), nil
+		}
 		return mcp.NewToolResultText(string(b)), nil
 	}
 }

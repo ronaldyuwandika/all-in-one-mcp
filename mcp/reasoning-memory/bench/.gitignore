@@ -1,4 +1,5 @@
-testdata/
+testdata/*
+!testdata/holdout_prompts.json
 bench_current.txt
 bench_base.txt
 cover.out

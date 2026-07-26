@@ -78,3 +78,73 @@ func TestSearchDecisionsTreatsWildcardsLiterally(t *testing.T) {
 		t.Fatalf("expected literal underscore match, got %+v", results)
 	}
 }
+
+func TestCreateDecisionRejectsNil(t *testing.T) {
+	es := testStore(t)
+	if _, err := es.CreateDecision(context.Background(), nil); err == nil {
+		t.Fatal("expected error for nil decision")
+	}
+}
+
+func TestDecisionPreservesIdenticalFieldValues(t *testing.T) {
+	es := testStore(t)
+	epID := createEpisode(es, "coding", "success", nil, "ep", "trace", 0)
+	if _, err := es.db.Exec("UPDATE episodes SET repo = ? WHERE id = ?", "repo-a", epID); err != nil {
+		t.Fatal(err)
+	}
+	id, err := es.CreateDecision(context.Background(), &models.Decision{
+		EpisodeID:   epID,
+		Title:       "Pick format",
+		Selected:    "JSON",
+		Rationale:   "Widely supported",
+		Tradeoffs:   []string{"verbose"},
+		Assumptions: []string{"verbose"},
+		Evidence:    []string{"verbose"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := es.GetDecision(context.Background(), id)
+	if err != nil || got == nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(got.Tradeoffs) != 1 || got.Tradeoffs[0] != "verbose" {
+		t.Fatalf("tradeoffs: %v", got.Tradeoffs)
+	}
+	if len(got.Assumptions) != 1 || got.Assumptions[0] != "verbose" {
+		t.Fatalf("assumptions: %v", got.Assumptions)
+	}
+	if len(got.Evidence) != 1 || got.Evidence[0] != "verbose" {
+		t.Fatalf("evidence: %v", got.Evidence)
+	}
+}
+
+func TestGetDecisionNotFound(t *testing.T) {
+	es := testStore(t)
+	got, err := es.GetDecision(context.Background(), "nonexistent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("expected nil, got %+v", got)
+	}
+}
+
+func TestCreateDecisionRejectsMissingRequiredFields(t *testing.T) {
+	es := testStore(t)
+	epID := createEpisode(es, "coding", "success", nil, "ep", "trace", 0)
+	cases := []struct {
+		name string
+		d    *models.Decision
+	}{
+		{"missing title", &models.Decision{EpisodeID: epID, Selected: "x", Rationale: "x"}},
+		{"missing selected", &models.Decision{EpisodeID: epID, Title: "x", Rationale: "x"}},
+		{"missing rationale", &models.Decision{EpisodeID: epID, Title: "x", Selected: "x"}},
+		{"missing episode_id", &models.Decision{Title: "x", Selected: "x", Rationale: "x"}},
+	}
+	for _, tc := range cases {
+		if _, err := es.CreateDecision(context.Background(), tc.d); err == nil {
+			t.Errorf("%s: expected error", tc.name)
+		}
+	}
+}

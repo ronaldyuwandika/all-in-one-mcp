@@ -28,6 +28,9 @@ func migrateDecisions(db *sql.DB) error {
 }
 
 func (es *EpisodeStore) CreateDecision(ctx context.Context, d *models.Decision) (string, error) {
+	if d == nil {
+		return "", fmt.Errorf("decision is required")
+	}
 	if d.ID == "" {
 		d.ID = fmt.Sprintf("decision-%d", time.Now().UnixNano())
 	}
@@ -45,11 +48,26 @@ func (es *EpisodeStore) CreateDecision(ctx context.Context, d *models.Decision) 
 		return "", fmt.Errorf("repository mismatch: decision repo %q does not match episode repo %q", d.Repo, episodeRepo)
 	}
 	d.Repo = episodeRepo
-	encode := func(v any) string { b, _ := json.Marshal(v); return string(b) }
-	_, err := es.db.ExecContext(ctx, `INSERT INTO decisions
+	tradeoffs, err := json.Marshal(d.Tradeoffs)
+	if err != nil {
+		return "", fmt.Errorf("encode tradeoffs: %w", err)
+	}
+	assumptions, err := json.Marshal(d.Assumptions)
+	if err != nil {
+		return "", fmt.Errorf("encode assumptions: %w", err)
+	}
+	evidence, err := json.Marshal(d.Evidence)
+	if err != nil {
+		return "", fmt.Errorf("encode evidence: %w", err)
+	}
+	alternatives, err := json.Marshal(d.Alternatives)
+	if err != nil {
+		return "", fmt.Errorf("encode alternatives: %w", err)
+	}
+	_, err = es.db.ExecContext(ctx, `INSERT INTO decisions
 		(id, episode_id, created_at, repo, title, selected, rationale, tradeoffs, assumptions, evidence, alternatives)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, d.ID, d.EpisodeID, d.CreatedAt.Format(time.RFC3339), d.Repo,
-		d.Title, d.Selected, d.Rationale, encode(d.Tradeoffs), encode(d.Assumptions), encode(d.Evidence), encode(d.Alternatives))
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, d.ID, d.EpisodeID, d.CreatedAt.Format(time.RFC3339Nano), d.Repo,
+		d.Title, d.Selected, d.Rationale, string(tradeoffs), string(assumptions), string(evidence), string(alternatives))
 	if err != nil {
 		return "", fmt.Errorf("create decision: %w", err)
 	}
@@ -96,9 +114,13 @@ func (es *EpisodeStore) scanDecision(s decisionScanner) (*models.Decision, error
 	} else if err != nil {
 		return nil, fmt.Errorf("scan decision: %w", err)
 	}
-	d.CreatedAt, _ = time.Parse(time.RFC3339, created)
-	for raw, dst := range map[string]any{tr: &d.Tradeoffs, as: &d.Assumptions, ev: &d.Evidence, al: &d.Alternatives} {
-		_ = json.Unmarshal([]byte(raw), dst)
+	d.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
+	if d.CreatedAt.IsZero() {
+		d.CreatedAt, _ = time.Parse(time.RFC3339, created)
 	}
+	_ = json.Unmarshal([]byte(tr), &d.Tradeoffs)
+	_ = json.Unmarshal([]byte(as), &d.Assumptions)
+	_ = json.Unmarshal([]byte(ev), &d.Evidence)
+	_ = json.Unmarshal([]byte(al), &d.Alternatives)
 	return &d, nil
 }
