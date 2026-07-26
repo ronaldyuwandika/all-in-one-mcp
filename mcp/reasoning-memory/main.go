@@ -126,6 +126,10 @@ func runMCPServer() error {
 		server.WithInstructions("Reasoning Memory Network for LLM reasoning trace capture and retrieval."),
 	)
 
+	s.AddTool(mcp.NewTool("record_decision", mcp.WithDescription("Store a decision with rationale, trade-offs, assumptions, evidence, and rejected alternatives."),
+		mcp.WithString("episode_id", mcp.Required()), mcp.WithString("repo"), mcp.WithString("title", mcp.Required()), mcp.WithString("selected", mcp.Required()), mcp.WithString("rationale", mcp.Required()), mcp.WithArray("tradeoffs"), mcp.WithArray("assumptions"), mcp.WithArray("evidence"), mcp.WithArray("alternatives")), handleCreateDecision(es))
+	s.AddTool(mcp.NewTool("retrieve_decisions", mcp.WithDescription("Retrieve repository-scoped decision records explaining selected and rejected approaches."), mcp.WithString("query", mcp.Required()), mcp.WithString("repo", mcp.Required()), mcp.WithNumber("limit")), handleSearchDecisions(es))
+
 	s.AddTool(
 		mcp.NewTool("capture_reasoning_episode",
 			mcp.WithDescription("Capture a completed reasoning episode at the END of a task.\n\n"+
@@ -289,6 +293,60 @@ func reindexEpisodes(ctx context.Context, es *store.EpisodeStore, vec *store.Vec
 		offset += batchSize
 	}
 	slog.Info("reindex complete", "total", total)
+}
+
+func getAlternatives(args map[string]interface{}, key string) []models.Alternative {
+	value, ok := args[key]
+	if !ok {
+		return nil
+	}
+	items, ok := value.([]interface{})
+	if !ok {
+		return nil
+	}
+	var alternatives []models.Alternative
+	for _, item := range items {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		tradeoffs := getStringSlice(m, "tradeoffs")
+		alternatives = append(alternatives, models.Alternative{
+			Name:            getString(m, "name"),
+			Description:     getString(m, "description"),
+			RejectionReason: getString(m, "rejection_reason"),
+			Tradeoffs:       tradeoffs,
+		})
+	}
+	return alternatives
+}
+
+func handleCreateDecision(es *store.EpisodeStore) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		a := toolArguments(req)
+		d := &models.Decision{EpisodeID: getString(a, "episode_id"), Repo: getString(a, "repo"), Title: getString(a, "title"), Selected: getString(a, "selected"), Rationale: getString(a, "rationale"), Tradeoffs: getStringSlice(a, "tradeoffs"), Assumptions: getStringSlice(a, "assumptions"), Evidence: getStringSlice(a, "evidence"), Alternatives: getAlternatives(a, "alternatives")}
+		id, err := es.CreateDecision(ctx, d)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		return mcp.NewToolResultText(id), nil
+	}
+}
+
+func handleSearchDecisions(es *store.EpisodeStore) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		a := toolArguments(req)
+		limit := 10
+		if n, err := getFloat64(a, "limit"); err == nil {
+			limit = int(n)
+		}
+		results, err := es.SearchDecisions(ctx, getString(a, "query"), getString(a, "repo"), limit)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		b, _ := json.Marshal(results)
+		return mcp.NewToolResultText(string(b)), nil
+	}
 }
 
 func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerFunc {

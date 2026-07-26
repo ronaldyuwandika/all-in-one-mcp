@@ -194,6 +194,9 @@ func migrate(db *sql.DB) error {
 	if err := migrateConcepts(db); err != nil {
 		return fmt.Errorf("migrate concepts: %w", err)
 	}
+	if err := migrateDecisions(db); err != nil {
+		return fmt.Errorf("migrate decisions: %w", err)
+	}
 
 	return nil
 }

@@ -7,6 +7,24 @@ import (
 func DetectTaskCategory(rawPrompt string) string {
 	lower := strings.ToLower(rawPrompt)
 
+	// Prefer explicit operational orchestration and analytical intent over
+	// implementation keywords that may appear in the same prompt.
+	agenticIntent := []string{"orchestration script", "orchestrate", "automate", "workflow", "trigger", "schedule", "monitor", "multi-agent", "container deployments"}
+	for _, indicator := range agenticIntent {
+		if strings.Contains(lower, indicator) {
+			return "agentic"
+		}
+	}
+	if strings.Contains(lower, "explain the concept") || strings.Contains(lower, "explain a concept") {
+		return "general"
+	}
+	analysisIntent := []string{"analyze", "investigate", "explain how", "compare", "evaluate", "audit", "assess", "how does", "root cause", "why "}
+	for _, indicator := range analysisIntent {
+		if strings.Contains(lower, indicator) {
+			return "analysis"
+		}
+	}
+
 	categories := []struct {
 		name       string
 		indicators []string
