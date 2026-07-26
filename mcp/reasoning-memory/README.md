@@ -21,11 +21,49 @@ reasoning-memory
 | Tool | Description | Required Params |
 |------|-------------|-----------------|
 | `capture_reasoning_episode` | Store full trace at task end | `problem`, `thinking_trace`, `outcome` |
+| `record_decision` | Store a structured decision | `episode_id`, `title`, `selected`, `rationale` |
+| `retrieve_decisions` | Retrieve repository-scoped decisions | `query`, `repo` |
 | `retrieve_reasoning` | Search episodes | `problem` |
 | `inject_reasoning_context` | Get XML block for prompt injection | `problem` |
 | `enrich_episode` | Auto-enrich labels for an existing episode | `episode_id` |
 | `consolidate_reasoning` | Cluster, merge, prune, reindex | — |
 | `polish_prompt` | Build a secret-safe agent prompt with optional memory and skill context | `raw_prompt` |
+
+### `record_decision`
+
+Stores a decision with its selected approach, rationale, trade-offs, assumptions, evidence, and rejected alternatives linked to a parent episode.
+
+```json
+{
+  "episode_id": "re-20260726-001",
+  "repo": "my-org/my-service",
+  "title": "Choose SQLite for Embedded Storage",
+  "selected": "SQLite in WAL mode",
+  "rationale": "Avoids external process dependency while keeping concurrent read throughput high.",
+  "tradeoffs": ["single writer restriction"],
+  "assumptions": ["low concurrent write frequency"],
+  "evidence": ["benchmark shows 10k ops/s"],
+  "alternatives": [
+    {
+      "name": "Postgres",
+      "rejection_reason": "High operational overhead and Cgo dependency",
+      "tradeoffs": ["external daemon required"]
+    }
+  ]
+}
+```
+
+### `retrieve_decisions`
+
+Retrieves repository-scoped decision records matching a search query.
+
+```json
+{
+  "query": "SQLite",
+  "repo": "my-org/my-service",
+  "limit": 5
+}
+```
 
 ### `capture_reasoning_episode`
 
