@@ -9,6 +9,7 @@ internal/
   config/config.go         — YAML config loader with defaults
   store/
     store.go               — SQLite EpisodeStore (CRUD, FTS5 triggers)
+    decisions.go           — SQLite DecisionStore (Create, Get, Search with repository isolation)
     search.go              — Hybrid search (FTS5 keyword + chromem-go semantic)
     patterns.go            — Pattern consolidation, merge, prune
     vector.go              — chromem-go vector DB wrapper (Ollama, OpenAI, compat)
