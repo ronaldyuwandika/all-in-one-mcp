@@ -89,6 +89,23 @@ type Config struct {
 	Consolidation   ConsolidationConfig   `yaml:"consolidation"`
 	Security        SecurityConfig        `yaml:"security"`
 	PromptPolishing PromptPolishingConfig `yaml:"prompt_polishing"`
+	LinkIngestion   LinkIngestionConfig   `yaml:"link_ingestion"`
+}
+
+type LinkIngestionConfig struct {
+	Enabled                  bool     `yaml:"enabled"`
+	MaxLinks                 int      `yaml:"max_links"`
+	RequestTimeoutSeconds    int      `yaml:"request_timeout_seconds"`
+	MaxRedirects             int      `yaml:"max_redirects"`
+	MaxResponseBytes         int      `yaml:"max_response_bytes"`
+	MaxExtractedChars        int      `yaml:"max_extracted_chars"`
+	MaxSummaryChars          int      `yaml:"max_summary_chars"`
+	MaxConcurrency           int      `yaml:"max_concurrency"`
+	CacheTTLMinutes          int      `yaml:"cache_ttl_minutes"`
+	AllowedContentTypes      []string `yaml:"allowed_content_types"`
+	FailurePolicy            string   `yaml:"failure_policy"`
+	IncludeThinkingTrace     bool     `yaml:"include_thinking_trace"`
+	RestRequirePreSummarized bool     `yaml:"rest_require_pre_summarized"`
 }
 
 type EmbeddingConfig struct {

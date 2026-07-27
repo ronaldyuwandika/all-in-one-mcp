@@ -6,6 +6,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/linkcontent"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/models"
 )
 
@@ -55,6 +56,16 @@ var DefaultConfig = models.Config{
 		IncludeFullTraces:      false,
 		DeduplicateContext:     true,
 	},
+	LinkIngestion: func() models.LinkIngestionConfig {
+		c := linkcontent.DefaultConfig()
+		return models.LinkIngestionConfig{
+			Enabled: c.Enabled, MaxLinks: c.MaxLinks, RequestTimeoutSeconds: c.RequestTimeoutSeconds,
+			MaxRedirects: c.MaxRedirects, MaxResponseBytes: c.MaxResponseBytes, MaxExtractedChars: c.MaxExtractedChars,
+			MaxSummaryChars: c.MaxSummaryChars, MaxConcurrency: c.MaxConcurrency, CacheTTLMinutes: c.CacheTTLMinutes,
+			AllowedContentTypes: c.AllowedContentTypes, FailurePolicy: c.FailurePolicy,
+			IncludeThinkingTrace: c.IncludeThinkingTrace, RestRequirePreSummarized: c.RestRequirePreSummarized,
+		}
+	}(),
 }
 
 func Load(path string) (*models.Config, error) {
@@ -122,6 +133,36 @@ func Load(path string) (*models.Config, error) {
 	}
 	if cfg.PromptPolishing.MaxPromptChars <= 0 {
 		cfg.PromptPolishing.MaxPromptChars = DefaultConfig.PromptPolishing.MaxPromptChars
+	}
+	if cfg.LinkIngestion.MaxLinks <= 0 {
+		cfg.LinkIngestion.MaxLinks = DefaultConfig.LinkIngestion.MaxLinks
+	}
+	if cfg.LinkIngestion.RequestTimeoutSeconds <= 0 {
+		cfg.LinkIngestion.RequestTimeoutSeconds = DefaultConfig.LinkIngestion.RequestTimeoutSeconds
+	}
+	if cfg.LinkIngestion.MaxRedirects <= 0 {
+		cfg.LinkIngestion.MaxRedirects = DefaultConfig.LinkIngestion.MaxRedirects
+	}
+	if cfg.LinkIngestion.MaxResponseBytes <= 0 {
+		cfg.LinkIngestion.MaxResponseBytes = DefaultConfig.LinkIngestion.MaxResponseBytes
+	}
+	if cfg.LinkIngestion.MaxExtractedChars <= 0 {
+		cfg.LinkIngestion.MaxExtractedChars = DefaultConfig.LinkIngestion.MaxExtractedChars
+	}
+	if cfg.LinkIngestion.MaxSummaryChars <= 0 {
+		cfg.LinkIngestion.MaxSummaryChars = DefaultConfig.LinkIngestion.MaxSummaryChars
+	}
+	if cfg.LinkIngestion.MaxConcurrency <= 0 {
+		cfg.LinkIngestion.MaxConcurrency = DefaultConfig.LinkIngestion.MaxConcurrency
+	}
+	if cfg.LinkIngestion.CacheTTLMinutes < 0 {
+		cfg.LinkIngestion.CacheTTLMinutes = DefaultConfig.LinkIngestion.CacheTTLMinutes
+	}
+	if len(cfg.LinkIngestion.AllowedContentTypes) == 0 {
+		cfg.LinkIngestion.AllowedContentTypes = append([]string(nil), DefaultConfig.LinkIngestion.AllowedContentTypes...)
+	}
+	if cfg.LinkIngestion.FailurePolicy != linkcontent.FailurePolicyWarn && cfg.LinkIngestion.FailurePolicy != linkcontent.FailurePolicyFail {
+		cfg.LinkIngestion.FailurePolicy = DefaultConfig.LinkIngestion.FailurePolicy
 	}
 
 	return &cfg, nil

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/linkcontent"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/models"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/store"
 )
@@ -30,6 +31,8 @@ func TestMain(m *testing.M) {
 	}
 	es = esStore
 	defer es.Close()
+	cfg = &models.Config{}
+	linkService = linkcontent.NewService(linkcontent.DefaultConfig(), nil, nil)
 
 	// Seed some test data
 	_, _ = es.CreateEpisode(&models.Episode{
@@ -160,6 +163,47 @@ func TestAPIPolish(t *testing.T) {
 
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("expected status 400, got %d", rr.Code)
+	}
+
+	// Test pre-summarized linked sources
+	cfg.LinkIngestion.MaxLinks = 5
+	cfg.LinkIngestion.RestRequirePreSummarized = true
+	body = `{"raw_prompt": "review https://example.com/bug", "linked_sources": [{"source_url": "https://example.com/bug", "status": "summarized", "summary": "Fix bug", "instructions": ["fix"], "acceptance_criteria": ["tests pass"], "constraints": []}]}`
+	req = httptest.NewRequest("POST", "/api/polish", bytes.NewBufferString(body))
+	rr = httptest.NewRecorder()
+	handleAPIPolish(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rr.Code)
+	}
+	var polished map[string]interface{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &polished); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	rendered, ok := polished["polished_prompt"].(string)
+	if !ok || !strings.Contains(rendered, "Linked source summaries") || !strings.Contains(rendered, "Fix bug") {
+		t.Fatalf("expected linked summary block, got %q", rendered)
+	}
+
+	// Test pre-summarized requirement when URLs present
+	body = `{"raw_prompt": "check https://example.com/another"}`
+	req = httptest.NewRequest("POST", "/api/polish", bytes.NewBufferString(body))
+	rr = httptest.NewRecorder()
+	handleAPIPolish(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rr.Code)
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &polished); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	warnings, _ := polished["warnings"].([]interface{})
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w.(string), "link_summary_required") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected link_summary_required warning, got %v", warnings)
 	}
 }
 
