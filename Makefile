@@ -159,6 +159,7 @@ run-mcp-pr-reviewer:
 
 clean:
 	@echo "→ Cleaning up..."
+	@rm -rf $(BIN_DIR)
 	@rm -rf $(REPO_ROOT)/mcp/reasoning-memory/reasoning-memory
 	@for dir in credential-vault pr-reviewer; do \
 		rm -rf $(REPO_ROOT)/mcp/$$dir/.venv; \

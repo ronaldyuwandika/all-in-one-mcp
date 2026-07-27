@@ -48,6 +48,9 @@ audit.jsonl
 *.sqlite
 *.db
 
+# Local build artifacts
+bin/
+
 # Git
 .git/
 
