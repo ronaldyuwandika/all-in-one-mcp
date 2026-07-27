@@ -70,12 +70,13 @@ MW --> CV[mcp/credential-vault-go]
 ## 🛠️ Development Workflow
 
 ```bash
-make dev           # Hot reload (all servers)
-make test-all      # All tests + coverage (≥80%)
-make lint-all      # golangci-lint + ruff + hadolint + markdownlint
-make bench-all     # Benchmarks
-make security      # gosec + govulncheck + pip-audit
-make doctor        # Health check all MCPs
+make test-all                 # Run every test suite
+make test-reasoning-memory    # Go tests for reasoning-memory
+make test-credential-vault    # Go race tests for credential-vault
+make test-pr-reviewer         # Pytest suite for pr-reviewer
+make test-secretdetect        # Go tests for shared secret detector
+make lint-all                 # Run linters
+make bench-all                # Run Go benchmarks
 ```
 
 > **Prerequisites:** Go 1.24+, Python 3.12+, `make`  

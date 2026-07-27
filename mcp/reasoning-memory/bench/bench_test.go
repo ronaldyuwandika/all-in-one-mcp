@@ -1,3 +1,5 @@
+//go:build bench
+
 package bench
 
 import (
@@ -336,6 +338,9 @@ func getRSS() uint64 {
 }
 
 func TestMeasurePercentiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping heavy benchmark test in short mode")
+	}
 	// Call dummy testing.B to init stores
 	var dummyB testing.B
 	initBenchStores(&dummyB)

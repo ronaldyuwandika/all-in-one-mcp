@@ -1,3 +1,5 @@
+//go:build bench
+
 package bench
 
 import (
@@ -16,6 +18,9 @@ import (
 )
 
 func TestRetrievalRelevance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping heavy benchmark test in short mode")
+	}
 	// 1. Setup data and stores
 	err := EnsureTestData(".")
 	if err != nil {

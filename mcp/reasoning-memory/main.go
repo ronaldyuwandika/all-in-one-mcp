@@ -10,9 +10,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
+
+	_ "embed"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -29,6 +32,9 @@ import (
 var es *store.EpisodeStore
 var cfg *models.Config
 var cfgPath string
+
+//go:embed issues/visualization.html
+var visualizationHTML string
 
 func main() {
 	store.SetupLogger()
@@ -918,6 +924,14 @@ func startMetricsEndpoint() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(visualizationHTML))
+	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		if es != nil {
 			if err := es.Readiness(); err != nil {
@@ -929,6 +943,13 @@ func startMetricsEndpoint() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ready"))
 	})
+
+	// JSON REST API endpoints (Issue #130)
+	mux.HandleFunc("/api/episodes", jsonMiddleware(handleAPIEpisodes))
+	mux.HandleFunc("/api/patterns", jsonMiddleware(handleAPIPatterns))
+	mux.HandleFunc("/api/stats", jsonMiddleware(handleAPIStats))
+	mux.HandleFunc("/api/polish", jsonMiddleware(handleAPIPolish))
+	mux.HandleFunc("/api/graph", jsonMiddleware(handleAPIGraph))
 
 	port := os.Getenv("METRICS_PORT")
 	if port == "" {
@@ -951,4 +972,328 @@ func handleSignals() {
 		}
 	}
 	os.Exit(0)
+}
+
+// CORS and Content-Type Middleware
+func jsonMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		next(w, r)
+	}
+}
+
+func handleAPIEpisodes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error": "method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	pageStr := r.URL.Query().Get("page")
+	limitStr := r.URL.Query().Get("limit")
+	tagFilter := r.URL.Query().Get("tag")
+	repoFilter := r.URL.Query().Get("repo")
+
+	page := 1
+	if p, err := strconv.Atoi(pageStr); err == nil && p > 0 {
+		page = p
+	}
+	limit := 20
+	if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+		limit = l
+	}
+	offset := (page - 1) * limit
+
+	var total int
+	baseQuery := "FROM episodes WHERE 1=1"
+	args := []interface{}{}
+	if repoFilter != "" {
+		baseQuery += " AND repo = ?"
+		args = append(args, repoFilter)
+	}
+	if tagFilter != "" {
+		baseQuery += " AND tags LIKE ?"
+		args = append(args, "%\""+tagFilter+"\"%")
+	}
+
+	err := es.DB().QueryRow("SELECT COUNT(*) "+baseQuery, args...).Scan(&total)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error": "count query: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	selectQuery := "SELECT id, created_at, problem, domain, outcome, tier, tags, repo, labels, steps, tool_calls, model_id, duration_seconds " + baseQuery + " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+	args = append(args, limit, offset)
+
+	rows, err := es.DB().Query(selectQuery, args...)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error": "select query: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var summaries []models.EpisodeSummary
+	for rows.Next() {
+		var (
+			tagsJSON      string
+			labelsJSON    string
+			stepsJSON     string
+			toolCallsJSON string
+			steps         []models.Step
+			s             models.EpisodeSummary
+			tier          string
+		)
+		if err := rows.Scan(
+			&s.ID, &s.CreatedAt, &s.Problem, &s.Domain,
+			&s.Outcome, &tier, &tagsJSON, &s.Repo, &labelsJSON, &stepsJSON, &toolCallsJSON,
+			&s.ModelID, &s.DurationSeconds,
+		); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error": "scan: %v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		s.Tier = models.MemoryTier(tier)
+		_ = json.Unmarshal([]byte(tagsJSON), &s.Tags)
+		_ = json.Unmarshal([]byte(stepsJSON), &steps)
+		s.StepCount = len(steps)
+		for _, st := range steps {
+			s.StepTypes = append(s.StepTypes, st.Type)
+		}
+		var toolCalls []models.ToolCall
+		_ = json.Unmarshal([]byte(toolCallsJSON), &toolCalls)
+		s.ToolCount = len(toolCalls)
+		security.Summary(&s)
+		summaries = append(summaries, s)
+	}
+
+	resp := map[string]interface{}{
+		"episodes": summaries,
+		"total":    total,
+		"page":     page,
+		"limit":    limit,
+	}
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func handleAPIPatterns(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error": "method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	patterns, err := es.ListPatterns()
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error": "%v"}`, err), http.StatusInternalServerError)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(patterns)
+}
+
+func handleAPIStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error": "method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	epTotal, _ := es.EpisodeCount()
+	patTotal, _ := es.PatternCount()
+	byDomain, _ := es.EpisodesByDomain()
+	byOutcome, _ := es.EpisodesByOutcome()
+	byRepo, _ := es.EpisodesByRepo()
+	topTags, _ := es.TopTags(10)
+	avgProb, avgTrace, _ := es.AvgEpisodeLengths()
+	dbSize, _ := es.DBSizeMB()
+	ftsSize, _ := es.FTSSizeMB()
+	lastConsolidation, _ := es.LastConsolidationTS()
+	summary, _ := es.SummaryStats()
+	epByDay, _ := es.EpisodesByDay(7)
+	labelKeys, _ := es.TopLabelKeys(10)
+
+	var vecSize float64
+	var vecCount int
+	vs := es.VectorStore()
+	if vs != nil {
+		vecCount = vs.Count()
+		vecSize = 0
+	}
+
+	result := models.StatsResult{
+		EpisodesTotal:         epTotal,
+		PatternsTotal:         patTotal,
+		EpisodesByDomain:      byDomain,
+		EpisodesByOutcome:     byOutcome,
+		EpisodesByRepo:        byRepo,
+		TopTags:               topTags,
+		VectorIndexSizeMB:     vecSize,
+		VectorCount:           vecCount,
+		FTSSizeMB:             ftsSize,
+		DBSizeMB:              dbSize,
+		ConsolidationsTotal:   patTotal,
+		AvgEpisodeLenChars:    avgProb,
+		AvgThinkingTraceChars: avgTrace,
+	}
+	if summary != nil {
+		result.SuccessRate = summary.SuccessRate
+		result.ConsolidationRatio = summary.ConsolidationRatio
+		result.TopDomain = summary.TopDomain
+		result.TopRepo = summary.TopRepo
+		result.AvgDurationSec = summary.AvgDurationSec
+		result.TopLabelKey = summary.TopLabelKey
+		result.LabelCardinality = summary.LabelCardinality
+		result.UnlabeledCount = summary.UnlabeledCount
+		result.ArchivedTotal = summary.TotalArchived
+		result.PrunedTotal = summary.TotalPruned
+	}
+	if epByDay != nil {
+		result.EpisodesByDay = epByDay
+	}
+	if len(labelKeys) > 0 {
+		lb := make([]models.LabelCount, len(labelKeys))
+		for i, tc := range labelKeys {
+			lb[i] = models.LabelCount{Key: tc.Tag, Value: "", Count: tc.Count}
+		}
+		result.EpisodesByLabel = lb
+	}
+
+	if lastConsolidation != nil {
+		ts := lastConsolidation.Format("2006-01-02T15:04:05Z")
+		result.LastConsolidationTS = &ts
+	}
+
+	_ = json.NewEncoder(w).Encode(result)
+}
+
+type polishRequest struct {
+	RawPrompt    string `json:"raw_prompt"`
+	Domain       string `json:"domain"`
+	Repo         string `json:"repo"`
+	TargetAgent  string `json:"target_agent"`
+	OutputFormat string `json:"output_format"`
+	MaxChars     int    `json:"max_chars"`
+	SkillName    string `json:"skill_name"`
+	Compact      bool   `json:"compact"`
+}
+
+func handleAPIPolish(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error": "method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req polishRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error": "invalid JSON body"}`, http.StatusBadRequest)
+		return
+	}
+
+	if req.RawPrompt == "" {
+		http.Error(w, `{"error": "raw_prompt is required"}`, http.StatusBadRequest)
+		return
+	}
+
+	result, err := prompter.PolishPromptWithOptions(prompter.Options{
+		RawPrompt:    req.RawPrompt,
+		TargetAgent:  req.TargetAgent,
+		Domain:       req.Domain,
+		Repo:         req.Repo,
+		SkillName:    req.SkillName,
+		CompactSkill: req.Compact,
+		OutputFormat: req.OutputFormat,
+		MaxChars:     req.MaxChars,
+	})
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error": "%v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	_ = json.NewEncoder(w).Encode(result)
+}
+
+type nodeJSON struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	Type  string `json:"type"`
+}
+type edgeJSON struct {
+	From   string  `json:"from"`
+	To     string  `json:"to"`
+	Label  string  `json:"label"`
+	Weight float64 `json:"weight"`
+}
+type graphJSON struct {
+	Nodes []nodeJSON `json:"nodes"`
+	Edges []edgeJSON `json:"edges"`
+}
+
+func handleAPIGraph(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error": "method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	concepts, err := es.ListConcepts(1000, 0, "")
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error": "list concepts: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	edges, err := es.ListEdges("")
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error": "list edges: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	nodesMap := make(map[string]nodeJSON)
+
+	for _, c := range concepts {
+		nodesMap[c.ID] = nodeJSON{ID: c.ID, Label: c.EntityName, Type: "concept"}
+	}
+
+	for _, e := range edges {
+		if strings.HasPrefix(e.SourceID, "re-") {
+			if _, ok := nodesMap[e.SourceID]; !ok {
+				ep, err := es.GetSummary(e.SourceID)
+				if err == nil && ep != nil {
+					nodesMap[e.SourceID] = nodeJSON{ID: ep.ID, Label: ep.Problem, Type: "episode"}
+				} else {
+					nodesMap[e.SourceID] = nodeJSON{ID: e.SourceID, Label: e.SourceID, Type: "episode"}
+				}
+			}
+		}
+		if strings.HasPrefix(e.TargetID, "re-") {
+			if _, ok := nodesMap[e.TargetID]; !ok {
+				ep, err := es.GetSummary(e.TargetID)
+				if err == nil && ep != nil {
+					nodesMap[e.TargetID] = nodeJSON{ID: ep.ID, Label: ep.Problem, Type: "episode"}
+				} else {
+					nodesMap[e.TargetID] = nodeJSON{ID: e.TargetID, Label: e.TargetID, Type: "episode"}
+				}
+			}
+		}
+	}
+
+	var nodes []nodeJSON
+	for _, n := range nodesMap {
+		nodes = append(nodes, n)
+	}
+
+	var outEdges []edgeJSON
+	for _, e := range edges {
+		outEdges = append(outEdges, edgeJSON{
+			From:   e.SourceID,
+			To:     e.TargetID,
+			Label:  e.Relationship,
+			Weight: e.Weight,
+		})
+	}
+
+	resp := graphJSON{
+		Nodes: nodes,
+		Edges: outEdges,
+	}
+	_ = json.NewEncoder(w).Encode(resp)
 }

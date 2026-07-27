@@ -108,6 +108,14 @@ flowchart LR
 - `internal/mcp` — local stdio tools.
 - `internal/cli` and `internal/tui` — command and dashboard interfaces.
 
+## Testing
+
+Run tests locally from the repository root:
+
+```bash
+make test-credential-vault
+```
+
 ## Benchmarks and accuracy
 
 Run `make bench-credential-vault` from the repository root. The suite measures 1 KiB encrypt/decrypt, 100-file scans, 1 MiB redaction, 10 KiB masking, and audit appends with `ns/op`, bytes, and allocations. `accuracy_test.go` is a deterministic CI regression corpus for precision, recall, and redaction completeness; it does not download secrets or transmit test data.

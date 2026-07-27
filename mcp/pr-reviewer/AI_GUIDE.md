@@ -29,6 +29,14 @@ cd mcp/pr-reviewer
 .venv/bin/python server.py
 ```
 
+## Testing
+
+Run tests locally from the repository root:
+
+```bash
+make test-pr-reviewer
+```
+
 ## Configuration
 
 Edit `mcp/pr-reviewer/config.yaml`:

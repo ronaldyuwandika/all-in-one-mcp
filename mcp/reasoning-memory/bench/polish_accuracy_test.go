@@ -1,3 +1,5 @@
+//go:build bench
+
 package bench
 
 import (
@@ -16,6 +18,9 @@ type LabeledPromptTest struct {
 }
 
 func TestPolishAccuracy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping heavy benchmark test in short mode")
+	}
 	data, err := os.ReadFile("testdata/holdout_prompts.json")
 	if err != nil {
 		t.Fatalf("failed to read prompts: %v", err)
