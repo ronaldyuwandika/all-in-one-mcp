@@ -33,13 +33,17 @@ setup: $(foreach d,$(MCP_DIRS),install-mcp-$d)
 	@echo "✓ All MCPs installed"
 
 install-mcp-reasoning-memory:
-	@echo "→ Building reasoning-memory (Go)..."
-	cd $(REPO_ROOT)/mcp/reasoning-memory && go build -o reasoning-memory .
+	@echo "→ Installing reasoning-memory (Go)..."
+	@mkdir -p $(INSTALL_BIN_DIR)
+	cd $(REPO_ROOT)/mcp/reasoning-memory && go build -o $(INSTALL_BIN_DIR)/reasoning-memory .
+	@echo "✓ Installed: $(INSTALL_BIN_DIR)/reasoning-memory"
 
 install-mcp-credential-vault:
 	@echo "→ Installing credential-vault (Go)..."
-	mkdir -p $(HOME)/.local/bin
-	cd $(REPO_ROOT)/mcp/credential-vault-go && GOWORK=off go build -o $(HOME)/.local/bin/vault ./cmd/vault && GOWORK=off go build -o $(HOME)/.local/bin/vaultctl ./cmd/vaultctl
+	@mkdir -p $(INSTALL_BIN_DIR)
+	cd $(REPO_ROOT)/mcp/credential-vault-go && GOWORK=off go build -o $(INSTALL_BIN_DIR)/vault ./cmd/vault && GOWORK=off go build -o $(INSTALL_BIN_DIR)/vaultctl ./cmd/vaultctl
+	@echo "✓ Installed: $(INSTALL_BIN_DIR)/vault"
+	@echo "✓ Installed: $(INSTALL_BIN_DIR)/vaultctl"
 
 install-mcp-pr-reviewer:
 	@echo "→ Installing pr-reviewer..."
