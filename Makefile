@@ -165,12 +165,13 @@ clean:
 	@echo "→ Cleaning up..."
 	@rm -rf $(BIN_DIR)
 	@rm -rf $(REPO_ROOT)/mcp/reasoning-memory/reasoning-memory
-	@for dir in credential-vault pr-reviewer; do \
+	@for dir in pr-reviewer; do \
 		rm -rf $(REPO_ROOT)/mcp/$$dir/.venv; \
 		rm -rf $(REPO_ROOT)/mcp/$$dir/__pycache__; \
 		find $(REPO_ROOT)/mcp/$$dir -name '*.pyc' -delete; \
 		find $(REPO_ROOT)/mcp/$$dir -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true; \
-	done
+	 done
+
 	@echo "✓ Clean complete"
 
 distclean: clean

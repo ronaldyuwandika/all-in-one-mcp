@@ -20,7 +20,6 @@ jobs:
         with:
           filters: |
             python:
-              - 'mcp/credential-vault/**'
               - 'mcp/pr-reviewer/**'
             go:
               - 'mcp/reasoning-memory/**'
