@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"sort"
 	"time"
 
 	sdk "github.com/mark3labs/mcp-go/mcp"
@@ -33,7 +34,7 @@ func Serve(v *vault.Vault) error {
 		if !supplied {
 			redact = true
 		}
-		return v.ScanDir(p, redact)
+		return scan(v, p, redact)
 	}))
 	add(sdk.NewTool("vault_restore", sdk.WithDescription("Restore files from encrypted local backups")), jsonHandler(func(_ map[string]any) (any, error) { n, e := v.Restore(); return map[string]int{"restored": n}, e }))
 	add(sdk.NewTool("vault_audit", sdk.WithDescription("Read local credential access audit entries")), jsonHandler(func(_ map[string]any) (any, error) { return v.Audit(50) }))
@@ -49,6 +50,26 @@ func Serve(v *vault.Vault) error {
 	}))
 	return server.ServeStdio(s)
 }
+
+type scanResult struct {
+	Count       int      `json:"count"`
+	Credentials []string `json:"credentials"`
+}
+
+func scan(v *vault.Vault, path string, redact bool) (scanResult, error) {
+	found, err := v.ScanDir(path, redact)
+	if err != nil {
+		return scanResult{}, err
+	}
+	names := make([]string, 0, len(found))
+	for name := range found {
+		names = append(names, name)
+		delete(found, name)
+	}
+	sort.Strings(names)
+	return scanResult{Count: len(names), Credentials: names}, nil
+}
+
 func str(a map[string]any, k string) string { s, _ := a[k].(string); return s }
 func textHandler(fn func(map[string]any) (string, error)) server.ToolHandlerFunc {
 	return func(_ context.Context, r sdk.CallToolRequest) (*sdk.CallToolResult, error) {
