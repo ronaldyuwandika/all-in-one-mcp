@@ -23,6 +23,7 @@ import (
 
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/cli"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/config"
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/linkcontent"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/models"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/prompter"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/security"
@@ -32,6 +33,8 @@ import (
 var es *store.EpisodeStore
 var cfg *models.Config
 var cfgPath string
+var linkService *linkcontent.Service
+var mcpServer *server.MCPServer
 
 //go:embed issues/visualization.html
 var visualizationHTML string
@@ -79,6 +82,23 @@ func main() {
 	}
 	store.SetGlobalStore(es)
 	defer func() { _ = es.Close() }()
+
+	linkConfig := linkcontent.Config{
+		Enabled:                  cfg.LinkIngestion.Enabled,
+		MaxLinks:                 cfg.LinkIngestion.MaxLinks,
+		RequestTimeoutSeconds:    cfg.LinkIngestion.RequestTimeoutSeconds,
+		MaxRedirects:             cfg.LinkIngestion.MaxRedirects,
+		MaxResponseBytes:         cfg.LinkIngestion.MaxResponseBytes,
+		MaxExtractedChars:        cfg.LinkIngestion.MaxExtractedChars,
+		MaxSummaryChars:          cfg.LinkIngestion.MaxSummaryChars,
+		MaxConcurrency:           cfg.LinkIngestion.MaxConcurrency,
+		CacheTTLMinutes:          cfg.LinkIngestion.CacheTTLMinutes,
+		AllowedContentTypes:      cfg.LinkIngestion.AllowedContentTypes,
+		FailurePolicy:            cfg.LinkIngestion.FailurePolicy,
+		IncludeThinkingTrace:     cfg.LinkIngestion.IncludeThinkingTrace,
+		RestRequirePreSummarized: cfg.LinkIngestion.RestRequirePreSummarized,
+	}
+	linkService = linkcontent.NewService(linkConfig, linkcontent.NewHTTPFetcher(linkConfig, linkConfig.AllowedContentTypes), samplingSummarizer{maxChars: cfg.LinkIngestion.MaxSummaryChars})
 
 	if vec != nil {
 		slog.Info("vector search enabled", "provider", cfg.Embedding.Provider, "model", cfg.Embedding.Model)
@@ -131,6 +151,8 @@ func runMCPServer() error {
 		"1.0.0",
 		server.WithInstructions("Reasoning Memory Network for LLM reasoning trace capture and retrieval."),
 	)
+	s.EnableSampling()
+	mcpServer = s
 
 	s.AddTool(mcp.NewTool("record_decision", mcp.WithDescription("Store a decision with rationale, trade-offs, assumptions, evidence, and rejected alternatives."),
 		mcp.WithString("episode_id", mcp.Required()), mcp.WithString("repo"), mcp.WithString("title", mcp.Required()), mcp.WithString("selected", mcp.Required()), mcp.WithString("rationale", mcp.Required()), mcp.WithArray("tradeoffs"), mcp.WithArray("assumptions"), mcp.WithArray("evidence"), mcp.WithArray("alternatives")), handleCreateDecision(es))
@@ -380,6 +402,18 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 
 		problem := getString(args, "problem")
 		thinkingTrace := getString(args, "thinking_trace")
+		var linkedSources []linkcontent.Source
+		if linkService != nil {
+			processed, err := linkService.Process(ctx, problem)
+			if err != nil && cfg.LinkIngestion.FailurePolicy == linkcontent.FailurePolicyFail {
+				return mcp.NewToolResultError("capture failed: link ingestion unavailable"), nil
+			}
+			linkedSources = processed
+			if len(processed) > 0 {
+				encoded, _ := json.Marshal(processed)
+				problem += "\n\n<linked_sources>\n" + string(encoded) + "\n</linked_sources>"
+			}
+		}
 		outcome := getString(args, "outcome")
 		domain := getString(args, "domain")
 		if domain == "" {
@@ -418,7 +452,13 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 		security.Episode(ep)
 		ep.Steps = extractSteps(ep.ThinkingTrace)
 
-		episodeID, err := es.CreateEpisode(ep)
+		episodeID, err := es.CreateEpisodeContext(ctx, ep)
+		if err == nil && len(linkedSources) > 0 {
+			if perr := es.PersistEpisodeSources(ctx, episodeID, linkedSources); perr != nil {
+				_ = es.DeleteEpisode(episodeID)
+				return mcp.NewToolResultError("capture failed: linked source persistence unavailable"), nil
+			}
+		}
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("capture failed: %v", err)), nil
 		}
@@ -638,6 +678,26 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 		}
 
 		var contextStr string
+		var linkedContextStr string
+		linkedWarnings := []string{}
+		if linkService != nil {
+			processed, lerr := linkService.Process(ctx, rawPrompt)
+			if lerr != nil && cfg.LinkIngestion.FailurePolicy == linkcontent.FailurePolicyFail {
+				return mcp.NewToolResultError("polish failed: link ingestion unavailable"), nil
+			}
+			if len(processed) > 0 {
+				for _, source := range processed {
+					if source.Status != linkcontent.StatusSummarized && source.Warning != "" {
+						linkedWarnings = append(linkedWarnings, source.SourceURL+": "+source.Warning)
+					}
+				}
+				rendered, werr := renderLinkedSources(processed)
+				if werr != nil {
+					slog.Warn("render linked sources", "error", werr)
+				}
+				linkedContextStr = rendered
+			}
+		}
 		contextCount := 0
 		if includeContext {
 			results, err := es.SearchLocal(rawPrompt, domain, "success", repo, nil, topK)
@@ -667,12 +727,15 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 
 		result, err := prompter.PolishPromptWithOptions(prompter.Options{
 			RawPrompt: rawPrompt, TargetAgent: targetAgent, Domain: domain,
-			Repo: repo, Context: contextStr, SkillName: skillName,
+			Repo: repo, Context: contextStr, LinkedContext: linkedContextStr, SkillName: skillName,
 			OutputFormat: outputFormat, MaxChars: cfg.PromptPolishing.MaxPromptChars,
 			ContextCount: contextCount,
 		})
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("polish failed: %v", err)), nil
+		}
+		if len(linkedWarnings) > 0 {
+			result.Warnings = append(result.Warnings, linkedWarnings...)
 		}
 
 		data, _ := json.Marshal(result)
@@ -1168,14 +1231,15 @@ func handleAPIStats(w http.ResponseWriter, r *http.Request) {
 }
 
 type polishRequest struct {
-	RawPrompt    string `json:"raw_prompt"`
-	Domain       string `json:"domain"`
-	Repo         string `json:"repo"`
-	TargetAgent  string `json:"target_agent"`
-	OutputFormat string `json:"output_format"`
-	MaxChars     int    `json:"max_chars"`
-	SkillName    string `json:"skill_name"`
-	Compact      bool   `json:"compact"`
+	RawPrompt     string               `json:"raw_prompt"`
+	Domain        string               `json:"domain"`
+	Repo          string               `json:"repo"`
+	TargetAgent   string               `json:"target_agent"`
+	OutputFormat  string               `json:"output_format"`
+	MaxChars      int                  `json:"max_chars"`
+	SkillName     string               `json:"skill_name"`
+	Compact       bool                 `json:"compact"`
+	LinkedSources []linkcontent.Source `json:"linked_sources"`
 }
 
 func handleAPIPolish(w http.ResponseWriter, r *http.Request) {
@@ -1184,6 +1248,7 @@ func handleAPIPolish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req polishRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error": "invalid JSON body"}`, http.StatusBadRequest)
@@ -1194,20 +1259,56 @@ func handleAPIPolish(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error": "raw_prompt is required"}`, http.StatusBadRequest)
 		return
 	}
+	maxLinks := cfg.LinkIngestion.MaxLinks
+	if maxLinks <= 0 {
+		maxLinks = 5
+	}
+	if len(req.LinkedSources) > maxLinks {
+		http.Error(w, `{"error": "too many linked_sources"}`, http.StatusBadRequest)
+		return
+	}
+
+	linkedContext := ""
+	var linkedWarnings []string
+	if linkService != nil && len(req.LinkedSources) > 0 {
+		processed, warnings, err := linkService.ProcessProvided(req.RawPrompt, req.LinkedSources)
+		if err != nil && cfg.LinkIngestion.FailurePolicy == linkcontent.FailurePolicyFail {
+			http.Error(w, `{"error": "polish failed: link ingestion unavailable"}`, http.StatusBadRequest)
+			return
+		}
+		linkedWarnings = append(linkedWarnings, warnings...)
+		if len(processed) > 0 {
+			rendered, rerr := renderLinkedSources(processed)
+			if rerr != nil {
+				http.Error(w, fmt.Sprintf(`{"error": "%v"}`, rerr), http.StatusBadRequest)
+				return
+			}
+			linkedContext = rendered
+		}
+	} else if linkService != nil && cfg.LinkIngestion.RestRequirePreSummarized {
+		urls := linkcontent.ExtractURLs(req.RawPrompt, cfg.LinkIngestion.MaxLinks)
+		if len(urls) > 0 {
+			linkedWarnings = append(linkedWarnings, "link_summary_required for URLs without pre-summarized content")
+		}
+	}
 
 	result, err := prompter.PolishPromptWithOptions(prompter.Options{
-		RawPrompt:    req.RawPrompt,
-		TargetAgent:  req.TargetAgent,
-		Domain:       req.Domain,
-		Repo:         req.Repo,
-		SkillName:    req.SkillName,
-		CompactSkill: req.Compact,
-		OutputFormat: req.OutputFormat,
-		MaxChars:     req.MaxChars,
+		RawPrompt:     req.RawPrompt,
+		TargetAgent:   req.TargetAgent,
+		Domain:        req.Domain,
+		Repo:          req.Repo,
+		SkillName:     req.SkillName,
+		CompactSkill:  req.Compact,
+		OutputFormat:  req.OutputFormat,
+		MaxChars:      req.MaxChars,
+		LinkedContext: linkedContext,
 	})
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error": "%v"}`, err), http.StatusInternalServerError)
 		return
+	}
+	if len(linkedWarnings) > 0 {
+		result.Warnings = append(result.Warnings, linkedWarnings...)
 	}
 
 	_ = json.NewEncoder(w).Encode(result)

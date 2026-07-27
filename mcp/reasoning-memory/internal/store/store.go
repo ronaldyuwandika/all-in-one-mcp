@@ -15,6 +15,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/linkcontent"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/models"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/security"
 )
@@ -27,47 +28,40 @@ type EpisodeStore struct {
 }
 
 func New(dbPath string) (*EpisodeStore, error) {
-	db, err := sql.Open("sqlite", dbPath)
+	db, err := openDatabase(dbPath)
 	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
+		return nil, err
 	}
-
-	db.SetMaxOpenConns(1)
-
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		return nil, fmt.Errorf("enable foreign keys: %w", err)
-	}
-	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
-		return nil, fmt.Errorf("enable wal: %w", err)
-	}
-
-	if err := migrate(db); err != nil {
-		return nil, fmt.Errorf("migrate: %w", err)
-	}
-
 	return &EpisodeStore{db: db, dbPath: dbPath}, nil
 }
 
 func NewWithVector(dbPath string, vec *VectorStore) (*EpisodeStore, error) {
+	db, err := openDatabase(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	return &EpisodeStore{db: db, dbPath: dbPath, vec: vec}, nil
+}
+
+func openDatabase(dbPath string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
-
 	db.SetMaxOpenConns(1)
-
 	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("enable foreign keys: %w", err)
 	}
 	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("enable wal: %w", err)
 	}
-
 	if err := migrate(db); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
-
-	return &EpisodeStore{db: db, dbPath: dbPath, vec: vec}, nil
+	return db, nil
 }
 
 func migrate(db *sql.DB) error {
@@ -192,6 +186,28 @@ func migrate(db *sql.DB) error {
 	}
 	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_meta_eid ON metadata_idx(episode_id)"); err != nil {
 		return fmt.Errorf("create idx_meta_eid: %w", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS episode_sources (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		episode_id TEXT NOT NULL,
+		source_url TEXT NOT NULL,
+		source_type TEXT NOT NULL DEFAULT '',
+		title TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL,
+		warning TEXT NOT NULL DEFAULT '',
+		content_hash TEXT NOT NULL DEFAULT '',
+		fetched_at TEXT NOT NULL DEFAULT '',
+		truncated INTEGER NOT NULL DEFAULT 0,
+		summary TEXT NOT NULL DEFAULT '',
+		instructions TEXT NOT NULL DEFAULT '[]',
+		acceptance_criteria TEXT NOT NULL DEFAULT '[]',
+		constraints TEXT NOT NULL DEFAULT '[]',
+		FOREIGN KEY (episode_id) REFERENCES episodes(id) ON DELETE CASCADE
+	)`); err != nil {
+		return fmt.Errorf("create episode_sources: %w", err)
+	}
+	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_episode_sources_eid ON episode_sources(episode_id)"); err != nil {
+		return fmt.Errorf("create idx_episode_sources_eid: %w", err)
 	}
 
 	if err := migrateGraph(db); err != nil {
@@ -465,9 +481,19 @@ func (es *EpisodeStore) ListEpisodes(limit, offset int) ([]models.EpisodeSummary
 }
 
 func (es *EpisodeStore) DeleteEpisode(id string) error {
-	_, err := es.db.Exec("DELETE FROM episodes WHERE id = ?", id)
+	tx, err := es.db.Begin()
 	if err != nil {
+		return fmt.Errorf("begin delete episode: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec("DELETE FROM episode_sources WHERE episode_id = ?", id); err != nil {
+		return fmt.Errorf("delete episode sources: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM episodes WHERE id = ?", id); err != nil {
 		return fmt.Errorf("delete episode: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete episode: %w", err)
 	}
 	if es.vec != nil && es.vec.Enabled() {
 		_ = es.vec.DeleteEpisode(context.Background(), id)
@@ -495,6 +521,81 @@ func (es *EpisodeStore) DeletePattern(id string) error {
 		return fmt.Errorf("delete pattern: %w", err)
 	}
 	return nil
+}
+
+func (es *EpisodeStore) PersistEpisodeSources(ctx context.Context, episodeID string, sources []linkcontent.Source) error {
+	if episodeID == "" || len(sources) == 0 {
+		return nil
+	}
+	tx, err := es.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, source := range sources {
+		instructionsJSON, _ := json.Marshal(source.Instructions)
+		acceptanceJSON, _ := json.Marshal(source.AcceptanceCriteria)
+		constraintsJSON, _ := json.Marshal(source.Constraints)
+		fetchedAt := ""
+		if !source.FetchedAt.IsZero() {
+			fetchedAt = source.FetchedAt.UTC().Format(time.RFC3339)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO episode_sources (episode_id, source_url, source_type, title, status, warning, content_hash, fetched_at, truncated, summary, instructions, acceptance_criteria, constraints) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			episodeID, source.SourceURL, source.SourceType, source.Title, source.Status, source.Warning, source.ContentHash, fetchedAt, boolToInt(source.Truncated), source.Summary, string(instructionsJSON), string(acceptanceJSON), string(constraintsJSON),
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (es *EpisodeStore) ListEpisodeSources(episodeID string) ([]linkcontent.Source, error) {
+	rows, err := es.db.Query(`SELECT source_url, source_type, title, status, warning, content_hash, fetched_at, truncated, summary, instructions, acceptance_criteria, constraints FROM episode_sources WHERE episode_id = ? ORDER BY id`, episodeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []linkcontent.Source
+	for rows.Next() {
+		var (
+			source      linkcontent.Source
+			fetchedAt   string
+			truncated   int
+			instJSON    string
+			acceptJSON  string
+			constrainJS string
+		)
+		if err := rows.Scan(&source.SourceURL, &source.SourceType, &source.Title, &source.Status, &source.Warning, &source.ContentHash, &fetchedAt, &truncated, &source.Summary, &instJSON, &acceptJSON, &constrainJS); err != nil {
+			return nil, err
+		}
+		if fetchedAt != "" {
+			if t, err := time.Parse(time.RFC3339, fetchedAt); err == nil {
+				source.FetchedAt = t
+			}
+		}
+		source.Truncated = truncated != 0
+		_ = json.Unmarshal([]byte(instJSON), &source.Instructions)
+		_ = json.Unmarshal([]byte(acceptJSON), &source.AcceptanceCriteria)
+		_ = json.Unmarshal([]byte(constrainJS), &source.Constraints)
+		if source.Instructions == nil {
+			source.Instructions = []string{}
+		}
+		if source.AcceptanceCriteria == nil {
+			source.AcceptanceCriteria = []string{}
+		}
+		if source.Constraints == nil {
+			source.Constraints = []string{}
+		}
+		out = append(out, source)
+	}
+	return out, rows.Err()
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func (es *EpisodeStore) ReindexFTS5() error {

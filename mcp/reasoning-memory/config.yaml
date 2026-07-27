@@ -33,3 +33,19 @@ prompt_polishing:
   include_failure_lessons: true
   include_full_traces: false
   deduplicate_context: true
+link_ingestion:
+  enabled: true
+  max_links: 5
+  request_timeout_seconds: 10
+  max_redirects: 3
+  max_response_bytes: 2097152
+  max_extracted_chars: 50000
+  max_summary_chars: 4000
+  max_concurrency: 3
+  cache_ttl_minutes: 15
+  allowed_content_types:
+    - text/html
+    - text/plain
+  failure_policy: warn
+  include_thinking_trace: false
+  rest_require_pre_summarized: true
