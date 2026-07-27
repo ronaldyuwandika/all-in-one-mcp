@@ -21,6 +21,11 @@ import (
 
 var ErrNotFound = errors.New("credential not found")
 
+const (
+	maxVaultBytes      = 256 << 20
+	maxFileBackupBytes = 64 << 20
+)
+
 type Credential struct {
 	Value     string    `json:"value"`
 	Source    string    `json:"source"`
@@ -64,6 +69,16 @@ func emptyData() Data {
 	return Data{Credentials: map[string]Credential{}, Files: map[string]FileBackup{}, CreatedAt: time.Now().UTC()}
 }
 func (v *Vault) loadUnlocked() (Data, error) {
+	info, err := os.Stat(v.vaultPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return emptyData(), nil
+	}
+	if err != nil {
+		return Data{}, fmt.Errorf("stat vault: %w", err)
+	}
+	if info.Size() > maxVaultBytes {
+		return Data{}, fmt.Errorf("vault file exceeds %d bytes", maxVaultBytes)
+	}
 	raw, err := os.ReadFile(v.vaultPath())
 	if errors.Is(err, os.ErrNotExist) {
 		return emptyData(), nil
@@ -264,6 +279,9 @@ func (v *Vault) ScanDir(root string, redact bool) (map[string]string, error) {
 			return nil
 		}
 		if redact {
+			if len(raw) > maxFileBackupBytes {
+				return nil
+			}
 			d.Files[path] = FileBackup{Content: string(raw), Mode: info.Mode()}
 			masked := MaskText(string(raw))
 			output, openErr := safeRoot.OpenFile(rel, os.O_WRONLY|os.O_TRUNC, info.Mode())
