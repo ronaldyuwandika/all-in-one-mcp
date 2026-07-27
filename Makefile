@@ -4,7 +4,7 @@ RUFF := ruff
 
 MCP_DIRS := reasoning-memory credential-vault pr-reviewer
 
-.PHONY: all setup install-mcp-% validate lint test clean bench-reasoning-memory bench-credential-vault bench-go
+.PHONY: all setup install-mcp-% validate lint lint-all test test-all clean bench-reasoning-memory bench-credential-vault bench-go bench-all
 
 all: setup
 
@@ -18,8 +18,9 @@ install-mcp-reasoning-memory:
 	cd $(REPO_ROOT)/mcp/reasoning-memory && go build -o reasoning-memory .
 
 install-mcp-credential-vault:
-	@echo "→ Building credential-vault (Go)..."
-	cd $(REPO_ROOT)/mcp/credential-vault-go && GOWORK=off go build -o vault ./cmd/vault && GOWORK=off go build -o vaultctl ./cmd/vaultctl
+	@echo "→ Installing credential-vault (Go)..."
+	mkdir -p $(HOME)/.local/bin
+	cd $(REPO_ROOT)/mcp/credential-vault-go && GOWORK=off go build -o $(HOME)/.local/bin/vault ./cmd/vault && GOWORK=off go build -o $(HOME)/.local/bin/vaultctl ./cmd/vaultctl
 
 install-mcp-pr-reviewer:
 	@echo "→ Installing pr-reviewer..."
@@ -73,6 +74,8 @@ lint:
 	$(RUFF) check $(REPO_ROOT)/mcp/pr-reviewer --fix
 	@echo "✓ Lint complete"
 
+lint-all: lint
+
 lint-check:
 	@echo "→ Running lint checks (no fixes)..."
 	cd $(REPO_ROOT)/mcp/reasoning-memory && golangci-lint run ./...
@@ -82,29 +85,45 @@ lint-check:
 
 # ── Test ─────────────────────────────────────────────────────────────────────
 
-test: $(foreach d,$(MCP_DIRS),test-mcp-$d)
+.PHONY: test test-all test-reasoning-memory test-credential-vault test-pr-reviewer test-secretdetect
 
-test-mcp-reasoning-memory:
-	cd $(REPO_ROOT)/mcp/reasoning-memory && go test -v -count=1 -short ./...
+test: test-reasoning-memory test-credential-vault test-pr-reviewer test-secretdetect
+test-all: test
 
-test-mcp-credential-vault:
+test-reasoning-memory:
+	@echo "→ Running reasoning-memory tests..."
+	$(MAKE) -C $(REPO_ROOT)/mcp/reasoning-memory test
+
+test-mcp-reasoning-memory: test-reasoning-memory
+
+test-credential-vault:
+	@echo "→ Running credential-vault tests..."
 	cd $(REPO_ROOT)/mcp/credential-vault-go && GOWORK=off go test -race -count=1 ./...
 
-test-mcp-pr-reviewer:
-	cd $(REPO_ROOT)/mcp/pr-reviewer && \
-		.venv/bin/python -m pytest tests/ -v 2>/dev/null || \
-		echo "  ℹ No tests found for pr-reviewer"
+test-mcp-credential-vault: test-credential-vault
+
+test-pr-reviewer:
+	@echo "→ Running pr-reviewer tests..."
+	@test -x $(REPO_ROOT)/mcp/pr-reviewer/.venv/bin/python || \
+		(echo "✗ pr-reviewer virtualenv missing; run 'make setup' first" && exit 1)
+	cd $(REPO_ROOT)/mcp/pr-reviewer && .venv/bin/python -m pytest tests/ -v
+
+test-mcp-pr-reviewer: test-pr-reviewer
+
+test-secretdetect:
+	@echo "→ Running secretdetect tests..."
+	cd $(REPO_ROOT)/pkg/secretdetect && go test -v -count=1 ./...
 
 bench-reasoning-memory:
 	@echo "→ Running performance benchmarks and generating reports..."
-	cd $(REPO_ROOT)/mcp/reasoning-memory && go test -v -run="TestMeasurePercentiles" ./bench/... | go run ./bench/report/gen_reports.go
-	@echo "→ Running accuracy/effectiveness benchmarks..."
-	cd $(REPO_ROOT)/mcp/reasoning-memory && go test -v -run="TestRetrievalRelevance|TestConsolidationQuality|TestPolishAccuracy" ./bench/...
+	$(MAKE) -C $(REPO_ROOT)/mcp/reasoning-memory bench
 
 bench-credential-vault:
 	cd $(REPO_ROOT)/mcp/credential-vault-go && GOWORK=off go test -bench=. -benchmem ./bench/...
 
 bench-go: bench-reasoning-memory bench-credential-vault
+
+bench-all: bench-go
 
 # ── Run MCP servers ──────────────────────────────────────────────────────────
 

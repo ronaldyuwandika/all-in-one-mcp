@@ -12,3 +12,11 @@ fmt.Println(result.Text)
 Coverage includes credential assignments, common API/cloud/GitHub/GitLab/Slack/Stripe tokens, authorization headers, JWTs, credential-bearing database URLs, PEM private keys, CLI credential arguments, YAML/Kubernetes-style secret fields, Terraform credential variables, and conservative unknown high-entropy candidates.
 
 Detection is best-effort. The entropy detector requires a long, diverse character sequence and excludes hexadecimal hashes and UUIDs to reduce false positives. Applications must still avoid accepting intentional secrets in logs, prompts, or memory.
+
+## Testing
+
+Run tests locally from the repository root:
+
+```bash
+make test-secretdetect
+```

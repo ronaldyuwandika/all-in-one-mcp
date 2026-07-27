@@ -1,3 +1,5 @@
+//go:build bench
+
 package bench
 
 import (
@@ -9,6 +11,9 @@ import (
 )
 
 func TestConsolidationQuality(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping heavy benchmark test in short mode")
+	}
 	// 1. Setup data and store
 	err := EnsureTestData(".")
 	if err != nil {

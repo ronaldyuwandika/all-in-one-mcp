@@ -133,8 +133,18 @@ func renderStatsTable(s models.StatsResult) {
 	if s.TopRepo != "" {
 		fmt.Printf("  %-30s %s\n", "Top repo", s.TopRepo)
 	}
-	fmt.Printf("  %-30s %.1f%%\n", "Success rate", s.SuccessRate*100)
-	fmt.Printf("  %-30s %.1f%%\n", "Consolidation ratio", s.ConsolidationRatio*100)
+	formatPercent := func(val float64) string {
+		for val > 100.0 {
+			val = val / 100.0
+		}
+		if val > 0 && val <= 1.0 {
+			val = val * 100.0
+		}
+		return fmt.Sprintf("%.1f%%", val)
+	}
+
+	fmt.Printf("  %-30s %s\n", "Success rate", formatPercent(s.SuccessRate))
+	fmt.Printf("  %-30s %s\n", "Consolidation ratio", formatPercent(s.ConsolidationRatio))
 	fmt.Printf("  %-30s %.1f s\n", "Avg duration", s.AvgDurationSec)
 
 	if s.EpisodesByDomain != nil {

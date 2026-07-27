@@ -348,6 +348,22 @@ mcp/reasoning-memory/
     └── report/                # Report generator
 ```
 
+## Testing
+
+Run quick unit tests locally (runs in short mode to skip heavy data generation benchmarks):
+
+```bash
+make test-reasoning-memory
+# Or directly:
+go test -v -count=1 -short ./...
+```
+
+To run full benchmarks and accuracy tests (including heavy database generation):
+
+```bash
+make bench-reasoning-memory
+```
+
 ## Benchmarks
 
 Benchmarks run on Apple M3 Pro, Go 1.24, 1 000 episodes, SQLite WAL mode.
@@ -365,10 +381,7 @@ Benchmarks run on Apple M3 Pro, Go 1.24, 1 000 episodes, SQLite WAL mode.
 Run locally:
 
 ```bash
-make bench-go
-# or directly:
-cd mcp/reasoning-memory
-go test -bench=. -benchmem ./...
+make bench-reasoning-memory
 ```
 
 ## Accuracy & Effectiveness
