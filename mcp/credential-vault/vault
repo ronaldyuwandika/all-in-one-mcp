@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-# vault \u2014 credential vault CLI entry point
-exec python3 /Users/ronald.dimas/.credential-vault/cli.py "$@"
