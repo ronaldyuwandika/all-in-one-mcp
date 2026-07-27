@@ -4,9 +4,28 @@ RUFF := ruff
 
 MCP_DIRS := reasoning-memory credential-vault pr-reviewer
 
-.PHONY: all setup install-mcp-% validate lint lint-all test test-all clean bench-reasoning-memory bench-credential-vault bench-go bench-all
+.PHONY: all setup build install install-mcp-% validate lint lint-all lint-check test test-all test-reasoning-memory test-credential-vault test-pr-reviewer test-secretdetect clean distclean bench-reasoning-memory bench-credential-vault bench-go bench-all run-mcp-reasoning-memory run-mcp-credential-vault run-mcp-pr-reviewer
 
 all: setup
+
+# ── Build & Install (Go binaries) ────────────────────────────────────────────
+
+BIN_DIR := $(REPO_ROOT)/bin
+REASONING_MEMORY_BIN := $(BIN_DIR)/reasoning-memory
+INSTALL_BIN_DIR := $(HOME)/.local/bin
+
+build: $(REASONING_MEMORY_BIN)
+
+$(REASONING_MEMORY_BIN):
+	@echo "→ Building reasoning-memory..."
+	@mkdir -p $(BIN_DIR)
+	cd $(REPO_ROOT)/mcp/reasoning-memory && go build -o $(REASONING_MEMORY_BIN) .
+
+install: build
+	@echo "→ Installing reasoning-memory to $(INSTALL_BIN_DIR)..."
+	@mkdir -p $(INSTALL_BIN_DIR)
+	install -m 0755 $(REASONING_MEMORY_BIN) $(INSTALL_BIN_DIR)/reasoning-memory
+	@echo "✓ Installed: $(INSTALL_BIN_DIR)/reasoning-memory"
 
 # ── Setup ────────────────────────────────────────────────────────────────────
 
@@ -140,6 +159,7 @@ run-mcp-pr-reviewer:
 
 clean:
 	@echo "→ Cleaning up..."
+	@rm -rf $(BIN_DIR)
 	@rm -rf $(REPO_ROOT)/mcp/reasoning-memory/reasoning-memory
 	@for dir in credential-vault pr-reviewer; do \
 		rm -rf $(REPO_ROOT)/mcp/$$dir/.venv; \
