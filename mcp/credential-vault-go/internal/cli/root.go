@@ -32,7 +32,7 @@ func NewRoot() *cobra.Command {
 		}
 		return vault.New(expand(c.VaultDir), newCrypt()), nil
 	}
-	root.AddCommand(statusCmd(open), getCmd(open), setCmd(open), scanCmd(open), restoreCmd(open), auditCmd(open), statsCmd(open), doctorCmd(open), dashboardCmd(open), exportCmd(open), importCmd(open), clearCmd(open), migrateStdinCmd(open))
+	root.AddCommand(statusCmd(open), getCmd(open), setCmd(open), scanCmd(open), restoreCmd(open), compactCmd(open), auditCmd(open), statsCmd(open), doctorCmd(open), dashboardCmd(open), exportCmd(open), importCmd(open), clearCmd(open), migrateStdinCmd(open))
 	return root
 }
 
@@ -159,6 +159,20 @@ func restoreCmd(o opener) *cobra.Command {
 		if e == nil {
 			fmt.Fprintf(c.OutOrStdout(), "restored %d files\n", n)
 		}
+		return e
+	}}
+}
+
+func compactCmd(o opener) *cobra.Command {
+	return &cobra.Command{Use: "compact", Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error {
+		v, e := o()
+		if e != nil {
+			return e
+		}
+		if e = v.Compact(); e != nil {
+			return e
+		}
+		_, e = fmt.Fprintln(c.OutOrStdout(), "compacted vault file backups")
 		return e
 	}}
 }

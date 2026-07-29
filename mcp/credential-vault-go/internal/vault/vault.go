@@ -385,3 +385,22 @@ func (v *Vault) Restore() (int, error) {
 	}
 	return n, v.auditUnlocked(AuditEntry{Action: "restore"})
 }
+
+func (v *Vault) Compact() error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	raw, err := os.ReadFile(v.vaultPath())
+	if err != nil {
+		return fmt.Errorf("read vault for compaction: %w", err)
+	}
+	plain, err := v.crypt.Decrypt(strings.TrimSpace(string(raw)))
+	if err != nil {
+		return fmt.Errorf("decrypt vault for compaction: %w", err)
+	}
+	var data Data
+	if err = json.Unmarshal(plain, &data); err != nil {
+		return fmt.Errorf("decode vault for compaction: %w", err)
+	}
+	data.Files = map[string]FileBackup{}
+	return v.saveUnlocked(data)
+}

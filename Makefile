@@ -12,7 +12,7 @@ all: setup
 
 BIN_DIR := $(REPO_ROOT)/bin
 REASONING_MEMORY_BIN := $(BIN_DIR)/reasoning-memory
-INSTALL_BIN_DIR := $(HOME)/.local/bin
+INSTALL_BIN_DIR := $(HOME)/mcp/bin
 
 build: $(REASONING_MEMORY_BIN)
 
