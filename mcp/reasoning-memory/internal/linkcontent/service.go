@@ -22,6 +22,13 @@ type Service struct {
 	cache      *Cache
 }
 
+func (s *Service) Close() error {
+	if fc, ok := s.fetcher.(FetcherCloser); ok && fc != nil {
+		return fc.Close()
+	}
+	return nil
+}
+
 func NewService(cfg Config, fetcher Fetcher, summarizer Summarizer) *Service {
 	cfg = cfg.WithDefaults()
 	return &Service{cfg: cfg, fetcher: fetcher, summarizer: summarizer, cache: NewCache(cfg.CacheTTLMinutes, 256)}
@@ -65,10 +72,14 @@ func (s *Service) ProcessProvided(input string, provided []Source) ([]Source, []
 	results := make([]Source, 0, len(urls))
 	warnings := make([]string, 0)
 	for _, raw := range urls {
-		source, ok := byURL[raw]
+		identity, err := NormalizeURL(raw)
+		if err != nil {
+			identity = raw
+		}
+		source, ok := byURL[identity]
 		if !ok || source.Status != StatusSummarized {
 			results = append(results, Source{SourceURL: SafeSourceURL(raw), Status: StatusSummaryFailed, Warning: "link_summary_required", Instructions: []string{}, AcceptanceCriteria: []string{}, Constraints: []string{}})
-			warnings = append(warnings, "link_summary_required: "+raw)
+			warnings = append(warnings, "link_summary_required: "+SafeSourceURL(raw))
 			continue
 		}
 		results = append(results, source)
@@ -108,7 +119,8 @@ func (s *Service) processURLs(ctx context.Context, urls []string) ([]Source, err
 }
 
 func (s *Service) processOne(ctx context.Context, raw string) Source {
-	source := Source{SourceURL: SafeSourceURL(raw), Instructions: []string{}, AcceptanceCriteria: []string{}, Constraints: []string{}}
+	safeURL := SafeSourceURL(raw)
+	source := Source{SourceURL: safeURL, Instructions: []string{}, AcceptanceCriteria: []string{}, Constraints: []string{}}
 	if _, err := ValidateURL(raw); err != nil {
 		source.Status = StatusBlocked
 		source.Warning = stableWarning(err)
@@ -142,22 +154,26 @@ func (s *Service) processOne(ctx context.Context, raw string) Source {
 		content = string([]rune(content)[:s.cfg.MaxExtractedChars])
 	}
 	contentHash := HashContent(content)
-	cacheKey := s.cache.Key(raw, contentHash)
+	identityURL := raw
+	if fetched.FinalURL != "" {
+		identityURL = fetched.FinalURL
+	}
+	cacheKey := s.cache.Key(identityURL, contentHash)
 	if cached, ok := s.cache.Get(cacheKey); ok {
 		cached.FetchedAt = fetched.FetchedAt
 		cached.Truncated = cached.Truncated || truncated || fetched.Truncated
 		return cached
 	}
-	source, err = s.summarizer.Summarize(ctx, raw, detectSourceType(raw), title, content, s.cfg.MaxSummaryChars)
+	source, err = s.summarizer.Summarize(ctx, safeURL, detectSourceType(identityURL), title, content, s.cfg.MaxSummaryChars)
 	if err != nil {
-		return Source{SourceURL: raw, Status: StatusSummaryFailed, Warning: "structured summary unavailable", Instructions: []string{}, AcceptanceCriteria: []string{}, Constraints: []string{}}
+		return Source{SourceURL: safeURL, Status: StatusSummaryFailed, Warning: "structured summary unavailable", Instructions: []string{}, AcceptanceCriteria: []string{}, Constraints: []string{}}
 	}
 	source = sanitizeSource(source, s.cfg.MaxSummaryChars)
 	if err := validateSummary(source, s.cfg.MaxSummaryChars); err != nil {
 		return Source{SourceURL: SafeSourceURL(raw), Status: StatusSummaryFailed, Warning: "structured summary failed validation", Instructions: []string{}, AcceptanceCriteria: []string{}, Constraints: []string{}}
 	}
-	source.SourceURL = SafeSourceURL(raw)
-	source.SourceType = detectSourceType(raw)
+	source.SourceURL = SafeSourceURL(identityURL)
+	source.SourceType = detectSourceType(identityURL)
 	source.ContentHash = contentHash
 	source.FetchedAt = fetched.FetchedAt
 	source.Truncated = source.Truncated || truncated || fetched.Truncated

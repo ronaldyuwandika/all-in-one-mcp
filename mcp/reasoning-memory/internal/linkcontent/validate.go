@@ -23,6 +23,7 @@ var (
 )
 
 func ValidateURL(raw string) (*url.URL, error) {
+	raw = strings.TrimSpace(raw)
 	u, err := url.Parse(raw)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidHost, err)

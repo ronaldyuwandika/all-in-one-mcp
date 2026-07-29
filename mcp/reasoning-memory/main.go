@@ -99,6 +99,7 @@ func main() {
 		RestRequirePreSummarized: cfg.LinkIngestion.RestRequirePreSummarized,
 	}
 	linkService = linkcontent.NewService(linkConfig, linkcontent.NewHTTPFetcher(linkConfig, linkConfig.AllowedContentTypes), samplingSummarizer{maxChars: cfg.LinkIngestion.MaxSummaryChars})
+	defer func() { _ = linkService.Close() }()
 
 	if vec != nil {
 		slog.Info("vector search enabled", "provider", cfg.Embedding.Provider, "model", cfg.Embedding.Model)
@@ -410,6 +411,15 @@ func handleSearchDecisions(es *store.EpisodeStore) server.ToolHandlerFunc {
 	}
 }
 
+func linkIngestionFailed(sources []linkcontent.Source) bool {
+	for _, source := range sources {
+		if source.Status != linkcontent.StatusSummarized {
+			return true
+		}
+	}
+	return false
+}
+
 func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		start := time.Now()
@@ -425,7 +435,7 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 		var linkedSources []linkcontent.Source
 		if linkService != nil {
 			processed, err := linkService.Process(ctx, problem)
-			if err != nil && cfg.LinkIngestion.FailurePolicy == linkcontent.FailurePolicyFail {
+			if cfg.LinkIngestion.FailurePolicy == linkcontent.FailurePolicyFail && (err != nil || linkIngestionFailed(processed)) {
 				return mcp.NewToolResultError("capture failed: link ingestion unavailable"), nil
 			}
 			linkedSources = processed
@@ -472,13 +482,7 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 		security.Episode(ep)
 		ep.Steps = extractSteps(ep.ThinkingTrace)
 
-		episodeID, err := es.CreateEpisodeContext(ctx, ep)
-		if err == nil && len(linkedSources) > 0 {
-			if perr := es.PersistEpisodeSources(ctx, episodeID, linkedSources); perr != nil {
-				_ = es.DeleteEpisode(episodeID)
-				return mcp.NewToolResultError("capture failed: linked source persistence unavailable"), nil
-			}
-		}
+		episodeID, err := es.CreateEpisodeWithSourcesContext(ctx, ep, linkedSources)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("capture failed: %v", err)), nil
 		}
@@ -702,7 +706,7 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 		linkedWarnings := []string{}
 		if linkService != nil {
 			processed, lerr := linkService.Process(ctx, rawPrompt)
-			if lerr != nil && cfg.LinkIngestion.FailurePolicy == linkcontent.FailurePolicyFail {
+			if cfg.LinkIngestion.FailurePolicy == linkcontent.FailurePolicyFail && (lerr != nil || linkIngestionFailed(processed)) {
 				return mcp.NewToolResultError("polish failed: link ingestion unavailable"), nil
 			}
 			if len(processed) > 0 {
@@ -1290,25 +1294,33 @@ func handleAPIPolish(w http.ResponseWriter, r *http.Request) {
 
 	linkedContext := ""
 	var linkedWarnings []string
-	if linkService != nil && len(req.LinkedSources) > 0 {
-		processed, warnings, err := linkService.ProcessProvided(req.RawPrompt, req.LinkedSources)
-		if err != nil && cfg.LinkIngestion.FailurePolicy == linkcontent.FailurePolicyFail {
-			http.Error(w, `{"error": "polish failed: link ingestion unavailable"}`, http.StatusBadRequest)
-			return
-		}
-		linkedWarnings = append(linkedWarnings, warnings...)
-		if len(processed) > 0 {
-			rendered, rerr := renderLinkedSources(processed)
-			if rerr != nil {
-				http.Error(w, fmt.Sprintf(`{"error": "%v"}`, rerr), http.StatusBadRequest)
+	if linkService != nil {
+		if len(req.LinkedSources) > 0 {
+			processed, warnings, err := linkService.ProcessProvided(req.RawPrompt, req.LinkedSources)
+			if cfg.LinkIngestion.FailurePolicy == linkcontent.FailurePolicyFail && (err != nil || linkIngestionFailed(processed)) {
+				http.Error(w, `{"error": "polish failed: link ingestion unavailable"}`, http.StatusBadRequest)
 				return
 			}
-			linkedContext = rendered
-		}
-	} else if linkService != nil && cfg.LinkIngestion.RestRequirePreSummarized {
-		urls := linkcontent.ExtractURLs(req.RawPrompt, cfg.LinkIngestion.MaxLinks)
-		if len(urls) > 0 {
-			linkedWarnings = append(linkedWarnings, "link_summary_required for URLs without pre-summarized content")
+			linkedWarnings = append(linkedWarnings, warnings...)
+			if len(processed) > 0 {
+				rendered, rerr := renderLinkedSources(processed)
+				if rerr != nil {
+					http.Error(w, fmt.Sprintf(`{"error": "%v"}`, rerr), http.StatusBadRequest)
+					return
+				}
+				linkedContext = rendered
+			}
+		} else if cfg.LinkIngestion.RestRequirePreSummarized {
+			urls := linkcontent.ExtractURLs(req.RawPrompt, cfg.LinkIngestion.MaxLinks)
+			if len(urls) > 0 {
+				if cfg.LinkIngestion.FailurePolicy == linkcontent.FailurePolicyFail {
+					http.Error(w, `{"error": "polish failed: link_summary_required"}`, http.StatusBadRequest)
+					return
+				}
+				for _, u := range urls {
+					linkedWarnings = append(linkedWarnings, "link_summary_required: "+linkcontent.SafeSourceURL(u))
+				}
+			}
 		}
 	}
 
