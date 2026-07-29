@@ -5,12 +5,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/linkcontent"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/models"
 )
 
@@ -46,6 +48,548 @@ func createEpisode(es *EpisodeStore, domain, outcome string, tags []string, prob
 		DurationSeconds: duration,
 	})
 	return id
+}
+
+func TestRunMigrationPhaseRollsBackPhaseDataOnMarkerFailure(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "store.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE store_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER fail_marker BEFORE INSERT ON store_metadata WHEN new.key = 'graph_migration_phase' BEGIN SELECT RAISE(FAIL, 'simulated marker failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	err = runMigrationPhase(db, "graph_migration_phase", "graph_migration_complete", migrateGraph)
+	if err == nil {
+		t.Fatal("expected phase execution to fail on marker trigger")
+	}
+	var hasGraph int
+	_ = db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='graph_edges'").Scan(&hasGraph)
+	if hasGraph != 0 {
+		t.Fatalf("expected graph_edges table creation to roll back on marker failure, got count=%d", hasGraph)
+	}
+}
+
+func TestReconcileVectorStoreExhaustionReturnsPendingError(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "store.db")
+	vec, err := NewVectorStore(dataDir, "mock", "", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	es, err := New(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer es.Close()
+	es.vec = vec
+	if _, err := es.db.Exec(`INSERT INTO vector_reconcile (episode_id, problem, thinking_trace, updated_at, claim_owner, claim_expires_at) VALUES ('unbounded-ep', 'p', 't', ?, 'other-worker', ?)`, time.Now().UTC().Format(time.RFC3339), time.Now().UTC().Add(time.Minute).Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+
+	err = es.ReconcileVectorStore(context.Background())
+	if !errors.Is(err, ErrVectorReconciliationPending) {
+		t.Fatalf("expected ErrVectorReconciliationPending, got %v", err)
+	}
+}
+
+func TestProducerUpdateAndDeletePreserveQueueGenerationAndPayload(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "store.db")
+	vec, err := NewVectorStore(dataDir, "mock", "", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vec.deleteEpisodeHook = func(ctx context.Context, id string) error { return errors.New("simulated deletion failure") }
+	es, err := NewWithVector(dbPath, vec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer es.Close()
+
+	ep := &models.Episode{ID: "preserve-ep-1", Problem: "orig prob", ThinkingTrace: "orig trace", Outcome: models.OutcomeVerifiedSuccess, Verification: []models.VerificationRecord{{Type: models.VerificationTests, Command: "cmd", Result: "res", Success: true}}}
+	if _, err := es.CreateEpisode(ep); err != nil {
+		t.Fatal(err)
+	}
+	if err := enqueueVectorReconcileDB(context.Background(), es.db, ep.ID, "updated prob", "updated trace"); err != nil {
+		t.Fatal(err)
+	}
+
+	var origGen int64
+	var origProb string
+	if err := es.db.QueryRow("SELECT queue_generation, problem FROM vector_reconcile WHERE episode_id = 'preserve-ep-1'").Scan(&origGen, &origProb); err != nil {
+		t.Fatal(err)
+	}
+
+	tx, err := es.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := enqueueVectorMigrationTx(context.Background(), tx); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	var newGen int64
+	var newProb string
+	var migVer int
+	if err := es.db.QueryRow("SELECT queue_generation, problem, migration_version FROM vector_reconcile WHERE episode_id = 'preserve-ep-1'").Scan(&newGen, &newProb, &migVer); err != nil {
+		t.Fatal(err)
+	}
+	if newGen != origGen {
+		t.Fatalf("migration conflict mutated queue_generation: orig=%d new=%d", origGen, newGen)
+	}
+	if newProb != "updated prob" {
+		t.Fatalf("migration conflict mutated update payload: got %q", newProb)
+	}
+	if migVer != currentVectorContentVersion {
+		t.Fatalf("migration conflict failed to raise migration_version: got %d", migVer)
+	}
+}
+
+func TestVectorVersionRaceConditionBlockedByConcurrentEnqueue(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "store.db")
+	vec, err := NewVectorStore(dataDir, "mock", "", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	es, err := NewWithVector(dbPath, vec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer es.Close()
+
+	if _, err := es.CreateEpisode(&models.Episode{ID: "race-ep-1", Problem: "prob 1", ThinkingTrace: "trace 1", Outcome: models.OutcomeVerifiedSuccess, Verification: []models.VerificationRecord{{Type: models.VerificationTests, Command: "cmd", Result: "res", Success: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := es.db.Exec("DELETE FROM store_metadata WHERE key='vector_content_version'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := es.db.Exec(`INSERT INTO vector_reconcile (episode_id, problem, thinking_trace, updated_at) VALUES ('race-ep-1', 'prob 1', 'trace 1', ?)`, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+
+	vec.deleteEpisodeHook = func(ctx context.Context, id string) error {
+		if id == "race-ep-1" {
+			tx, err := es.db.BeginTx(ctx, nil)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO vector_reconcile (episode_id, problem, thinking_trace, updated_at) VALUES ('race-ep-2', 'prob 2', 'trace 2', ?)`, time.Now().UTC().Format(time.RFC3339)); err != nil {
+				_ = tx.Rollback()
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE store_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key='vector_queue_generation'`); err != nil {
+				_ = tx.Rollback()
+				return err
+			}
+			return tx.Commit()
+		}
+		return nil
+	}
+
+	err = es.ReconcileVectorStore(context.Background())
+	if !errors.Is(err, ErrVectorReconciliationPending) {
+		t.Fatalf("expected ErrVectorReconciliationPending when race refreshed migration target, got %v", err)
+	}
+
+	var version string
+	_ = es.db.QueryRow("SELECT value FROM store_metadata WHERE key='vector_content_version'").Scan(&version)
+	if version == "2" {
+		t.Fatalf("expected vector_content_version unapplied due to pending item, got %q", version)
+	}
+	var pending int
+	if err := es.db.QueryRow("SELECT COUNT(*) FROM vector_reconcile").Scan(&pending); err != nil || pending == 0 {
+		t.Fatalf("expected pending queue item after race enqueue, pending=%d err=%v", pending, err)
+	}
+}
+
+func TestVectorContentVersionMixedGenerationDrainRequirement(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "store.db")
+	vec, err := NewVectorStore(dataDir, "mock", "", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	es, err := NewWithVector(dbPath, vec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer es.Close()
+
+	if _, err := es.db.Exec(`INSERT INTO vector_reconcile (episode_id, problem, thinking_trace, updated_at, claim_owner, claim_expires_at, migration_version) VALUES ('normal-update-ep', 'p', 't', ?, '', '', 0)`, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := es.db.Exec(`DELETE FROM store_metadata WHERE key='vector_content_version'`); err != nil {
+		t.Fatal(err)
+	}
+
+	vec.deleteEpisodeHook = func(ctx context.Context, id string) error {
+		if id == "normal-update-ep" {
+			return errors.New("simulated normal update failure")
+		}
+		return nil
+	}
+
+	if err := es.ReconcileVectorStore(context.Background()); err == nil {
+		t.Fatal("expected reconciliation failure")
+	}
+
+	var version string
+	_ = es.db.QueryRow("SELECT value FROM store_metadata WHERE key='vector_content_version'").Scan(&version)
+	if version == "2" {
+		t.Fatal("vector_content_version must not advance while any generation row remains in vector_reconcile")
+	}
+}
+
+func TestVectorQueueUpsertPreservesStateAndClaims(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "store.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE episodes (id TEXT PRIMARY KEY, created_at TEXT, updated_at TEXT, domain TEXT, outcome TEXT, tier TEXT, tags TEXT, repo TEXT, project TEXT, provenance TEXT, confidence REAL, labels TEXT, problem TEXT, objectives TEXT, decisions TEXT, alternatives TEXT, verification TEXT, lessons TEXT, thinking_trace TEXT, steps TEXT, tool_calls TEXT, model_id TEXT, duration_seconds INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO episodes (id, created_at, updated_at, domain, outcome, tier, tags, repo, project, provenance, labels, problem, objectives, decisions, alternatives, verification, lessons, thinking_trace, steps, tool_calls, model_id, duration_seconds) VALUES ('upsert-ep-1', '2026-03-31T10:00:00Z', '2026-03-31T10:00:00Z', 'coding', 'verified_success', 'episodic', '[]', '', '', '', '{}', 'p', '[]', '[]', '[]', '[]', '[]', 't', '[]', '[]', '', 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE vector_reconcile (episode_id TEXT PRIMARY KEY, problem TEXT NOT NULL, thinking_trace TEXT NOT NULL, updated_at TEXT NOT NULL, claim_owner TEXT NOT NULL DEFAULT '', claim_expires_at TEXT NOT NULL DEFAULT '', migration_version INTEGER NOT NULL DEFAULT 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO vector_reconcile (episode_id, problem, thinking_trace, updated_at, claim_owner, claim_expires_at, migration_version) VALUES ('upsert-ep-1', 'custom_prob', 'custom_trace', '2026-03-31T10:00:00Z', 'owner1', '2026-03-31T11:00:00Z', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	es, err := New(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer es.Close()
+
+	var prob, trace, owner, expires string
+	var version int
+	if err := es.db.QueryRow("SELECT problem, thinking_trace, claim_owner, claim_expires_at, migration_version FROM vector_reconcile WHERE episode_id = 'upsert-ep-1'").Scan(&prob, &trace, &owner, &expires, &version); err != nil {
+		t.Fatal(err)
+	}
+	if prob != "custom_prob" || trace != "custom_trace" || owner != "owner1" || expires != "2026-03-31T11:00:00Z" || version != currentVectorContentVersion {
+		t.Fatalf("upsert destroyed existing reconcile state: prob=%s trace=%s owner=%s expires=%s version=%d", prob, trace, owner, expires, version)
+	}
+}
+
+func TestVectorContentVersionNoRequeueOnReopen(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "store.db")
+	vec1, err := NewVectorStore(dataDir, "mock", "", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := make(map[string]int)
+	vec1.addEpisodeAfterHook = func(ctx context.Context, id, problem, trace string) error {
+		counts[id]++
+		return nil
+	}
+	es1, err := NewWithVector(dbPath, vec1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep := &models.Episode{ID: "no-requeue-ep", Outcome: models.OutcomeVerifiedSuccess, Problem: "prob", ThinkingTrace: "trace", Verification: []models.VerificationRecord{{Type: models.VerificationTests, Command: "go test", Result: "res", Success: true}}}
+	if _, err := es1.CreateEpisode(ep); err != nil {
+		t.Fatal(err)
+	}
+	if err := es1.ReconcileVectorStore(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_ = es1.Close()
+
+	vec2, err := NewVectorStore(dataDir, "mock", "", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vec2.addEpisodeAfterHook = func(ctx context.Context, id, problem, trace string) error {
+		counts[id]++
+		return nil
+	}
+	es2, err := NewWithVector(dbPath, vec2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer es2.Close()
+	if counts["no-requeue-ep"] != 1 {
+		t.Fatalf("expected 1 embedding call, got %d", counts["no-requeue-ep"])
+	}
+}
+
+func TestConcurrentVectorReconciliationLease(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "store.db")
+	esSeed, err := New(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		_, _ = esSeed.CreateEpisode(&models.Episode{ID: fmt.Sprintf("concurrent-ep-%d", i), Problem: fmt.Sprintf("prob %d", i), ThinkingTrace: "trace"})
+	}
+	_ = esSeed.Close()
+
+	db, _ := sql.Open("sqlite", dbPath)
+	_, _ = db.Exec("DELETE FROM store_metadata WHERE key='vector_content_version'")
+	_, _ = db.Exec("INSERT OR REPLACE INTO vector_reconcile (episode_id, problem, thinking_trace, updated_at) SELECT id, problem, '', updated_at FROM episodes")
+	_ = db.Close()
+
+	vec1, _ := NewVectorStore(dataDir, "mock", "", "", "", true)
+	vec2, _ := NewVectorStore(dataDir, "mock", "", "", "", true)
+	es1, err := NewWithVector(dbPath, vec1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer es1.Close()
+	es2, err := NewWithVector(dbPath, vec2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer es2.Close()
+
+	c1 := make(chan error, 1)
+	c2 := make(chan error, 1)
+	go func() { c1 <- es1.ReconcileVectorStore(context.Background()) }()
+	go func() { c2 <- es2.ReconcileVectorStore(context.Background()) }()
+	if err := <-c1; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-c2; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLegacyVerificationMigrationDoubleReopenIdempotency(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "store.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE episodes (id TEXT PRIMARY KEY, created_at TEXT, updated_at TEXT, domain TEXT, outcome TEXT, tier TEXT, tags TEXT, repo TEXT, project TEXT, provenance TEXT, confidence REAL, labels TEXT, problem TEXT, objectives TEXT, decisions TEXT, alternatives TEXT, verification TEXT, lessons TEXT, thinking_trace TEXT, steps TEXT, tool_calls TEXT, model_id TEXT, duration_seconds INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO episodes (id, created_at, updated_at, domain, outcome, tier, tags, repo, project, provenance, labels, problem, objectives, decisions, alternatives, verification, lessons, thinking_trace, steps, tool_calls, model_id, duration_seconds) VALUES ('idemp-1', '2026-03-31T10:00:00Z', '2026-03-31T10:00:00Z', 'coding', 'verified_success', 'episodic', '[]', '', '', '', '{}', 'p', '[]', '[]', '[]', 'raw string payload', '[]', 't', '[]', '[]', '', 0)`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	for i := 0; i < 2; i++ {
+		es, err := New(dbPath)
+		if err != nil {
+			t.Fatalf("open %d: %v", i, err)
+		}
+		ep, err := es.GetEpisode("idemp-1")
+		if err != nil || ep == nil {
+			t.Fatalf("get %d: %v", i, err)
+		}
+		if ep.Outcome != models.OutcomeUnverifiedSuccess {
+			t.Fatalf("expected outcome unverified_success, got %s", ep.Outcome)
+		}
+		if len(ep.Verification) != 2 {
+			t.Fatalf("expected exactly 2 verification records on open %d, got %d", i, len(ep.Verification))
+		}
+		if !strings.HasPrefix(string(ep.Verification[0].Result), "Legacy verification payload converted:") {
+			t.Fatalf("missing single marker on open %d: %s", i, ep.Verification[0].Result)
+		}
+		_ = es.Close()
+	}
+}
+
+func TestLegacyVerificationMigrationAtomicRollbackOnFailure(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "store.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE episodes (id TEXT PRIMARY KEY, created_at TEXT, updated_at TEXT, domain TEXT, outcome TEXT, tier TEXT, tags TEXT, repo TEXT, labels TEXT, problem TEXT, thinking_trace TEXT, verification TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO episodes (id, created_at, updated_at, domain, outcome, tier, tags, repo, labels, problem, thinking_trace, verification) VALUES ('fail-atomic-1', '2026-03-31T10:00:00Z', '2026-03-31T10:00:00Z', 'coding', 'verified_success', 'episodic', '[]', '', '{}', 'p', 't', 'invalid json string')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE episode_verifications (id INTEGER PRIMARY KEY, episode_id TEXT, position INTEGER NOT NULL UNIQUE, type TEXT, command TEXT, result TEXT, success INTEGER, evidence TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TRIGGER fail_verif_insert BEFORE INSERT ON episode_verifications BEGIN SELECT RAISE(FAIL, 'simulated verification insert failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = migrateLegacyVerificationsTx(tx, "episodes", "episode_verifications")
+	if err == nil {
+		_ = tx.Rollback()
+		t.Fatal("expected migration transaction failure")
+	}
+	_ = tx.Rollback()
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM episode_verifications`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("expected 0 verifications after rollback, got %d (err: %v)", count, err)
+	}
+	var outcome string
+	if err := db.QueryRow(`SELECT outcome FROM episodes WHERE id = 'fail-atomic-1'`).Scan(&outcome); err != nil || outcome != "verified_success" {
+		t.Fatalf("expected outcome verified_success preserved on rollback, got %s (err: %v)", outcome, err)
+	}
+}
+
+func TestVectorContentVersionReconciliationFailuresAndRestart(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "store.db")
+	db, err := openDatabase(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep := &models.Episode{ID: "restart-vector-ep", Problem: "restart problem title", ThinkingTrace: "restart trace", Verification: []models.VerificationRecord{
+		{Type: models.VerificationTests, Result: "restart_reconcile_term", Success: true},
+	}}
+	encoded, _ := json.Marshal(ep.Verification)
+	if _, err := db.Exec(`INSERT INTO episodes (id, created_at, updated_at, domain, outcome, tier, tags, problem, thinking_trace, verification) VALUES (?, ?, ?, 'coding', 'verified_success', 'episodic', '[]', ?, ?, ?)`,
+		ep.ID, time.Now().Format(time.RFC3339), time.Now().Format(time.RFC3339), ep.Problem, ep.ThinkingTrace, string(encoded),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO episode_verifications (episode_id, position, type, command, result, success, evidence) VALUES (?, 0, ?, '', ?, 1, '')`, ep.ID, string(models.VerificationTests), "restart_reconcile_term"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM store_metadata WHERE key='vector_content_version'`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	vecFail, err := NewVectorStore(dataDir, "mock", "", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vecFail.deleteEpisodeHook = func(ctx context.Context, id string) error {
+		return errors.New("simulated vector failure")
+	}
+	if esFail, err := NewWithVector(dbPath, vecFail); err == nil {
+		_ = esFail.Close()
+		t.Fatal("expected reconciliation failure")
+	}
+
+	dbCheck, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var version string
+	_ = dbCheck.QueryRow("SELECT value FROM store_metadata WHERE key='vector_content_version'").Scan(&version)
+	_ = dbCheck.Close()
+	if version == "2" {
+		t.Fatal("vector_content_version must remain unapplied until reconciliation succeeds")
+	}
+
+	vecOk, err := NewVectorStore(dataDir, "mock", "", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	esOk, err := NewWithVector(dbPath, vecOk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer esOk.Close()
+
+	results, err := esOk.SearchLocal("restart_reconcile_term", "", "", "", nil, 5)
+	if err != nil || len(results) == 0 {
+		t.Fatalf("failed to retrieve episode after restart reconciliation: results=%v err=%v", results, err)
+	}
+}
+
+func TestVectorContentVersionReconciliationOnStartup(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "store.db")
+	db, err := openDatabase(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep := &models.Episode{ID: "legacy-vector-ep", Problem: "unrelated problem title", ThinkingTrace: "unrelated thinking trace", Verification: []models.VerificationRecord{
+		{Type: models.VerificationTests, Result: "unique_verif_term_reconcile", Success: true},
+	}}
+	encoded, _ := json.Marshal(ep.Verification)
+	if _, err := db.Exec(`INSERT INTO episodes (id, created_at, updated_at, domain, outcome, tier, tags, problem, thinking_trace, verification) VALUES (?, ?, ?, 'coding', 'verified_success', 'episodic', '[]', ?, ?, ?)`,
+		ep.ID, time.Now().Format(time.RFC3339), time.Now().Format(time.RFC3339), ep.Problem, ep.ThinkingTrace, string(encoded),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO episode_verifications (episode_id, position, type, command, result, success, evidence) VALUES (?, 0, ?, '', ?, 1, '')`, ep.ID, string(models.VerificationTests), "unique_verif_term_reconcile"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM store_metadata WHERE key='vector_content_version'`); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	vec, err := NewVectorStore(dataDir, "mock", "", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	es, err := NewWithVector(dbPath, vec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer es.Close()
+
+	results, err := es.SearchLocal("unique_verif_term_reconcile", "", "", "", nil, 5)
+	if err != nil || len(results) == 0 {
+		t.Fatalf("failed to retrieve episode by vector verification term after reconciliation: results=%v err=%v", results, err)
+	}
+}
+
+func TestVectorVerificationTextInclusion(t *testing.T) {
+	vs, err := NewVectorStore(t.TempDir(), "mock", "", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	es, err := NewWithVector(t.TempDir()+"/store.db", vs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer es.Close()
+	ep := &models.Episode{ID: es.NextID(), Domain: "coding", Outcome: models.OutcomeVerifiedSuccess, Problem: "vector target", ThinkingTrace: "trace", Verification: []models.VerificationRecord{
+		{Type: models.VerificationTests, Command: "secret_command", Result: "vector_verification_result", Success: true, Evidence: "vector_verification_evidence"},
+	}}
+	if _, err := es.CreateEpisode(ep); err != nil {
+		t.Fatal(err)
+	}
+	results, err := es.SearchLocal("vector_verification_result", "", "", "", nil, 5)
+	if err != nil || len(results) == 0 {
+		t.Fatalf("results=%v err=%v", results, err)
+	}
+}
+
+func TestVerificationTextOmitsCommandsAndBoundsRecords(t *testing.T) {
+	text := VerificationText([]models.VerificationRecord{
+		{Type: models.VerificationTests, Command: "go test ./...", Result: "passed", Success: true},
+		{Type: models.VerificationLint, Command: "go vet ./...", Evidence: "clean", Success: true},
+		{Type: models.VerificationBuilds, Command: "go build ./...", Result: "built", Success: true},
+		{Type: models.VerificationReview, Result: "must be omitted", Success: true},
+	})
+	if strings.Contains(text, "go test") || strings.Contains(text, "must be omitted") {
+		t.Fatalf("verification vector text leaked command or exceeded record bound: %q", text)
+	}
+	for _, expected := range []string{"type=tests success=true", "result=passed", "evidence=clean"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("missing %q in %q", expected, text)
+		}
+	}
 }
 
 func TestEpisodesByDomain(t *testing.T) {
@@ -365,9 +909,14 @@ func TestSchemaMigrationPre102(t *testing.T) {
 	_ = db.Close()
 
 	// New store opening runs migrations
-	es, err := New(dbPath)
+	vecDataDir := t.TempDir()
+	vec, err := NewVectorStore(vecDataDir, "mock", "", "", "", true)
 	if err != nil {
-		t.Fatalf("migrating store: %v", err)
+		t.Fatal(err)
+	}
+	es, err := NewWithVector(dbPath, vec)
+	if err != nil {
+		t.Fatal(err)
 	}
 	defer es.Close()
 
@@ -757,7 +1306,7 @@ func TestRichEpisodeRoundTripUpdateAndArchive(t *testing.T) {
 		Objectives:   []string{"objective"},
 		Decisions:    []string{"decision"},
 		Alternatives: []string{"alternative"},
-		Verification: []string{"go test ./..."},
+		Verification: []models.VerificationRecord{{Type: models.VerificationTests, Command: "go test ./...", Result: "pass", Success: true}},
 		Lessons:      []string{"lesson"},
 	}
 	if _, err := es.CreateEpisode(ep); err != nil {
@@ -1106,6 +1655,166 @@ func TestFreshDatabaseFTSTriggersTrackInsertUpdateDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertSearchCount("fresh update target", 0)
+}
+
+func TestLegacyVerificationMigrationBackfillAndVerifiedSuccessCorrection(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy-verif.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE episodes (
+		id TEXT PRIMARY KEY, created_at TEXT NOT NULL, domain TEXT NOT NULL, outcome TEXT NOT NULL, tags TEXT NOT NULL,
+		problem TEXT NOT NULL, thinking_trace TEXT NOT NULL, steps TEXT NOT NULL, tool_calls TEXT NOT NULL,
+		model_id TEXT NOT NULL, duration_seconds INTEGER NOT NULL, verification TEXT NOT NULL DEFAULT '[]'
+	);
+	CREATE TABLE episodes_archive (
+		id TEXT PRIMARY KEY, created_at TEXT NOT NULL, domain TEXT NOT NULL, outcome TEXT NOT NULL, tags TEXT NOT NULL,
+		problem TEXT NOT NULL, thinking_trace TEXT NOT NULL, steps TEXT NOT NULL, tool_calls TEXT NOT NULL,
+		model_id TEXT NOT NULL, duration_seconds INTEGER NOT NULL, verification TEXT NOT NULL DEFAULT '[]'
+	);
+	INSERT INTO episodes VALUES (
+		'ep-legacy-1', '2026-01-01T00:00:00Z', 'coding', 'verified_success', '[]',
+		'legacy problem 1', 'trace', '[]', '[]', '', 0, '"legacy observation string"'
+	);
+	INSERT INTO episodes_archive VALUES (
+		'ep-legacy-2', '2026-01-01T00:00:00Z', 'coding', 'verified_success', '[]',
+		'legacy problem 2', 'trace', '[]', '[]', '', 0, '[{"type":"tests","command":"go test ./...","result":"pass","success":true}]'
+	);`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	es, err := New(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer es.Close()
+
+	ep1, err := es.GetEpisode("ep-legacy-1")
+	if err != nil || ep1 == nil {
+		t.Fatalf("ep-legacy-1 missing: %v", err)
+	}
+	if ep1.Outcome != models.OutcomeUnverifiedSuccess {
+		t.Fatalf("expected outcome unverified_success for converted legacy episode, got %s", ep1.Outcome)
+	}
+	if len(ep1.Verification) != 2 {
+		t.Fatalf("expected 2 verification records (legacy observation + correction note), got %d", len(ep1.Verification))
+	}
+	if ep1.Verification[0].Type != models.VerificationObservation || ep1.Verification[0].Result != "Legacy verification payload converted: legacy observation string" {
+		t.Fatalf("unexpected legacy observation record: %+v", ep1.Verification[0])
+	}
+	if ep1.Verification[1].Type != models.VerificationObservation || !strings.Contains(ep1.Verification[1].Result, "converted verified_success to unverified_success") {
+		t.Fatalf("unexpected correction note record: %+v", ep1.Verification[1])
+	}
+
+	var archOutcome string
+	if err := es.db.QueryRow("SELECT outcome FROM episodes_archive WHERE id = 'ep-legacy-2'").Scan(&archOutcome); err != nil || archOutcome != models.OutcomeVerifiedSuccess {
+		t.Fatalf("expected verified_success preserved for ep-legacy-2, got %s (err: %v)", archOutcome, err)
+	}
+	var archCount int
+	if err := es.db.QueryRow("SELECT COUNT(*) FROM episode_verifications_archive WHERE episode_id = 'ep-legacy-2'").Scan(&archCount); err != nil || archCount != 1 {
+		t.Fatalf("expected 1 archive verification record for ep-legacy-2, got %d (err: %v)", archCount, err)
+	}
+
+	var ftsCount int
+	if err := es.db.QueryRow("SELECT COUNT(*) FROM verification_fts WHERE verification_fts MATCH 'legacy'").Scan(&ftsCount); err != nil || ftsCount != 2 {
+		t.Fatalf("expected both active migration observations indexed after rebuild, got %d hits (err: %v)", ftsCount, err)
+	}
+}
+
+func TestRestoreEpisodeDBRestoresVerificationRows(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "rollback-verif.db")
+	vec, err := NewVectorStore(dataDir, "mock", "", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	es, err := NewWithVector(dbPath, vec)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ep := &models.Episode{
+		ID:      es.NextID(),
+		Outcome: models.OutcomeVerifiedSuccess,
+		Problem: "rollback verification problem",
+		Verification: []models.VerificationRecord{
+			{Type: models.VerificationTests, Command: "go test ./...", Result: "pass", Success: true},
+		},
+	}
+	if _, err := es.CreateEpisode(ep); err != nil {
+		t.Fatal(err)
+	}
+
+	vec.deleteEpisodeHook = func(context.Context, string) error { return errors.New("forced vector replace failure") }
+	updated, err := es.GetEpisode(ep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated.Problem = "updated problem"
+	updated.Verification = []models.VerificationRecord{
+		{Type: models.VerificationLint, Command: "go vet ./...", Result: "pass", Success: true},
+		{Type: models.VerificationTests, Command: "go test ./...", Result: "pass", Success: true},
+	}
+
+	if err := es.UpdateEpisode(context.Background(), updated); err == nil {
+		t.Fatal("expected vector update failure")
+	}
+
+	rolledBack, err := es.GetEpisode(ep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rolledBack.Problem != "rollback verification problem" {
+		t.Fatalf("expected rolled back problem, got %s", rolledBack.Problem)
+	}
+	if len(rolledBack.Verification) != 1 || rolledBack.Verification[0].Command != "go test ./..." {
+		t.Fatalf("expected restored verification records, got %+v", rolledBack.Verification)
+	}
+
+	var count int
+	if err := es.db.QueryRow("SELECT COUNT(*) FROM episode_verifications WHERE episode_id = ?", ep.ID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("expected 1 active verification row after rollback, got %d (err: %v)", count, err)
+	}
+}
+
+func TestCreateEpisodeWithSourcesSanitizesFields(t *testing.T) {
+	es := testStore(t)
+	ep := &models.Episode{
+		ID:            es.NextID(),
+		Outcome:       models.OutcomeUnverifiedSuccess,
+		Problem:       "source sanitization problem",
+		ThinkingTrace: "trace",
+	}
+	secret := "gh" + "p_abcdefghijklmnopqrstuvwxyz1234567890"
+	sources := []linkcontent.Source{
+		{
+			SourceURL:          "https://example.com/spec",
+			SourceType:         "web_page",
+			Title:              "Spec",
+			Status:             "summarized",
+			Summary:            "API token is " + secret,
+			Warning:            "Exposed key " + secret,
+			Instructions:       []string{"Use key " + secret},
+			AcceptanceCriteria: []string{"Validated " + secret},
+			Constraints:        []string{"Do not share " + secret},
+		},
+	}
+
+	if _, err := es.CreateEpisodeWithSourcesContext(context.Background(), ep, sources); err != nil {
+		t.Fatal(err)
+	}
+
+	var summary, warning, instructions, acceptance, constraints string
+	if err := es.db.QueryRow("SELECT summary, warning, instructions, acceptance_criteria, constraints FROM episode_sources WHERE episode_id = ?", ep.ID).Scan(&summary, &warning, &instructions, &acceptance, &constraints); err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(summary, secret) || strings.Contains(warning, secret) || strings.Contains(instructions, secret) || strings.Contains(acceptance, secret) || strings.Contains(constraints, secret) {
+		t.Fatalf("expected secret token redacted from source fields, got:\nsummary=%s\nwarning=%s\ninstructions=%s\nacceptance=%s\nconstraints=%s", summary, warning, instructions, acceptance, constraints)
+	}
 }
 
 func TestMalformedPersistedTimestampReturnsFieldError(t *testing.T) {

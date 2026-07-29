@@ -18,7 +18,7 @@ type GraphEdge struct {
 	CreatedAt    string  `json:"created_at"`
 }
 
-func migrateGraph(db *sql.DB) error {
+func migrateGraph(db sqlExecutor) error {
 	ddl := []string{
 		`CREATE TABLE IF NOT EXISTS graph_edges (
 			id TEXT PRIMARY KEY,

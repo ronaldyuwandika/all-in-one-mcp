@@ -23,7 +23,7 @@ type SemanticConcept struct {
 	CreatedAt      string   `json:"created_at"`
 }
 
-func migrateConcepts(db *sql.DB) error {
+func migrateConcepts(db sqlExecutor) error {
 	ddl := []string{
 		`CREATE TABLE IF NOT EXISTS semantic_concepts (
 			id TEXT PRIMARY KEY,
