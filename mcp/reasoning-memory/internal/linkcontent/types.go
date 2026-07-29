@@ -94,6 +94,7 @@ func (c Config) WithDefaults() Config {
 	return c
 }
 
+// Source is the stable link-ingestion result contract. SourceURL is always the safe presentation URL.
 type Source struct {
 	SourceURL          string    `json:"source_url" yaml:"source_url"`
 	SourceType         string    `json:"source_type,omitempty" yaml:"source_type,omitempty"`

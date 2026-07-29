@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -276,6 +277,10 @@ func (es *EpisodeStore) CreateEpisode(ep *models.Episode) (string, error) {
 }
 
 func (es *EpisodeStore) createEpisode(ctx context.Context, ep *models.Episode) (string, error) {
+	return es.createEpisodeWithSources(ctx, ep, nil)
+}
+
+func (es *EpisodeStore) createEpisodeWithSources(ctx context.Context, ep *models.Episode, sources []linkcontent.Source) (string, error) {
 	// This is the authoritative persistence boundary. Sanitizing here protects
 	// SQLite, FTS5, label enrichment, and vector indexing for every caller.
 	security.Episode(ep)
@@ -313,7 +318,13 @@ func (es *EpisodeStore) createEpisode(ctx context.Context, ep *models.Episode) (
 	}
 	labelsJSON, _ := json.Marshal(labels)
 
-	_, err := es.db.Exec(
+	tx, err := es.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("begin create episode tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO episodes (id, created_at, domain, outcome, tier, tags, repo, labels, problem, thinking_trace, steps, tool_calls, model_id, duration_seconds)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ep.ID,
@@ -335,19 +346,62 @@ func (es *EpisodeStore) createEpisode(ctx context.Context, ep *models.Episode) (
 		return "", fmt.Errorf("create episode: %w", err)
 	}
 
-	if err := es.syncMetadataIndex(ep.ID, labels); err != nil {
-		return "", fmt.Errorf("sync labels: %w", err)
+	if _, err := tx.ExecContext(ctx, "DELETE FROM metadata_idx WHERE episode_id = ?", ep.ID); err != nil {
+		return "", fmt.Errorf("delete metadata_idx: %w", err)
+	}
+	for k, vs := range labels {
+		for _, v := range vs {
+			if _, err := tx.ExecContext(ctx,
+				"INSERT INTO metadata_idx (episode_id, key, value) VALUES (?, ?, ?)",
+				ep.ID, k, v,
+			); err != nil {
+				return "", fmt.Errorf("insert metadata_idx: %w", err)
+			}
+		}
+	}
+
+	for _, source := range sources {
+		instructionsJSON, _ := json.Marshal(source.Instructions)
+		acceptanceJSON, _ := json.Marshal(source.AcceptanceCriteria)
+		constraintsJSON, _ := json.Marshal(source.Constraints)
+		fetchedAt := ""
+		if !source.FetchedAt.IsZero() {
+			fetchedAt = source.FetchedAt.UTC().Format(time.RFC3339)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO episode_sources (episode_id, source_url, source_type, title, status, warning, content_hash, fetched_at, truncated, summary, instructions, acceptance_criteria, constraints)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ep.ID, source.SourceURL, source.SourceType, source.Title, source.Status, source.Warning, source.ContentHash, fetchedAt, boolToInt(source.Truncated), source.Summary, string(instructionsJSON), string(acceptanceJSON), string(constraintsJSON),
+		); err != nil {
+			return "", fmt.Errorf("insert episode source: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("commit episode tx: %w", err)
 	}
 
 	if es.vec != nil && es.vec.Enabled() {
-		_ = es.vec.AddEpisode(ctx, ep.ID, ep.Problem, ep.ThinkingTrace)
+		if verr := es.vec.AddEpisode(ctx, ep.ID, ep.Problem, ep.ThinkingTrace); verr != nil {
+			if derr := es.DeleteEpisode(ep.ID); derr != nil {
+				return "", errors.Join(
+					fmt.Errorf("add episode vector: %w", verr),
+					fmt.Errorf("compensate episode creation: %w", derr),
+				)
+			}
+			return "", fmt.Errorf("add episode vector: %w", verr)
+		}
 	}
 
 	return ep.ID, nil
 }
 
 func (es *EpisodeStore) CreateEpisodeContext(ctx context.Context, ep *models.Episode) (string, error) {
-	return es.createEpisode(ctx, ep)
+	return es.createEpisodeWithSources(ctx, ep, nil)
+}
+
+func (es *EpisodeStore) CreateEpisodeWithSourcesContext(ctx context.Context, ep *models.Episode, sources []linkcontent.Source) (string, error) {
+	return es.createEpisodeWithSources(ctx, ep, sources)
 }
 
 func (es *EpisodeStore) GetEpisode(id string) (*models.Episode, error) {
@@ -489,6 +543,9 @@ func (es *EpisodeStore) DeleteEpisode(id string) error {
 	if _, err := tx.Exec("DELETE FROM episode_sources WHERE episode_id = ?", id); err != nil {
 		return fmt.Errorf("delete episode sources: %w", err)
 	}
+	if _, err := tx.Exec("DELETE FROM metadata_idx WHERE episode_id = ?", id); err != nil {
+		return fmt.Errorf("delete episode metadata_idx: %w", err)
+	}
 	if _, err := tx.Exec("DELETE FROM episodes WHERE id = ?", id); err != nil {
 		return fmt.Errorf("delete episode: %w", err)
 	}
@@ -496,7 +553,9 @@ func (es *EpisodeStore) DeleteEpisode(id string) error {
 		return fmt.Errorf("commit delete episode: %w", err)
 	}
 	if es.vec != nil && es.vec.Enabled() {
-		_ = es.vec.DeleteEpisode(context.Background(), id)
+		if verr := es.vec.DeleteEpisode(context.Background(), id); verr != nil {
+			return fmt.Errorf("delete episode vector: %w", verr)
+		}
 	}
 	return nil
 }

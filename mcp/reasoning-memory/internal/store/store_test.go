@@ -442,6 +442,11 @@ func TestDeleteEpisode(t *testing.T) {
 	es := testStore(t)
 	ep := seedEpisode(es)
 
+	var count int
+	if err := es.db.QueryRow("SELECT COUNT(*) FROM metadata_idx WHERE episode_id = ?", ep.ID).Scan(&count); err != nil || count == 0 {
+		t.Fatalf("expected metadata_idx rows before delete, count=%d err=%v", count, err)
+	}
+
 	if err := es.DeleteEpisode(ep.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
@@ -452,6 +457,10 @@ func TestDeleteEpisode(t *testing.T) {
 	}
 	if got != nil {
 		t.Error("expected nil after delete")
+	}
+
+	if err := es.db.QueryRow("SELECT COUNT(*) FROM metadata_idx WHERE episode_id = ?", ep.ID).Scan(&count); err != nil || count != 0 {
+		t.Errorf("expected 0 metadata_idx rows after delete, got %d (err: %v)", count, err)
 	}
 }
 

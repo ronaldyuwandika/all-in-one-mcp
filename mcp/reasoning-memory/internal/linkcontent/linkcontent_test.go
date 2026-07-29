@@ -3,6 +3,7 @@ package linkcontent
 import (
 	"context"
 	"errors"
+	"net"
 	"strings"
 	"testing"
 )
@@ -66,8 +67,8 @@ func TestJSONSummarizerRejectsInvalidResponse(t *testing.T) {
 }
 
 func TestSafeSourceURLRemovesSensitiveComponents(t *testing.T) {
-	got := SafeSourceURL("https://user:pass@example.com/task?id=secret#fragment")
-	if got != "https://example.com/task" {
+	got := SafeSourceURL("https://user:pass@example.com/task?id=42&access_token=secret#fragment")
+	if got != "https://example.com/task?access_token=%5BREDACTED%5D&id=42" {
 		t.Fatalf("unexpected safe URL: %q", got)
 	}
 }
@@ -93,5 +94,33 @@ func TestValidateSummaryRejectsEmptyOrOversized(t *testing.T) {
 	}
 	if validateSummary(Source{Summary: strings.Repeat("x", 101)}, 100) == nil {
 		t.Fatal("expected aggregate budget rejection")
+	}
+}
+
+func TestVerifyConnectedHost(t *testing.T) {
+	allowed := []net.IP{net.ParseIP("93.184.216.34")}
+	if err := VerifyConnectedHost("93.184.216.34:443", allowed); err != nil {
+		t.Fatalf("expected allowed connected host, got %v", err)
+	}
+	if err := VerifyConnectedHost("127.0.0.1:443", allowed); err == nil {
+		t.Fatal("expected error for unlisted connected host IP")
+	}
+}
+
+func TestNormalizeURLIdentity(t *testing.T) {
+	got, err := NormalizeURL("HTTPS://EXAMPLE.COM:443/test?a=1&b=2#fragment")
+	if err != nil || got != "https://example.com/test?a=1&b=2" {
+		t.Fatalf("unexpected normalized URL identity: %q %v", got, err)
+	}
+}
+
+func TestNormalizeURLKeepsDistinctQueryParamsDistinct(t *testing.T) {
+	u1, err1 := NormalizeURL("https://example.com/item?id=1")
+	u2, err2 := NormalizeURL("https://example.com/item?id=2")
+	if err1 != nil || err2 != nil {
+		t.Fatalf("unexpected normalize error: %v %v", err1, err2)
+	}
+	if u1 == u2 {
+		t.Fatalf("expected distinct URLs to remain distinct, got %q", u1)
 	}
 }

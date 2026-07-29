@@ -168,6 +168,68 @@ Auto-detects task type (coding/agentic/analysis/general), programming language, 
 }
 ```
 
+#### Link ingestion
+
+Link ingestion applies only to HTTP and HTTPS URLs found as whitespace-delimited tokens in `raw_prompt` or, when `include_thinking_trace: true`, the thinking trace. Surrounding punctuation is removed, fragments are discarded, duplicate normalized URLs are processed once, and only the first `max_links` URLs are used. URLs containing user information, such as `https://user:password@example.com/issue`, are rejected.
+
+MCP `polish_prompt` fetches eligible links and asks the connected MCP client to return a structured summary. Each result uses one of these statuses: `summarized`, `blocked`, `fetch_failed`, `unsupported_content`, `extraction_failed`, or `summary_failed`. Source text is treated as untrusted data; instructions embedded in a page cannot override the summarization request.
+
+```json
+{
+  "raw_prompt": "Implement https://issues.example.com/browse/APP-104?view=full#comments",
+  "include_context": true
+}
+```
+
+The fragment is ignored. The query remains part of URL identity, so a supplied summary for `?view=compact` does not satisfy `?view=full`.
+
+The REST `POST /api/polish` endpoint never performs outbound link fetches. With the default `rest_require_pre_summarized: true`, every extracted URL must have a matching `linked_sources` entry whose `status` is `summarized` and whose `summary` is non-empty. The aggregate title, summary, instructions, acceptance criteria, and constraints must fit within `max_summary_chars`.
+
+```json
+{
+  "raw_prompt": "Implement https://issues.example.com/browse/APP-104?view=full#comments",
+  "linked_sources": [
+    {
+      "source_url": "https://issues.example.com/browse/APP-104?view=full",
+      "source_type": "jira",
+      "title": "APP-104: Ingest linked requirements",
+      "summary": "Add bounded, SSRF-safe link ingestion to prompt polishing.",
+      "instructions": ["Fetch links only through the MCP path"],
+      "acceptance_criteria": ["REST accepts matching pre-summarized sources"],
+      "constraints": ["Do not fetch links from REST"],
+      "status": "summarized"
+    }
+  ]
+}
+```
+
+Failure policy controls incomplete ingestion:
+
+- `warn` continues polishing. MCP results retain their non-`summarized` status and stable warning; REST adds warnings such as `link_summary_required: https://issues.example.com/browse/APP-104?view=full`.
+- `fail` rejects the operation if any requested URL is not summarized. REST returns HTTP 400 with `{"error": "polish failed: link_summary_required"}` when summaries are absent, or `{"error": "polish failed: link ingestion unavailable"}` when supplied summaries are missing, mismatched, or invalid.
+
+Persisted and returned `source_url` values are safe presentation URLs. Harmless query values remain visible, while query keys containing `accesskey`, `apikey`, `authorization`, `credential`, `jwt`, `password`, `secret`, `signature`, or `token` after separator removal have every value replaced with `[REDACTED]`:
+
+```text
+https://example.com/task?id=104&api_token=private-value#notes
+https://example.com/task?api_token=%5BREDACTED%5D&id=104
+```
+
+The second line is the safe stored and returned form; the fragment is removed. Episode capture writes the episode, metadata index, and all link-source rows in one SQLite transaction. A failure rolls back all SQLite rows. If vector indexing fails after commit, the store compensates by deleting the episode and its associated SQLite records instead of leaving a partial capture.
+
+#### SSRF protections
+
+Outbound MCP fetches enforce all of these checks:
+
+- Only `http` and `https` are accepted; HTTPS redirects cannot downgrade to HTTP.
+- URL user information is rejected.
+- Literal and DNS-resolved loopback, private, link-local, multicast, unspecified, and IPv4 metadata-range addresses are blocked.
+- Every redirect target is revalidated, with at most `max_redirects` redirects.
+- The dialer connects to a validated resolved IP and verifies the connection's actual remote peer IP belongs to that resolved set. A mismatch fails with the stable `source fetch failed` warning, preventing DNS rebinding between validation and connection.
+- Requests use `request_timeout_seconds`; response bodies use `max_response_bytes`; extracted text uses `max_extracted_chars`; content types must appear in `allowed_content_types`; concurrency is capped by `max_concurrency`.
+
+For example, `http://127.0.0.1/admin`, `http://169.254.169.254/latest/meta-data/`, and a public hostname whose connected peer resolves to a private or different IP are blocked. Redirects receive the same validation as the original URL.
+
 ## Demo Episodes
 
 Live traces captured during a single session across all 5 tools. Full source: [`bench/results/demo-episodes.json`](./bench/results/demo-episodes.json).

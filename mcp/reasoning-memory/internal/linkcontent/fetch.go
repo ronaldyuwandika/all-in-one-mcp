@@ -18,6 +18,19 @@ type Fetcher interface {
 	Fetch(ctx context.Context, raw string) (*FetchResult, error)
 }
 
+// Close releases resources owned by a fetcher. Implementations without resources may omit it.
+type FetcherCloser interface {
+	Fetcher
+	Close() error
+}
+
+type verifiedConn struct {
+	net.Conn
+	allowed []net.IP
+}
+
+func (c *verifiedConn) Close() error { return c.Conn.Close() }
+
 type FetchResult struct {
 	StatusCode    int
 	ContentType   string
@@ -61,8 +74,18 @@ func NewHTTPFetcher(cfg Config, allowedContentTypes []string) Fetcher {
 			if err != nil {
 				return nil, err
 			}
-			dialHost := resolved[0].String()
-			return dialer.DialContext(ctx, network, net.JoinHostPort(dialHost, port))
+			for _, ip := range resolved {
+				conn, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+				if dialErr != nil {
+					continue
+				}
+				if verifyErr := VerifyConnectedHost(conn.RemoteAddr().String(), resolved); verifyErr != nil {
+					_ = conn.Close()
+					return nil, verifyErr
+				}
+				return &verifiedConn{Conn: conn, allowed: resolved}, nil
+			}
+			return nil, ErrUnresolvedHost
 		},
 		DisableKeepAlives: true,
 	}
@@ -99,6 +122,13 @@ func NewHTTPFetcher(cfg Config, allowedContentTypes []string) Fetcher {
 		allow:       allowed,
 		dialer:      dialer,
 	}
+}
+
+func (f *httpFetcher) Close() error {
+	if f.client != nil {
+		f.client.CloseIdleConnections()
+	}
+	return nil
 }
 
 func (f *httpFetcher) Fetch(ctx context.Context, raw string) (*FetchResult, error) {
@@ -164,25 +194,53 @@ func HashContent(content string) string {
 }
 
 func NormalizeURL(raw string) (string, error) {
-	u, err := url.Parse(raw)
+	u, err := ValidateURL(raw)
 	if err != nil {
 		return "", err
 	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
 	u.Fragment = ""
-	if u.Scheme == "" || u.Host == "" {
-		return "", ErrInvalidHost
+	if (u.Scheme == "http" && u.Port() == "80") || (u.Scheme == "https" && u.Port() == "443") {
+		u.Host = u.Hostname()
+	}
+	if u.Path == "" {
+		u.Path = "/"
 	}
 	return u.String(), nil
 }
 
 func SafeSourceURL(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme == "" || u.Host == "" {
 		return ""
 	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+	if (u.Scheme == "http" && u.Port() == "80") || (u.Scheme == "https" && u.Port() == "443") {
+		u.Host = u.Hostname()
+	}
 	u.User = nil
-	u.RawQuery = ""
-	u.ForceQuery = false
+	query := u.Query()
+	for key := range query {
+		if sensitiveQueryKey(key) {
+			query[key] = []string{"[REDACTED]"}
+		}
+	}
+	u.RawQuery = query.Encode()
 	u.Fragment = ""
+	if u.Path == "" {
+		u.Path = "/"
+	}
 	return u.String()
+}
+
+func sensitiveQueryKey(key string) bool {
+	normalized := strings.ToLower(strings.NewReplacer("-", "", "_", "", ".", "").Replace(key))
+	for _, marker := range []string{"accesskey", "apikey", "authorization", "credential", "jwt", "password", "secret", "signature", "token"} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }

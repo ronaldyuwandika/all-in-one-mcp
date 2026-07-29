@@ -15,6 +15,7 @@ import (
 
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/linkcontent"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/models"
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/prompter"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/store"
 )
 
@@ -184,6 +185,32 @@ func TestAPIStats(t *testing.T) {
 
 	if result.EpisodesTotal != 2 {
 		t.Errorf("expected 2 episodes, got %d", result.EpisodesTotal)
+	}
+}
+
+func TestAPIPolishPreSummarizedOnly(t *testing.T) {
+	original := cfg.LinkIngestion
+	cfg.LinkIngestion.RestRequirePreSummarized = true
+	t.Cleanup(func() { cfg.LinkIngestion = original })
+	body := `{"raw_prompt": "See https://example.com/item"}`
+	req := httptest.NewRequest("POST", "/api/polish", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handleAPIPolish(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rr.Code)
+	}
+	var res prompter.PolishResult
+	if err := json.Unmarshal(rr.Body.Bytes(), &res); err != nil {
+		t.Fatalf("failed to decode polish response: %v", err)
+	}
+	found := false
+	for _, warning := range res.Warnings {
+		found = found || strings.Contains(warning, "link_summary_required")
+	}
+	if !found {
+		t.Fatalf("expected link_summary_required warning, got %#v", res.Warnings)
 	}
 }
 
