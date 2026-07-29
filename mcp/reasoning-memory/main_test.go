@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mark3labs/mcp-go/mcp"
+
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/linkcontent"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/models"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/store"
@@ -57,6 +59,57 @@ func TestMain(m *testing.M) {
 	})
 
 	os.Exit(m.Run())
+}
+
+func TestToolSchemasSerializeArrayItems(t *testing.T) {
+	tools := map[string]mcp.Tool{
+		"capture_reasoning_episode": mcp.NewTool("capture_reasoning_episode", mcp.WithArray("tool_calls", mcp.Items(toolCallSchema)), mcp.WithArray("tags", mcp.WithStringItems())),
+		"record_decision":           mcp.NewTool("record_decision", mcp.WithArray("tradeoffs", mcp.WithStringItems()), mcp.WithArray("assumptions", mcp.WithStringItems()), mcp.WithArray("evidence", mcp.WithStringItems()), mcp.WithArray("alternatives", mcp.Items(alternativeSchema))),
+		"retrieve_reasoning":        mcp.NewTool("retrieve_reasoning", mcp.WithArray("tags", mcp.WithStringItems())),
+		"memorize_concept":          mcp.NewTool("memorize_concept", mcp.WithArray("tags", mcp.WithStringItems())),
+	}
+
+	assertArrayItems := func(toolName, propertyName string) map[string]any {
+		t.Helper()
+		property := tools[toolName].InputSchema.Properties[propertyName].(map[string]any)
+		return property["items"].(map[string]any)
+	}
+	if got := assertArrayItems("capture_reasoning_episode", "tool_calls")["type"]; got != "object" {
+		t.Fatalf("tool_calls items type = %v, want object", got)
+	}
+	alternativeItems := assertArrayItems("record_decision", "alternatives")
+	if got := alternativeItems["type"]; got != "object" {
+		t.Fatalf("alternatives items type = %v, want object", got)
+	}
+	alternativeProperties := alternativeItems["properties"].(map[string]any)
+	tradeoffs := alternativeProperties["tradeoffs"].(map[string]any)
+	if got := tradeoffs["type"]; got != "array" {
+		t.Fatalf("alternatives.tradeoffs type = %v, want array", got)
+	}
+	tradeoffItems := tradeoffs["items"].(map[string]any)
+	if got := tradeoffItems["type"]; got != "string" {
+		t.Fatalf("alternatives.tradeoffs items type = %v, want string", got)
+	}
+	encoded, err := json.Marshal(tools["record_decision"].InputSchema)
+	if err != nil {
+		t.Fatalf("marshal decision schema: %v", err)
+	}
+	var serialized map[string]any
+	if err := json.Unmarshal(encoded, &serialized); err != nil {
+		t.Fatalf("unmarshal decision schema: %v", err)
+	}
+	serializedProperties := serialized["properties"].(map[string]any)
+	serializedAlternatives := serializedProperties["alternatives"].(map[string]any)
+	serializedAlternativeItems := serializedAlternatives["items"].(map[string]any)
+	serializedAlternativeProperties := serializedAlternativeItems["properties"].(map[string]any)
+	serializedTradeoffs := serializedAlternativeProperties["tradeoffs"].(map[string]any)
+	if _, ok := serializedTradeoffs["items"]; !ok {
+		t.Fatal("serialized alternatives.tradeoffs schema omitted items")
+	}
+	encoded, err = json.Marshal(tools["capture_reasoning_episode"].InputSchema)
+	if err != nil || !strings.Contains(string(encoded), `"items"`) {
+		t.Fatalf("serialized schema omitted array items: %v", err)
+	}
 }
 
 func TestAPIEpisodes(t *testing.T) {

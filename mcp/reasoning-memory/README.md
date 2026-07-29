@@ -16,6 +16,16 @@ make run-reasoning-memory
 reasoning-memory
 ```
 
+## Gemini-Compatible MCP Schemas
+
+Tool schemas declare explicit item types for every array so Gemini-compatible clients can validate structured arguments without inferring `items`:
+
+- `record_decision`: `tradeoffs`, `assumptions`, and `evidence` are arrays of strings; `alternatives` is an array of structured alternative objects, including its nested `tradeoffs` string array.
+- `capture_reasoning_episode`: `tags` is a string array and `tool_calls` is an array of structured tool-call objects.
+- `retrieve_reasoning` and `memorize_concept`: `tags` are string arrays.
+
+This fix applies to the MCP schemas served by this repository. OpenCode-side serializer defense-in-depth is outside this repository and is not covered here.
+
 ## MCP Tools
 
 | Tool | Description | Required Params |
