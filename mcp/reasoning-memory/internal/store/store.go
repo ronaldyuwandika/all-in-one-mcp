@@ -41,7 +41,14 @@ func NewWithVector(dbPath string, vec *VectorStore) (*EpisodeStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &EpisodeStore{db: db, dbPath: dbPath, vec: vec}, nil
+	es := &EpisodeStore{db: db, dbPath: dbPath, vec: vec}
+	if vec != nil && vec.Enabled() {
+		if err := es.ReconcileVectorStore(context.Background()); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("reconcile vector store: %w", err)
+		}
+	}
+	return es, nil
 }
 
 func openDatabase(dbPath string) (*sql.DB, error) {
@@ -121,20 +128,6 @@ func migrate(db *sql.DB) error {
 			key TEXT PRIMARY KEY,
 			value INTEGER NOT NULL DEFAULT 0
 		)`,
-		`CREATE TRIGGER IF NOT EXISTS episodes_ai AFTER INSERT ON episodes BEGIN
-			INSERT INTO episodes_fts(rowid, problem, thinking_trace, domain, outcome, tags)
-			VALUES (new.rowid, new.problem, new.thinking_trace, new.domain, new.outcome, new.tags);
-		END`,
-		`CREATE TRIGGER IF NOT EXISTS episodes_ad AFTER DELETE ON episodes BEGIN
-			INSERT INTO episodes_fts(episodes_fts, rowid, problem, thinking_trace, domain, outcome, tags)
-			VALUES ('delete', old.rowid, old.problem, old.thinking_trace, old.domain, old.outcome, old.tags);
-		END`,
-		`CREATE TRIGGER IF NOT EXISTS episodes_au AFTER UPDATE ON episodes BEGIN
-			INSERT INTO episodes_fts(episodes_fts, rowid, problem, thinking_trace, domain, outcome, tags)
-			VALUES ('delete', old.rowid, old.problem, old.thinking_trace, old.domain, old.outcome, old.tags);
-			INSERT INTO episodes_fts(rowid, problem, thinking_trace, domain, outcome, tags)
-			VALUES (new.rowid, new.problem, new.thinking_trace, new.domain, new.outcome, new.tags);
-		END`,
 	}
 
 	for _, d := range ddl {
@@ -174,6 +167,62 @@ func migrate(db *sql.DB) error {
 		if _, err := db.Exec("ALTER TABLE episodes ADD COLUMN tier TEXT NOT NULL DEFAULT 'episodic'"); err != nil {
 			return fmt.Errorf("add tier column: %w", err)
 		}
+	}
+
+	richColumns := []struct {
+		name string
+		ddl  string
+	}{
+		{"updated_at", "TEXT NOT NULL DEFAULT ''"},
+		{"project", "TEXT NOT NULL DEFAULT ''"},
+		{"provenance", "TEXT NOT NULL DEFAULT ''"},
+		{"confidence", "REAL"},
+		{"objectives", "TEXT NOT NULL DEFAULT '[]'"},
+		{"decisions", "TEXT NOT NULL DEFAULT '[]'"},
+		{"alternatives", "TEXT NOT NULL DEFAULT '[]'"},
+		{"verification", "TEXT NOT NULL DEFAULT '[]'"},
+		{"lessons", "TEXT NOT NULL DEFAULT '[]'"},
+	}
+	for _, table := range []string{"episodes", "episodes_archive"} {
+		for _, column := range richColumns {
+			var count int
+			if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?", table, column.name).Scan(&count); err != nil {
+				return fmt.Errorf("inspect %s.%s: %w", table, column.name, err)
+			}
+			if count == 0 {
+				if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column.name, column.ddl)); err != nil {
+					return fmt.Errorf("add %s.%s: %w", table, column.name, err)
+				}
+			}
+		}
+	}
+	for _, table := range []string{"episodes", "episodes_archive"} {
+		var hasTable int
+		if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&hasTable); err == nil && hasTable > 0 {
+			if _, err := db.Exec("UPDATE " + table + " SET outcome = 'unverified_success' WHERE outcome = 'success'"); err != nil {
+				return fmt.Errorf("backfill %s success outcomes: %w", table, err)
+			}
+			if _, err := db.Exec("UPDATE " + table + " SET outcome = 'partial_success' WHERE outcome = 'partial'"); err != nil {
+				return fmt.Errorf("backfill %s partial outcomes: %w", table, err)
+			}
+			if _, err := db.Exec("UPDATE " + table + " SET updated_at = created_at WHERE updated_at = '' OR updated_at IS NULL"); err != nil {
+				return fmt.Errorf("backfill %s updated_at: %w", table, err)
+			}
+		}
+	}
+	var hasFTS int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'episodes_fts'").Scan(&hasFTS); err == nil && hasFTS > 0 {
+		if _, err := db.Exec("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild')"); err != nil {
+			return fmt.Errorf("rebuild episodes fts after backfills: %w", err)
+		}
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS vector_reconcile (
+		episode_id TEXT PRIMARY KEY,
+		problem TEXT NOT NULL,
+		thinking_trace TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("create vector_reconcile: %w", err)
 	}
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS metadata_idx (
 		episode_id TEXT NOT NULL,
@@ -221,6 +270,28 @@ func migrate(db *sql.DB) error {
 		return fmt.Errorf("migrate decisions: %w", err)
 	}
 
+	triggers := []string{
+		`CREATE TRIGGER IF NOT EXISTS episodes_ai AFTER INSERT ON episodes BEGIN
+			INSERT INTO episodes_fts(rowid, problem, thinking_trace, domain, outcome, tags)
+			VALUES (new.rowid, new.problem, new.thinking_trace, new.domain, new.outcome, new.tags);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS episodes_ad AFTER DELETE ON episodes BEGIN
+			INSERT INTO episodes_fts(episodes_fts, rowid, problem, thinking_trace, domain, outcome, tags)
+			VALUES ('delete', old.rowid, old.problem, old.thinking_trace, old.domain, old.outcome, old.tags);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS episodes_au AFTER UPDATE ON episodes BEGIN
+			INSERT INTO episodes_fts(episodes_fts, rowid, problem, thinking_trace, domain, outcome, tags)
+			VALUES ('delete', old.rowid, old.problem, old.thinking_trace, old.domain, old.outcome, old.tags);
+			INSERT INTO episodes_fts(rowid, problem, thinking_trace, domain, outcome, tags)
+			VALUES (new.rowid, new.problem, new.thinking_trace, new.domain, new.outcome, new.tags);
+		END`,
+	}
+	for _, trigger := range triggers {
+		if _, err := db.Exec(trigger); err != nil {
+			return fmt.Errorf("create episodes FTS trigger: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -263,7 +334,12 @@ func (es *EpisodeStore) Readiness() error {
 		return fmt.Errorf("db: %w", err)
 	}
 	if es.vec != nil && es.vec.Enabled() {
-		return es.vec.Ready()
+		if err := es.vec.Ready(); err != nil {
+			return err
+		}
+		if err := es.ReconcileVectorStore(context.Background()); err != nil {
+			return fmt.Errorf("reconcile vector store: %w", err)
+		}
 	}
 	return nil
 }
@@ -280,12 +356,31 @@ func (es *EpisodeStore) createEpisode(ctx context.Context, ep *models.Episode) (
 	return es.createEpisodeWithSources(ctx, ep, nil)
 }
 
-func (es *EpisodeStore) createEpisodeWithSources(ctx context.Context, ep *models.Episode, sources []linkcontent.Source) (string, error) {
-	// This is the authoritative persistence boundary. Sanitizing here protects
-	// SQLite, FTS5, label enrichment, and vector indexing for every caller.
+func (es *EpisodeStore) createEpisodeWithSources(ctx context.Context, request *models.Episode, sources []linkcontent.Source) (string, error) {
+	if request == nil {
+		return "", fmt.Errorf("episode is required")
+	}
+	// This compatibility boundary accepts legacy outcomes without mutating the caller's canonical request.
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		return "", fmt.Errorf("copy episode: %w", err)
+	}
+	var value models.Episode
+	if err := json.Unmarshal(encoded, &value); err != nil {
+		return "", fmt.Errorf("copy episode: %w", err)
+	}
+	ep := &value
+	normalizedOutcome, ok := models.NormalizeOutcome(ep.Outcome)
+	if !ok {
+		return "", fmt.Errorf("invalid outcome %q", ep.Outcome)
+	}
+	ep.Outcome = normalizedOutcome
 	security.Episode(ep)
 	if ep.CreatedAt.IsZero() {
 		ep.CreatedAt = time.Now().UTC()
+	}
+	if ep.UpdatedAt.IsZero() {
+		ep.UpdatedAt = ep.CreatedAt
 	}
 	if ep.Domain == "" {
 		ep.Domain = "coding"
@@ -293,10 +388,18 @@ func (es *EpisodeStore) createEpisodeWithSources(ctx context.Context, ep *models
 	if ep.Tier == "" {
 		ep.Tier = models.TierEpisodic
 	}
+	if err := ep.Validate(); err != nil {
+		return "", err
+	}
 
 	stepsJSON, _ := json.Marshal(ep.Steps)
 	toolCallsJSON, _ := json.Marshal(ep.ToolCalls)
 	tagsJSON, _ := json.Marshal(ep.Tags)
+	objectivesJSON, _ := json.Marshal(ep.Objectives)
+	decisionsJSON, _ := json.Marshal(ep.Decisions)
+	alternativesJSON, _ := json.Marshal(ep.Alternatives)
+	verificationJSON, _ := json.Marshal(ep.Verification)
+	lessonsJSON, _ := json.Marshal(ep.Lessons)
 
 	if ep.Repo == "" {
 		ep.Repo = detectGitRepo()
@@ -308,7 +411,7 @@ func (es *EpisodeStore) createEpisodeWithSources(ctx context.Context, ep *models
 			Problem:       ep.Problem,
 			ThinkingTrace: ep.ThinkingTrace,
 			ToolCalls:     string(toolCallsJSON),
-			Outcome:       ep.Outcome,
+			Outcome:       string(ep.Outcome),
 			Domain:        ep.Domain,
 			ExistingTags:  ep.Tags,
 			ExistingRepo:  ep.Repo,
@@ -324,18 +427,33 @@ func (es *EpisodeStore) createEpisodeWithSources(ctx context.Context, ep *models
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	var confidenceVal sql.NullFloat64
+	if ep.Confidence != nil {
+		confidenceVal = sql.NullFloat64{Float64: *ep.Confidence, Valid: true}
+	}
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO episodes (id, created_at, domain, outcome, tier, tags, repo, labels, problem, thinking_trace, steps, tool_calls, model_id, duration_seconds)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO episodes (
+			id, created_at, updated_at, domain, outcome, tier, tags, repo, project, provenance, confidence, labels, problem,
+			objectives, decisions, alternatives, verification, lessons, thinking_trace, steps, tool_calls, model_id, duration_seconds
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ep.ID,
 		ep.CreatedAt.Format(time.RFC3339),
+		ep.UpdatedAt.Format(time.RFC3339),
 		ep.Domain,
-		ep.Outcome,
+		string(ep.Outcome),
 		string(ep.Tier),
 		string(tagsJSON),
 		ep.Repo,
+		ep.Project,
+		ep.Provenance,
+		confidenceVal,
 		string(labelsJSON),
 		ep.Problem,
+		string(objectivesJSON),
+		string(decisionsJSON),
+		string(alternativesJSON),
+		string(verificationJSON),
+		string(lessonsJSON),
 		ep.ThinkingTrace,
 		string(stepsJSON),
 		string(toolCallsJSON),
@@ -404,48 +522,121 @@ func (es *EpisodeStore) CreateEpisodeWithSourcesContext(ctx context.Context, ep 
 	return es.createEpisodeWithSources(ctx, ep, sources)
 }
 
-func (es *EpisodeStore) GetEpisode(id string) (*models.Episode, error) {
-	row := es.db.QueryRow(
-		`SELECT id, created_at, domain, outcome, tier, tags, repo, labels, problem, thinking_trace, steps, tool_calls, model_id, duration_seconds
-		FROM episodes WHERE id = ?`, id,
-	)
-
-	var (
-		tagsJSON      string
-		labelsJSON    string
-		stepsJSON     string
-		toolCallsJSON string
-		createdAt     string
-		ep            models.Episode
-		tier          string
-	)
-
-	err := row.Scan(
-		&ep.ID, &createdAt, &ep.Domain, &ep.Outcome, &tier, &tagsJSON,
-		&ep.Repo, &labelsJSON, &ep.Problem, &ep.ThinkingTrace, &stepsJSON, &toolCallsJSON,
-		&ep.ModelID, &ep.DurationSeconds,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
+func decodePersistedJSON(episodeID, field, raw string, destination any) error {
+	if err := json.Unmarshal([]byte(raw), destination); err != nil {
+		return fmt.Errorf("decode episode %s field %s: %w", episodeID, field, err)
 	}
+	return nil
+}
+
+func (es *EpisodeStore) ReconcileVectorStore(ctx context.Context) error {
+	if es.vec == nil || !es.vec.Enabled() {
+		return nil
+	}
+	rows, err := es.db.QueryContext(ctx, "SELECT episode_id, problem, thinking_trace FROM vector_reconcile ORDER BY updated_at ASC")
 	if err != nil {
+		return fmt.Errorf("query vector_reconcile: %w", err)
+	}
+	defer rows.Close()
+	type pendingItem struct {
+		id            string
+		problem       string
+		thinkingTrace string
+	}
+	var pending []pendingItem
+	for rows.Next() {
+		var item pendingItem
+		if err := rows.Scan(&item.id, &item.problem, &item.thinkingTrace); err != nil {
+			return fmt.Errorf("scan vector_reconcile: %w", err)
+		}
+		pending = append(pending, item)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, item := range pending {
+		if verr := es.vec.ReplaceEpisode(ctx, item.id, item.problem, item.thinkingTrace); verr != nil {
+			return fmt.Errorf("reconcile vector episode %s: %w", item.id, verr)
+		}
+		if _, err := es.db.ExecContext(ctx, "DELETE FROM vector_reconcile WHERE episode_id = ?", item.id); err != nil {
+			return fmt.Errorf("clear vector_reconcile %s: %w", item.id, err)
+		}
+	}
+	return nil
+}
+
+func (es *EpisodeStore) GetEpisode(id string) (*models.Episode, error) {
+	return es.getEpisodeFrom("episodes", id)
+}
+
+func (es *EpisodeStore) getEpisodeFrom(table, id string) (*models.Episode, error) {
+	if table != "episodes" && table != "episodes_archive" {
+		return nil, fmt.Errorf("invalid episode table %q", table)
+	}
+	row := es.db.QueryRow(`SELECT id, created_at, updated_at, domain, outcome, tier, tags, repo, project, provenance, confidence,
+		labels, problem, objectives, decisions, alternatives, verification, lessons, thinking_trace, steps, tool_calls, model_id, duration_seconds
+		FROM `+table+` WHERE id = ?`, id)
+	var ep models.Episode
+	var createdAt, updatedAt, tier, tagsJSON, labelsJSON, objectivesJSON, decisionsJSON, alternativesJSON, verificationJSON, lessonsJSON, stepsJSON, toolCallsJSON string
+	var confidence sql.NullFloat64
+	if err := row.Scan(&ep.ID, &createdAt, &updatedAt, &ep.Domain, &ep.Outcome, &tier, &tagsJSON, &ep.Repo, &ep.Project, &ep.Provenance, &confidence,
+		&labelsJSON, &ep.Problem, &objectivesJSON, &decisionsJSON, &alternativesJSON, &verificationJSON, &lessonsJSON, &ep.ThinkingTrace,
+		&stepsJSON, &toolCallsJSON, &ep.ModelID, &ep.DurationSeconds); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("get episode: %w", err)
 	}
-
-	ep.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+	var err error
+	ep.CreatedAt, err = time.Parse(time.RFC3339, createdAt)
+	if err != nil {
+		return nil, fmt.Errorf("decode episode %s field created_at: %w", ep.ID, err)
+	}
+	if updatedAt == "" {
+		ep.UpdatedAt = ep.CreatedAt
+	} else {
+		ep.UpdatedAt, err = time.Parse(time.RFC3339, updatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("decode episode %s field updated_at: %w", ep.ID, err)
+		}
+	}
 	ep.Tier = models.MemoryTier(tier)
-	ep.Labels = es.parseLabelsJSON(labelsJSON)
-	_ = json.Unmarshal([]byte(tagsJSON), &ep.Tags)
-	_ = json.Unmarshal([]byte(stepsJSON), &ep.Steps)
-	_ = json.Unmarshal([]byte(toolCallsJSON), &ep.ToolCalls)
+	if confidence.Valid {
+		ep.Confidence = &confidence.Float64
+	}
+	labels, err := es.parseLabelsJSONErr(ep.ID, labelsJSON)
+	if err != nil {
+		return nil, err
+	}
+	ep.Labels = labels
+	for field, item := range map[string]struct {
+		raw         string
+		destination any
+	}{
+		"tags":         {tagsJSON, &ep.Tags},
+		"objectives":   {objectivesJSON, &ep.Objectives},
+		"decisions":    {decisionsJSON, &ep.Decisions},
+		"alternatives": {alternativesJSON, &ep.Alternatives},
+		"verification": {verificationJSON, &ep.Verification},
+		"lessons":      {lessonsJSON, &ep.Lessons},
+		"steps":        {stepsJSON, &ep.Steps},
+		"tool_calls":   {toolCallsJSON, &ep.ToolCalls},
+	} {
+		if err := decodePersistedJSON(ep.ID, field, item.raw, item.destination); err != nil {
+			return nil, err
+		}
+	}
 	security.Episode(&ep)
-
 	return &ep, nil
+}
+
+func (es *EpisodeStore) GetArchivedEpisode(id string) (*models.Episode, error) {
+	return es.getEpisodeFrom("episodes_archive", id)
 }
 
 func (es *EpisodeStore) GetSummary(id string) (*models.EpisodeSummary, error) {
 	row := es.db.QueryRow(
-		`SELECT id, created_at, problem, domain, outcome, tier, tags, repo, labels, steps, tool_calls, model_id, duration_seconds
+		`SELECT id, created_at, updated_at, problem, domain, outcome, tier, tags, repo, project, provenance, confidence, labels, steps, tool_calls, model_id, duration_seconds
 		FROM episodes WHERE id = ?`, id,
 	)
 
@@ -455,14 +646,16 @@ func (es *EpisodeStore) GetSummary(id string) (*models.EpisodeSummary, error) {
 		stepsJSON     string
 		toolCallsJSON string
 		createdAt     string
+		updatedAt     string
+		confidence    sql.NullFloat64
 		steps         []models.Step
 		summary       models.EpisodeSummary
 		tier          string
 	)
 
 	err := row.Scan(
-		&summary.ID, &createdAt, &summary.Problem, &summary.Domain,
-		&summary.Outcome, &tier, &tagsJSON, &summary.Repo, &labelsJSON, &stepsJSON, &toolCallsJSON,
+		&summary.ID, &createdAt, &updatedAt, &summary.Problem, &summary.Domain,
+		&summary.Outcome, &tier, &tagsJSON, &summary.Repo, &summary.Project, &summary.Provenance, &confidence, &labelsJSON, &stepsJSON, &toolCallsJSON,
 		&summary.ModelID, &summary.DurationSeconds,
 	)
 	if err == sql.ErrNoRows {
@@ -472,17 +665,39 @@ func (es *EpisodeStore) GetSummary(id string) (*models.EpisodeSummary, error) {
 		return nil, fmt.Errorf("get summary: %w", err)
 	}
 
+	if _, err := time.Parse(time.RFC3339, createdAt); err != nil {
+		return nil, fmt.Errorf("decode episode %s field created_at: %w", summary.ID, err)
+	}
+	if updatedAt != "" {
+		if _, err := time.Parse(time.RFC3339, updatedAt); err != nil {
+			return nil, fmt.Errorf("decode episode %s field updated_at: %w", summary.ID, err)
+		}
+	}
 	summary.CreatedAt = createdAt
+	summary.UpdatedAt = updatedAt
+	if confidence.Valid {
+		summary.Confidence = &confidence.Float64
+	}
 	summary.Tier = models.MemoryTier(tier)
-	summary.Labels = es.parseLabelsJSON(labelsJSON)
-	_ = json.Unmarshal([]byte(tagsJSON), &summary.Tags)
-	_ = json.Unmarshal([]byte(stepsJSON), &steps)
+	labels, err := es.parseLabelsJSONErr(summary.ID, labelsJSON)
+	if err != nil {
+		return nil, err
+	}
+	summary.Labels = labels
+	if err := decodePersistedJSON(summary.ID, "tags", tagsJSON, &summary.Tags); err != nil {
+		return nil, err
+	}
+	if err := decodePersistedJSON(summary.ID, "steps", stepsJSON, &steps); err != nil {
+		return nil, err
+	}
 	summary.StepCount = len(steps)
 	for _, s := range steps {
 		summary.StepTypes = append(summary.StepTypes, s.Type)
 	}
 	var toolCalls []models.ToolCall
-	_ = json.Unmarshal([]byte(toolCallsJSON), &toolCalls)
+	if err := decodePersistedJSON(summary.ID, "tool_calls", toolCallsJSON, &toolCalls); err != nil {
+		return nil, err
+	}
 	summary.ToolCount = len(toolCalls)
 	security.Summary(&summary)
 
@@ -491,7 +706,7 @@ func (es *EpisodeStore) GetSummary(id string) (*models.EpisodeSummary, error) {
 
 func (es *EpisodeStore) ListEpisodes(limit, offset int) ([]models.EpisodeSummary, error) {
 	rows, err := es.db.Query(
-		`SELECT id, created_at, problem, domain, outcome, tier, tags, repo, labels, steps, tool_calls, model_id, duration_seconds
+		`SELECT id, created_at, updated_at, problem, domain, outcome, tier, tags, repo, project, provenance, confidence, labels, steps, tool_calls, model_id, duration_seconds
 		FROM episodes ORDER BY created_at DESC LIMIT ? OFFSET ?`, limit, offset,
 	)
 	if err != nil {
@@ -501,37 +716,172 @@ func (es *EpisodeStore) ListEpisodes(limit, offset int) ([]models.EpisodeSummary
 
 	var summaries []models.EpisodeSummary
 	for rows.Next() {
-		var (
-			tagsJSON      string
-			labelsJSON    string
-			stepsJSON     string
-			toolCallsJSON string
-			steps         []models.Step
-			s             models.EpisodeSummary
-			tier          string
-		)
-		if err := rows.Scan(
-			&s.ID, &s.CreatedAt, &s.Problem, &s.Domain,
-			&s.Outcome, &tier, &tagsJSON, &s.Repo, &labelsJSON, &stepsJSON, &toolCallsJSON,
-			&s.ModelID, &s.DurationSeconds,
-		); err != nil {
+		var tagsJSON, labelsJSON, stepsJSON, toolCallsJSON, tier string
+		var confidence sql.NullFloat64
+		var steps []models.Step
+		var s models.EpisodeSummary
+		if err := rows.Scan(&s.ID, &s.CreatedAt, &s.UpdatedAt, &s.Problem, &s.Domain, &s.Outcome, &tier, &tagsJSON, &s.Repo, &s.Project, &s.Provenance, &confidence, &labelsJSON, &stepsJSON, &toolCallsJSON, &s.ModelID, &s.DurationSeconds); err != nil {
 			return nil, fmt.Errorf("scan episode: %w", err)
 		}
+		if _, err := time.Parse(time.RFC3339, s.CreatedAt); err != nil {
+			return nil, fmt.Errorf("decode episode %s field created_at: %w", s.ID, err)
+		}
+		if s.UpdatedAt != "" {
+			if _, err := time.Parse(time.RFC3339, s.UpdatedAt); err != nil {
+				return nil, fmt.Errorf("decode episode %s field updated_at: %w", s.ID, err)
+			}
+		}
+		if confidence.Valid {
+			s.Confidence = &confidence.Float64
+		}
 		s.Tier = models.MemoryTier(tier)
-		_ = json.Unmarshal([]byte(tagsJSON), &s.Tags)
-		_ = json.Unmarshal([]byte(stepsJSON), &steps)
+		labels, err := es.parseLabelsJSONErr(s.ID, labelsJSON)
+		if err != nil {
+			return nil, err
+		}
+		s.Labels = labels
+		if err := decodePersistedJSON(s.ID, "tags", tagsJSON, &s.Tags); err != nil {
+			return nil, err
+		}
+		if err := decodePersistedJSON(s.ID, "steps", stepsJSON, &steps); err != nil {
+			return nil, err
+		}
 		s.StepCount = len(steps)
 		for _, st := range steps {
 			s.StepTypes = append(s.StepTypes, st.Type)
 		}
 		var toolCalls []models.ToolCall
-		_ = json.Unmarshal([]byte(toolCallsJSON), &toolCalls)
+		if err := decodePersistedJSON(s.ID, "tool_calls", toolCallsJSON, &toolCalls); err != nil {
+			return nil, err
+		}
 		s.ToolCount = len(toolCalls)
 		security.Summary(&s)
 		summaries = append(summaries, s)
 	}
-
 	return summaries, rows.Err()
+}
+
+func (es *EpisodeStore) UpdateEpisode(ctx context.Context, request *models.Episode) (returnErr error) {
+	if request == nil || strings.TrimSpace(request.ID) == "" {
+		return fmt.Errorf("valid episode with ID is required")
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("copy episode: %w", err)
+	}
+	var value models.Episode
+	if err := json.Unmarshal(encoded, &value); err != nil {
+		return fmt.Errorf("copy episode: %w", err)
+	}
+	ep := &value
+	normalizedOutcome, ok := models.NormalizeOutcome(ep.Outcome)
+	if !ok {
+		return fmt.Errorf("invalid outcome %q", ep.Outcome)
+	}
+	ep.Outcome = normalizedOutcome
+	security.Episode(ep)
+	ep.UpdatedAt = time.Now().UTC()
+	if err := ep.Validate(); err != nil {
+		return err
+	}
+	encode := func(value any) string { data, _ := json.Marshal(value); return string(data) }
+	labels := ep.Labels
+	if labels == nil {
+		labels = EnrichLabels(EnrichCtx{Problem: ep.Problem, ThinkingTrace: ep.ThinkingTrace, ToolCalls: encode(ep.ToolCalls), Outcome: string(ep.Outcome), Domain: ep.Domain, ExistingTags: ep.Tags, ExistingRepo: ep.Repo})
+		ep.Labels = labels
+	}
+	var confidence sql.NullFloat64
+	if ep.Confidence != nil {
+		confidence = sql.NullFloat64{Float64: *ep.Confidence, Valid: true}
+	}
+	oldEp, err := es.GetEpisode(ep.ID)
+	if err != nil {
+		return fmt.Errorf("get existing episode before update: %w", err)
+	}
+	tx, err := es.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin update episode tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, `UPDATE episodes SET updated_at=?, domain=?, outcome=?, tier=?, tags=?, repo=?, project=?, provenance=?, confidence=?, labels=?, problem=?, objectives=?, decisions=?, alternatives=?, verification=?, lessons=?, thinking_trace=?, steps=?, tool_calls=?, model_id=?, duration_seconds=? WHERE id=?`, ep.UpdatedAt.Format(time.RFC3339), ep.Domain, string(ep.Outcome), string(ep.Tier), encode(ep.Tags), ep.Repo, ep.Project, ep.Provenance, confidence, encode(labels), ep.Problem, encode(ep.Objectives), encode(ep.Decisions), encode(ep.Alternatives), encode(ep.Verification), encode(ep.Lessons), ep.ThinkingTrace, encode(ep.Steps), encode(ep.ToolCalls), ep.ModelID, ep.DurationSeconds, ep.ID)
+	if err != nil {
+		return fmt.Errorf("update episode: %w", err)
+	}
+	if count, err := res.RowsAffected(); err != nil || count == 0 {
+		if err != nil {
+			return fmt.Errorf("rows affected: %w", err)
+		}
+		return fmt.Errorf("episode not found: %s", ep.ID)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM metadata_idx WHERE episode_id = ?", ep.ID); err != nil {
+		return fmt.Errorf("delete metadata_idx: %w", err)
+	}
+	for key, values := range labels {
+		for _, value := range values {
+			if _, err := tx.ExecContext(ctx, "INSERT INTO metadata_idx (episode_id, key, value) VALUES (?, ?, ?)", ep.ID, key, value); err != nil {
+				return fmt.Errorf("insert metadata_idx: %w", err)
+			}
+		}
+	}
+	if es.vec != nil && es.vec.Enabled() {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO vector_reconcile (episode_id, problem, thinking_trace, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(episode_id) DO UPDATE SET problem=excluded.problem, thinking_trace=excluded.thinking_trace, updated_at=excluded.updated_at`,
+			ep.ID, ep.Problem, ep.ThinkingTrace, ep.UpdatedAt.Format(time.RFC3339),
+		); err != nil {
+			return fmt.Errorf("insert vector_reconcile: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit update episode tx: %w", err)
+	}
+	if es.vec != nil && es.vec.Enabled() {
+		if verr := es.vec.ReplaceEpisode(ctx, ep.ID, ep.Problem, ep.ThinkingTrace); verr != nil {
+			var compensation []error
+			if oldEp != nil {
+				if err := es.restoreEpisodeDB(ctx, oldEp); err != nil {
+					compensation = append(compensation, fmt.Errorf("restore previous episode database: %w", err))
+				} else if _, err := es.db.ExecContext(ctx, `UPDATE vector_reconcile SET problem=?, thinking_trace=?, updated_at=? WHERE episode_id=?`, oldEp.Problem, oldEp.ThinkingTrace, time.Now().UTC().Format(time.RFC3339), oldEp.ID); err != nil {
+					compensation = append(compensation, fmt.Errorf("persist previous vector reconciliation: %w", err))
+				}
+				if err := es.vec.ReplaceEpisode(ctx, oldEp.ID, oldEp.Problem, oldEp.ThinkingTrace); err != nil {
+					compensation = append(compensation, fmt.Errorf("restore previous episode vector: %w", err))
+				}
+			}
+			return errors.Join(append([]error{fmt.Errorf("update episode vector: %w", verr)}, compensation...)...)
+		}
+		if _, err := es.db.ExecContext(ctx, "DELETE FROM vector_reconcile WHERE episode_id = ?", ep.ID); err != nil {
+			return fmt.Errorf("vector updated but clear vector_reconcile failed for %s: %w", ep.ID, err)
+		}
+	}
+	return nil
+}
+
+func (es *EpisodeStore) restoreEpisodeDB(ctx context.Context, ep *models.Episode) error {
+	encode := func(v any) string { b, _ := json.Marshal(v); return string(b) }
+	var confidence sql.NullFloat64
+	if ep.Confidence != nil {
+		confidence = sql.NullFloat64{Float64: *ep.Confidence, Valid: true}
+	}
+	tx, err := es.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `UPDATE episodes SET created_at=?, updated_at=?, domain=?, outcome=?, tier=?, tags=?, repo=?, project=?, provenance=?, confidence=?, labels=?, problem=?, objectives=?, decisions=?, alternatives=?, verification=?, lessons=?, thinking_trace=?, steps=?, tool_calls=?, model_id=?, duration_seconds=? WHERE id=?`,
+		ep.CreatedAt.Format(time.RFC3339), ep.UpdatedAt.Format(time.RFC3339), ep.Domain, string(ep.Outcome), string(ep.Tier), encode(ep.Tags), ep.Repo, ep.Project, ep.Provenance, confidence, encode(ep.Labels), ep.Problem, encode(ep.Objectives), encode(ep.Decisions), encode(ep.Alternatives), encode(ep.Verification), encode(ep.Lessons), ep.ThinkingTrace, encode(ep.Steps), encode(ep.ToolCalls), ep.ModelID, ep.DurationSeconds, ep.ID,
+	); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM metadata_idx WHERE episode_id = ?", ep.ID); err != nil {
+		return err
+	}
+	for key, values := range ep.Labels {
+		for _, value := range values {
+			if _, err := tx.ExecContext(ctx, "INSERT INTO metadata_idx (episode_id, key, value) VALUES (?, ?, ?)", ep.ID, key, value); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
 }
 
 func (es *EpisodeStore) DeleteEpisode(id string) error {
@@ -545,6 +895,9 @@ func (es *EpisodeStore) DeleteEpisode(id string) error {
 	}
 	if _, err := tx.Exec("DELETE FROM metadata_idx WHERE episode_id = ?", id); err != nil {
 		return fmt.Errorf("delete episode metadata_idx: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM vector_reconcile WHERE episode_id = ?", id); err != nil {
+		return fmt.Errorf("delete vector_reconcile: %w", err)
 	}
 	if _, err := tx.Exec("DELETE FROM episodes WHERE id = ?", id); err != nil {
 		return fmt.Errorf("delete episode: %w", err)
@@ -816,7 +1169,7 @@ func (es *EpisodeStore) LastConsolidationTS() (*time.Time, error) {
 func (es *EpisodeStore) EpisodesByDay(days int) ([]models.DayBucket, error) {
 	rows, err := es.db.Query(
 		`SELECT date(created_at) as d, COUNT(*) as cnt,
-		        COUNT(CASE WHEN outcome='success' THEN 1 END) as ok,
+		        COUNT(CASE WHEN outcome IN ('success', 'verified_success', 'unverified_success') THEN 1 END) as ok,
 		        COALESCE(AVG(duration_seconds),0),
 		        COALESCE(AVG(LENGTH(thinking_trace)),0)
 		 FROM episodes
@@ -857,7 +1210,7 @@ func (es *EpisodeStore) SummaryStats() (*models.SummaryStats, error) {
 
 	if total > 0 {
 		var successCount int
-		_ = es.db.QueryRow("SELECT COUNT(*) FROM episodes WHERE outcome='success'").Scan(&successCount)
+		_ = es.db.QueryRow("SELECT COUNT(*) FROM episodes WHERE outcome IN ('success', 'verified_success', 'unverified_success')").Scan(&successCount)
 		stats.SuccessRate = float64(successCount) / float64(total) * 100
 	}
 

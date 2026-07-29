@@ -14,11 +14,14 @@ import (
 )
 
 type VectorStore struct {
-	db         *chromem.DB
-	collection *chromem.Collection
-	enabled    bool
-	provider   string
-	embedFunc  chromem.EmbeddingFunc
+	db                  *chromem.DB
+	collection          *chromem.Collection
+	enabled             bool
+	provider            string
+	embedFunc           chromem.EmbeddingFunc
+	addEpisodeHook      func(context.Context, string, string, string) error
+	deleteEpisodeHook   func(context.Context, string) error
+	addEpisodeAfterHook func(context.Context, string, string, string) error
 }
 
 func NewVectorStore(dataDir string, provider, model, baseURL, apiKey string, enabled bool) (*VectorStore, error) {
@@ -119,6 +122,9 @@ func (vs *VectorStore) AddEpisode(ctx context.Context, id, problem, thinkingTrac
 		return nil
 	}
 
+	if vs.addEpisodeHook != nil {
+		return vs.addEpisodeHook(ctx, id, problem, thinkingTrace)
+	}
 	content := security.Text(problem + "\n" + thinkingTrace)
 	doc := chromem.Document{
 		ID:      id,
@@ -127,7 +133,23 @@ func (vs *VectorStore) AddEpisode(ctx context.Context, id, problem, thinkingTrac
 			"source": "reasoning-memory",
 		},
 	}
-	return vs.collection.AddDocument(ctx, doc)
+	if err := vs.collection.AddDocument(ctx, doc); err != nil {
+		return err
+	}
+	if vs.addEpisodeAfterHook != nil {
+		return vs.addEpisodeAfterHook(ctx, id, problem, thinkingTrace)
+	}
+	return nil
+}
+
+func (vs *VectorStore) ReplaceEpisode(ctx context.Context, id, problem, thinkingTrace string) error {
+	if err := vs.DeleteEpisode(ctx, id); err != nil {
+		return fmt.Errorf("delete current episode vector: %w", err)
+	}
+	if err := vs.AddEpisode(ctx, id, problem, thinkingTrace); err != nil {
+		return fmt.Errorf("add replacement episode vector: %w", err)
+	}
+	return nil
 }
 
 func (vs *VectorStore) AddEpisodes(ctx context.Context, episodes []EpisodeContent) error {
@@ -184,6 +206,9 @@ type VectorResult struct {
 func (vs *VectorStore) DeleteEpisode(ctx context.Context, id string) error {
 	if !vs.enabled {
 		return nil
+	}
+	if vs.deleteEpisodeHook != nil {
+		return vs.deleteEpisodeHook(ctx, id)
 	}
 	return vs.collection.Delete(ctx, nil, nil, id)
 }

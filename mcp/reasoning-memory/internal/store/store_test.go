@@ -1,8 +1,13 @@
 package store
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"math"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,8 +78,8 @@ func TestEpisodesByOutcome(t *testing.T) {
 		t.Fatalf("EpisodesByOutcome: %v", err)
 	}
 
-	if byOutcome["success"] != 2 {
-		t.Errorf("expected 2 success, got %d", byOutcome["success"])
+	if byOutcome["unverified_success"] != 2 {
+		t.Errorf("expected 2 unverified_success, got %d", byOutcome["unverified_success"])
 	}
 	if byOutcome["failure"] != 1 {
 		t.Errorf("expected 1 failure, got %d", byOutcome["failure"])
@@ -369,8 +374,8 @@ func TestCreateEpisode(t *testing.T) {
 	if ep.Domain != "coding" {
 		t.Errorf("expected domain coding, got %s", ep.Domain)
 	}
-	if ep.Outcome != "success" {
-		t.Errorf("expected outcome success, got %s", ep.Outcome)
+	if ep.Outcome != "unverified_success" {
+		t.Errorf("expected outcome unverified_success, got %s", ep.Outcome)
 	}
 }
 
@@ -487,7 +492,7 @@ func TestNextID(t *testing.T) {
 	_, _ = es.CreateEpisode(&models.Episode{
 		ID:            id1,
 		Domain:        "test",
-		Outcome:       "test",
+		Outcome:       "failure",
 		Problem:       "test",
 		ThinkingTrace: "test",
 	})
@@ -557,5 +562,397 @@ func TestToolCallsJSONRoundtrip(t *testing.T) {
 	_ = json.Unmarshal(argsJSON, &args)
 	if args["path"] != "/tmp/test.go" {
 		t.Errorf("expected path /tmp/test.go, got %v", args["path"])
+	}
+}
+
+func TestRichEpisodeRoundTripUpdateAndArchive(t *testing.T) {
+	es := testStore(t)
+	confidence := 0.75
+	ep := &models.Episode{
+		ID:           es.NextID(),
+		Domain:       "coding",
+		Outcome:      models.OutcomeVerifiedSuccess,
+		Tags:         []string{"rich"},
+		Repo:         "repo",
+		Project:      "project",
+		Provenance:   "agent",
+		Confidence:   &confidence,
+		Problem:      "rich problem",
+		Objectives:   []string{"objective"},
+		Decisions:    []string{"decision"},
+		Alternatives: []string{"alternative"},
+		Verification: []string{"go test ./..."},
+		Lessons:      []string{"lesson"},
+	}
+	if _, err := es.CreateEpisode(ep); err != nil {
+		t.Fatal(err)
+	}
+	got, err := es.GetEpisode(ep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Project != ep.Project || got.Provenance != ep.Provenance || got.Confidence == nil || *got.Confidence != confidence || len(got.Objectives) != 1 || len(got.Decisions) != 1 || len(got.Alternatives) != 1 || len(got.Verification) != 1 || len(got.Lessons) != 1 {
+		t.Fatalf("rich fields did not round-trip: %#v", got)
+	}
+	got.Lessons = append(got.Lessons, "updated")
+	if err := es.UpdateEpisode(context.Background(), got); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := es.GetEpisode(ep.ID)
+	if err != nil || len(updated.Lessons) != 2 || updated.UpdatedAt.Before(updated.CreatedAt) {
+		t.Fatalf("updated episode mismatch: %#v err=%v", updated, err)
+	}
+	if _, err := es.db.Exec(`INSERT INTO episodes_archive SELECT * FROM episodes WHERE id = ?`, ep.ID); err != nil {
+		t.Fatal(err)
+	}
+	archived, err := es.GetArchivedEpisode(ep.ID)
+	if err != nil || archived.Project != ep.Project || len(archived.Lessons) != 2 {
+		t.Fatalf("archived episode mismatch: %#v err=%v", archived, err)
+	}
+}
+
+func TestLegacyMigrationAndValidation(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE episodes (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, domain TEXT NOT NULL, outcome TEXT NOT NULL, tags TEXT NOT NULL, problem TEXT NOT NULL, thinking_trace TEXT NOT NULL, steps TEXT NOT NULL, tool_calls TEXT NOT NULL, model_id TEXT NOT NULL, duration_seconds INTEGER NOT NULL, repo TEXT NOT NULL DEFAULT '', labels TEXT NOT NULL DEFAULT '{}', tier TEXT NOT NULL DEFAULT 'episodic')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO episodes (id, created_at, domain, outcome, tags, problem, thinking_trace, steps, tool_calls, model_id, duration_seconds, repo, labels, tier) VALUES ('legacy', '2026-01-01T00:00:00Z', 'coding', 'success', '[]', 'problem', '', '[]', '[]', '', 0, '', '{}', '')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	es, err := New(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer es.Close()
+	got, err := es.GetEpisode("legacy")
+	if err != nil || got.Outcome != models.OutcomeUnverifiedSuccess || !got.IsEpisodic() {
+		t.Fatalf("legacy migration mismatch: %#v err=%v", got, err)
+	}
+	for _, invalid := range []float64{math.NaN(), math.Inf(1), math.Inf(-1), -0.1, 1.1} {
+		ep := &models.Episode{Problem: "problem", Outcome: models.OutcomeFailure, Confidence: &invalid}
+		if err := ep.Validate(); err == nil {
+			t.Fatalf("accepted invalid confidence %v", invalid)
+		}
+	}
+	legacy := &models.Episode{ID: "compat", Problem: "problem", Outcome: "success"}
+	if _, err := es.CreateEpisode(legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Outcome != "success" || legacy.Tier != "" {
+		t.Fatalf("compatibility boundary mutated request: %#v", legacy)
+	}
+}
+
+func TestMalformedPersistedJSONReturnsFieldError(t *testing.T) {
+	es := testStore(t)
+	ep := seedEpisode(es)
+	if _, err := es.db.Exec("UPDATE episodes SET tags = ? WHERE id = ?", "{", ep.ID); err != nil {
+		t.Fatal(err)
+	}
+	for name, read := range map[string]func() error{
+		"get":     func() error { _, err := es.GetEpisode(ep.ID); return err },
+		"summary": func() error { _, err := es.GetSummary(ep.ID); return err },
+		"list":    func() error { _, err := es.ListEpisodes(10, 0); return err },
+		"search":  func() error { _, err := es.SearchLocal("unit tests", "", "", "", nil, 5); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := read()
+			if err == nil || !strings.Contains(err.Error(), "episode "+ep.ID+" field tags") {
+				t.Fatalf("expected descriptive tags error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestSearchNormalizesLegacyOutcomeFilter(t *testing.T) {
+	es := testStore(t)
+	ep := &models.Episode{ID: es.NextID(), Outcome: "success", Problem: "legacy filter target", ThinkingTrace: "trace"}
+	if _, err := es.CreateEpisode(ep); err != nil {
+		t.Fatal(err)
+	}
+	results, err := es.SearchLocal("legacy filter target", "", "success", "", nil, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Outcome != models.OutcomeUnverifiedSuccess {
+		t.Fatalf("legacy success filter mismatch: %#v", results)
+	}
+}
+
+func TestUpdateEpisodeVectorReplaceFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		configure  func(*VectorStore)
+		wantErrors []string
+	}{
+		{
+			name: "delete failure",
+			configure: func(vec *VectorStore) {
+				vec.deleteEpisodeHook = func(context.Context, string) error { return errors.New("forced delete failure") }
+			},
+			wantErrors: []string{"forced delete failure", "restore previous episode vector"},
+		},
+		{
+			name: "partial add failure",
+			configure: func(vec *VectorStore) {
+				calls := 0
+				vec.addEpisodeAfterHook = func(context.Context, string, string, string) error {
+					calls++
+					if calls == 1 {
+						return errors.New("forced partial add failure")
+					}
+					return nil
+				}
+			},
+			wantErrors: []string{"forced partial add failure"},
+		},
+		{
+			name: "restore failure",
+			configure: func(vec *VectorStore) {
+				calls := 0
+				vec.addEpisodeHook = func(context.Context, string, string, string) error {
+					calls++
+					if calls == 1 {
+						return errors.New("forced replacement failure")
+					}
+					return errors.New("forced restore failure")
+				}
+			},
+			wantErrors: []string{"forced replacement failure", "restore previous episode vector", "forced restore failure"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vec, err := NewVectorStore(t.TempDir(), "mock", "", "", "", true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			es, err := NewWithVector(filepath.Join(t.TempDir(), "update-compensation.db"), vec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer es.Close()
+			ep := &models.Episode{ID: es.NextID(), Outcome: models.OutcomeFailure, Problem: "before", ThinkingTrace: "before trace"}
+			if _, err := es.CreateEpisode(ep); err != nil {
+				t.Fatal(err)
+			}
+			tc.configure(vec)
+			updated, err := es.GetEpisode(ep.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			updated.Problem = "after"
+			err = es.UpdateEpisode(context.Background(), updated)
+			for _, want := range tc.wantErrors {
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("error %v does not contain %q", err, want)
+				}
+			}
+			got, getErr := es.GetEpisode(ep.ID)
+			if getErr != nil || got.Problem != "before" {
+				t.Fatalf("database update was not compensated: %#v err=%v", got, getErr)
+			}
+		})
+	}
+}
+
+func TestUpdateEpisodePropagatesGetEpisodeErrorBeforeUpdate(t *testing.T) {
+	es := testStore(t)
+	ep := seedEpisode(es)
+	if _, err := es.db.Exec("UPDATE episodes SET created_at = ? WHERE id = ?", "bad-created-at", ep.ID); err != nil {
+		t.Fatal(err)
+	}
+	updateReq := &models.Episode{ID: ep.ID, Outcome: models.OutcomeFailure, Problem: "update problem", ThinkingTrace: "update trace"}
+	err := es.UpdateEpisode(context.Background(), updateReq)
+	if err == nil || !strings.Contains(err.Error(), "get existing episode before update") || !strings.Contains(err.Error(), "field created_at") {
+		t.Fatalf("expected GetEpisode error propagation before update, got %v", err)
+	}
+}
+
+func TestVectorReconciliationLifecycleAndRestart(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "reconcile.db")
+	vec, err := NewVectorStore(dataDir, "mock", "", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	es, err := NewWithVector(dbPath, vec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep := &models.Episode{ID: es.NextID(), Outcome: models.OutcomeFailure, Problem: "initial problem", ThinkingTrace: "initial trace"}
+	if _, err := es.CreateEpisode(ep); err != nil {
+		t.Fatal(err)
+	}
+	vec.deleteEpisodeHook = func(context.Context, string) error { return errors.New("forced replacement failure") }
+	vec.addEpisodeHook = func(context.Context, string, string, string) error { return errors.New("forced restore failure") }
+	updated, err := es.GetEpisode(ep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated.Problem = "attempted update"
+	err = es.UpdateEpisode(context.Background(), updated)
+	if err == nil || !strings.Contains(err.Error(), "forced replacement failure") {
+		t.Fatalf("expected update failure, got %v", err)
+	}
+	var pendingCount int
+	if err := es.db.QueryRow("SELECT COUNT(*) FROM vector_reconcile WHERE episode_id = ?", ep.ID).Scan(&pendingCount); err != nil || pendingCount != 1 {
+		t.Fatalf("expected 1 pending reconcile row after rollback failure, got %d err=%v", pendingCount, err)
+	}
+	var pendingProblem string
+	if err := es.db.QueryRow("SELECT problem FROM vector_reconcile WHERE episode_id = ?", ep.ID).Scan(&pendingProblem); err != nil || pendingProblem != "initial problem" {
+		t.Fatalf("expected durable pending problem 'initial problem', got %q err=%v", pendingProblem, err)
+	}
+	_ = es.Close()
+	vec2, err := NewVectorStore(dataDir, "mock", "", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	es2, err := NewWithVector(dbPath, vec2)
+	if err != nil {
+		t.Fatalf("expected successful startup reconciliation, got %v", err)
+	}
+	defer es2.Close()
+	if err := es2.db.QueryRow("SELECT COUNT(*) FROM vector_reconcile WHERE episode_id = ?", ep.ID).Scan(&pendingCount); err != nil || pendingCount != 0 {
+		t.Fatalf("expected 0 pending reconcile rows after restart, got %d err=%v", pendingCount, err)
+	}
+}
+
+func TestDeleteEpisodeRemovesPendingVectorReconciliation(t *testing.T) {
+	dataDir := t.TempDir()
+	dbPath := filepath.Join(dataDir, "delete-pending.db")
+	vec, err := NewVectorStore(dataDir, "mock", "", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	es, err := NewWithVector(dbPath, vec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ep := &models.Episode{ID: es.NextID(), Outcome: models.OutcomeFailure, Problem: "delete pending target", ThinkingTrace: "trace"}
+	if _, err := es.CreateEpisode(ep); err != nil {
+		t.Fatal(err)
+	}
+	vec.deleteEpisodeHook = func(context.Context, string) error { return errors.New("forced update delete failure") }
+	updated, err := es.GetEpisode(ep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated.Problem = "failed update"
+	if err := es.UpdateEpisode(context.Background(), updated); err == nil {
+		t.Fatal("expected vector update failure")
+	}
+	vec.deleteEpisodeHook = nil
+	if err := es.DeleteEpisode(ep.ID); err != nil {
+		t.Fatal(err)
+	}
+	var pendingCount int
+	if err := es.db.QueryRow("SELECT COUNT(*) FROM vector_reconcile WHERE episode_id = ?", ep.ID).Scan(&pendingCount); err != nil || pendingCount != 0 {
+		t.Fatalf("pending reconcile row survived delete: count=%d err=%v", pendingCount, err)
+	}
+	_ = es.Close()
+	vec2, err := NewVectorStore(dataDir, "mock", "", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	es2, err := NewWithVector(dbPath, vec2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer es2.Close()
+	if err := es2.ReconcileVectorStore(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := vec2.Count(); got != 0 {
+		t.Fatalf("ghost vector recreated for deleted episode %s; vector count=%d", ep.ID, got)
+	}
+}
+
+func TestMigrationBackfillRebuildsFTSAfterOutcomeNormalization(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "fts-order.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE episodes (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, domain TEXT NOT NULL, outcome TEXT NOT NULL, tags TEXT NOT NULL, problem TEXT NOT NULL, thinking_trace TEXT NOT NULL, steps TEXT NOT NULL, tool_calls TEXT NOT NULL, model_id TEXT NOT NULL, duration_seconds INTEGER NOT NULL); INSERT INTO episodes VALUES ('legacy-fts', '2026-01-01T00:00:00Z', 'coding', 'success', '[]', 'fts migration target', '', '[]', '[]', '', 0)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+	es, err := New(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer es.Close()
+	var outcome string
+	if err := es.db.QueryRow(`SELECT outcome FROM episodes_fts WHERE episodes_fts MATCH 'unverified_success'`).Scan(&outcome); err != nil || outcome != models.OutcomeUnverifiedSuccess {
+		t.Fatalf("FTS outcome not rebuilt after backfill: outcome=%q err=%v", outcome, err)
+	}
+}
+
+func TestFreshDatabaseFTSTriggersTrackInsertUpdateDelete(t *testing.T) {
+	es := testStore(t)
+	ep := &models.Episode{ID: es.NextID(), Outcome: models.OutcomeFailure, Problem: "fresh insert target", ThinkingTrace: "trace"}
+	if _, err := es.CreateEpisode(ep); err != nil {
+		t.Fatal(err)
+	}
+	assertSearchCount := func(query string, want int) {
+		t.Helper()
+		results, err := es.SearchLocal(query, "", "", "", nil, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != want {
+			t.Fatalf("search %q returned %d, want %d", query, len(results), want)
+		}
+	}
+	assertSearchCount("fresh insert target", 1)
+	stored, err := es.GetEpisode(ep.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.Problem = "fresh update target"
+	if err := es.UpdateEpisode(context.Background(), stored); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := es.db.QueryRow(`SELECT COUNT(*) FROM episodes_fts WHERE episodes_fts MATCH '"fresh insert target"'`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("old FTS content still indexed: count=%d err=%v", count, err)
+	}
+	assertSearchCount("fresh update target", 1)
+	if err := es.DeleteEpisode(ep.ID); err != nil {
+		t.Fatal(err)
+	}
+	assertSearchCount("fresh update target", 0)
+}
+
+func TestMalformedPersistedTimestampReturnsFieldError(t *testing.T) {
+	for _, field := range []string{"created_at", "updated_at"} {
+		t.Run(field, func(t *testing.T) {
+			es := testStore(t)
+			ep := seedEpisode(es)
+			if _, err := es.db.Exec("UPDATE episodes SET "+field+" = ? WHERE id = ?", "not-a-time", ep.ID); err != nil {
+				t.Fatal(err)
+			}
+			for name, read := range map[string]func() error{
+				"get":     func() error { _, err := es.GetEpisode(ep.ID); return err },
+				"summary": func() error { _, err := es.GetSummary(ep.ID); return err },
+				"list":    func() error { _, err := es.ListEpisodes(10, 0); return err },
+				"search":  func() error { _, err := es.SearchLocal("unit tests", "", "", "", nil, 5); return err },
+			} {
+				t.Run(name, func(t *testing.T) {
+					err := read()
+					if err == nil || !strings.Contains(err.Error(), "episode "+ep.ID+" field "+field) {
+						t.Fatalf("expected descriptive %s error, got %v", field, err)
+					}
+				})
+			}
+		})
 	}
 }

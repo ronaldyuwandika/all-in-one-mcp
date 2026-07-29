@@ -86,11 +86,18 @@ func Episode(ep *models.Episode) {
 		return
 	}
 	ep.Domain = Text(ep.Domain)
-	ep.Outcome = Text(ep.Outcome)
+	ep.Outcome = models.EpisodeOutcome(Text(string(ep.Outcome)))
 	ep.Tags = Strings(ep.Tags)
 	ep.Repo = Text(ep.Repo)
+	ep.Project = Text(ep.Project)
+	ep.Provenance = Text(ep.Provenance)
 	ep.Labels = Labels(ep.Labels)
 	ep.Problem = Text(ep.Problem)
+	ep.Objectives = Strings(ep.Objectives)
+	ep.Decisions = Strings(ep.Decisions)
+	ep.Alternatives = Strings(ep.Alternatives)
+	ep.Verification = Strings(ep.Verification)
+	ep.Lessons = Strings(ep.Lessons)
 	ep.ThinkingTrace = Text(ep.ThinkingTrace)
 	ep.ModelID = Text(ep.ModelID)
 	for i := range ep.Steps {
@@ -112,9 +119,11 @@ func Summary(summary *models.EpisodeSummary) {
 	}
 	summary.Problem = Text(summary.Problem)
 	summary.Domain = Text(summary.Domain)
-	summary.Outcome = Text(summary.Outcome)
+	summary.Outcome = models.EpisodeOutcome(Text(string(summary.Outcome)))
 	summary.Tags = Strings(summary.Tags)
 	summary.Repo = Text(summary.Repo)
+	summary.Project = Text(summary.Project)
+	summary.Provenance = Text(summary.Provenance)
 	summary.Labels = Labels(summary.Labels)
 	summary.ModelID = Text(summary.ModelID)
 	summary.StepTypes = Strings(summary.StepTypes)

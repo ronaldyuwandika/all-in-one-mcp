@@ -326,18 +326,18 @@ func (es *EpisodeStore) UnlabeledCount() (int, error) {
 	return count, err
 }
 
-func (es *EpisodeStore) parseLabelsJSON(labelsStr string) map[string][]string {
+func (es *EpisodeStore) parseLabelsJSONErr(episodeID, labelsStr string) (map[string][]string, error) {
 	if labelsStr == "" || labelsStr == "{}" {
-		return nil
+		return nil, nil
 	}
 	var labels map[string][]string
 	if err := json.Unmarshal([]byte(labelsStr), &labels); err != nil {
-		return nil
+		return nil, fmt.Errorf("decode episode %s field labels: %w", episodeID, err)
 	}
 	if len(labels) == 0 {
-		return nil
+		return nil, nil
 	}
-	return labels
+	return labels, nil
 }
 
 func (es *EpisodeStore) BackfillLabels() (int, error) {
