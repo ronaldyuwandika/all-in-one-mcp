@@ -327,6 +327,182 @@ func testStore(t *testing.T) *EpisodeStore {
 	return es
 }
 
+func TestSchemaMigrationPre102(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "legacy.db")
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+
+	// Create legacy v1 schema (without pre-102 fields/tables like episode_failed_approaches, project, provenance, model_id, etc.)
+	legacySchema := `
+	CREATE TABLE episodes (
+		id TEXT PRIMARY KEY,
+		problem TEXT NOT NULL,
+		thinking_trace TEXT NOT NULL,
+		domain TEXT NOT NULL,
+		outcome TEXT NOT NULL,
+		tier TEXT NOT NULL DEFAULT 'episodic',
+		tags TEXT NOT NULL,
+		repo TEXT NOT NULL DEFAULT '',
+		labels TEXT NOT NULL DEFAULT '{}',
+		steps TEXT NOT NULL DEFAULT '[]',
+		tool_calls TEXT NOT NULL DEFAULT '[]',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	);
+	`
+	if _, err := db.Exec(legacySchema); err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO episodes (id, problem, thinking_trace, domain, outcome, tier, tags, created_at, updated_at)
+		VALUES ('legacy1', 'legacy problem', 'legacy trace', 'coding', 'success', 'episodic', '[]', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`)
+	if err != nil {
+		t.Fatalf("insert legacy episode: %v", err)
+	}
+	_ = db.Close()
+
+	// New store opening runs migrations
+	es, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("migrating store: %v", err)
+	}
+	defer es.Close()
+
+	ep, err := es.GetEpisode("legacy1")
+	if err != nil {
+		t.Fatalf("GetEpisode after migration: %v", err)
+	}
+	if ep == nil || ep.ID != "legacy1" {
+		t.Fatalf("expected legacy episode after migration, got %+v", ep)
+	}
+}
+
+func TestTriggerSynchronization(t *testing.T) {
+	es := testStore(t)
+	ep := &models.Episode{
+		ID:            "ep_trig",
+		Domain:        "coding",
+		Outcome:       "failure",
+		Problem:       "trigger test problem",
+		ThinkingTrace: "trigger test trace",
+		FailedApproaches: []models.FailedApproach{
+			{
+				Approach:    "trigger approach test",
+				FailureMode: "mode trig",
+				RootCause:   "cause trig",
+				Lesson:      "lesson trig",
+			},
+		},
+	}
+	if _, err := es.CreateEpisode(ep); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify trigger populated failed_approaches_fts
+	var ftsCount int
+	err := es.db.QueryRow("SELECT COUNT(*) FROM failed_approaches_fts WHERE failed_approaches_fts MATCH 'trigger'").Scan(&ftsCount)
+	if err != nil {
+		t.Fatalf("query failed_approaches_fts: %v", err)
+	}
+	if ftsCount != 1 {
+		t.Fatalf("expected 1 match in failed_approaches_fts after insert, got %d", ftsCount)
+	}
+
+	// Update episode failed approaches
+	ep.FailedApproaches[0].Approach = "updated approach test"
+	if err := es.UpdateEpisode(context.Background(), ep); err != nil {
+		t.Fatal(err)
+	}
+
+	err = es.db.QueryRow("SELECT COUNT(*) FROM failed_approaches_fts WHERE failed_approaches_fts MATCH 'updated'").Scan(&ftsCount)
+	if err != nil {
+		t.Fatalf("query failed_approaches_fts after update: %v", err)
+	}
+	if ftsCount != 1 {
+		t.Fatalf("expected 1 match for updated text in failed_approaches_fts, got %d", ftsCount)
+	}
+
+	// Delete episode
+	if err := es.DeleteEpisode(ep.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	err = es.db.QueryRow("SELECT COUNT(*) FROM failed_approaches_fts WHERE failed_approaches_fts MATCH 'updated'").Scan(&ftsCount)
+	if err != nil {
+		t.Fatalf("query failed_approaches_fts after delete: %v", err)
+	}
+	if ftsCount != 0 {
+		t.Fatalf("expected 0 matches in failed_approaches_fts after delete, got %d", ftsCount)
+	}
+}
+
+func TestRedactionBeforePersistenceAndEmbedding(t *testing.T) {
+	es := testStore(t)
+	vs, err := NewVectorStore(t.TempDir(), "mock", "", "", "", true)
+	if err != nil {
+		t.Fatalf("new vector store: %v", err)
+	}
+	defer vs.Close()
+	es.vec = vs
+
+	secret := "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
+	ep := &models.Episode{
+		ID:            "ep_sec",
+		Domain:        "coding",
+		Outcome:       "success",
+		Problem:       "fix bug using secret " + secret,
+		ThinkingTrace: "trace containing token " + secret,
+		FailedApproaches: []models.FailedApproach{
+			{
+				Approach:    "failed with secret " + secret,
+				FailureMode: "mode secret " + secret,
+				RootCause:   "cause secret " + secret,
+				Lesson:      "lesson secret " + secret,
+			},
+		},
+	}
+
+	if _, err := es.CreateEpisode(ep); err != nil {
+		t.Fatal(err)
+	}
+
+	// Query raw DB rows to verify redaction before SQL persistence
+	var prob, trace string
+	err = es.db.QueryRow("SELECT problem, thinking_trace FROM episodes WHERE id = ?", ep.ID).Scan(&prob, &trace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(prob, secret) || strings.Contains(trace, secret) {
+		t.Fatalf("unredacted secret in DB problem/trace: prob=%q trace=%q", prob, trace)
+	}
+
+	var app, mode, cause, lesson string
+	err = es.db.QueryRow("SELECT approach, failure_mode, root_cause, lesson FROM episode_failed_approaches WHERE episode_id = ?", ep.ID).Scan(&app, &mode, &cause, &lesson)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{app, mode, cause, lesson} {
+		if strings.Contains(field, secret) {
+			t.Fatalf("unredacted secret in failed approach DB: %q", field)
+		}
+	}
+
+	// Verify vector store document text is redacted
+	results, err := vs.Search(context.Background(), secret, 1)
+	if err != nil {
+		t.Fatalf("Search vector: %v", err)
+	}
+	for _, res := range results {
+		if res.ID == ep.ID && strings.Contains(res.Content, secret) {
+			t.Fatalf("unredacted secret in vector store search: %v", res)
+		}
+	}
+
+}
+
 func seedEpisode(es *EpisodeStore) *models.Episode {
 	ep := &models.Episode{
 		ID:              es.NextID(),

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -81,6 +82,10 @@ func (es *EpisodeStore) SearchLocal(query string, domainFilter, outcomeFilter, r
 	for _, vr := range vecResults {
 		vecScores[vr.ID] = vr.Similarity
 	}
+	failureMatches, err := es.searchFailedApproaches(query)
+	if err != nil {
+		return nil, err
+	}
 
 	hybridWeight := 0.5
 
@@ -94,20 +99,25 @@ func (es *EpisodeStore) SearchLocal(query string, domainFilter, outcomeFilter, r
 		if vr.Similarity < 0.3 {
 			continue
 		}
+		summary, err := es.GetSummary(vr.ID)
+		if err != nil || summary == nil {
+			continue
+		}
+		if !matchesSearchFilters(summary, domainFilter, outcomeFilter, repoFilter, tagsFilter, mf) {
+			continue
+		}
 		score := vr.Similarity * hybridWeight
 		if existing, ok := ftsByID[vr.ID]; ok {
 			score += existing.LocalScore * (1 - hybridWeight)
 			existing.VectorScore = math.Round(vr.Similarity*1000) / 1000
 			existing.LocalScore = math.Round(score*1000) / 1000
 		} else {
-			summary, err := es.GetSummary(vr.ID)
-			if err != nil || summary == nil {
-				continue
-			}
 			summary.LocalScore = math.Round(score*1000) / 1000
 			summary.VectorScore = math.Round(vr.Similarity*1000) / 1000
+			summary.FailureMatches = failureMatches[summary.ID]
 			hybrid = append(hybrid, scoredResult{summary: *summary, score: score})
 		}
+
 	}
 
 	for i := range ftsResults {
@@ -123,13 +133,15 @@ func (es *EpisodeStore) SearchLocal(query string, domainFilter, outcomeFilter, r
 		ftsResults = append(ftsResults, sr.summary)
 	}
 
-	for i := 0; i < len(ftsResults); i++ {
-		for j := i + 1; j < len(ftsResults); j++ {
-			if ftsResults[j].LocalScore > ftsResults[i].LocalScore {
-				ftsResults[i], ftsResults[j] = ftsResults[j], ftsResults[i]
-			}
+	sort.Slice(ftsResults, func(i, j int) bool {
+		if ftsResults[i].LocalScore != ftsResults[j].LocalScore {
+			return ftsResults[i].LocalScore > ftsResults[j].LocalScore
 		}
-	}
+		if ftsResults[i].CreatedAt != ftsResults[j].CreatedAt {
+			return ftsResults[i].CreatedAt > ftsResults[j].CreatedAt
+		}
+		return ftsResults[i].ID < ftsResults[j].ID
+	})
 
 	if topK < len(ftsResults) {
 		ftsResults = ftsResults[:topK]
@@ -147,6 +159,24 @@ func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, rep
 	ftsRows, err := es.searchFTS(query, repoFilter)
 	if err != nil {
 		return nil, err
+	}
+	failureMatches, err := es.searchFailedApproaches(query)
+	if err != nil {
+		return nil, err
+	}
+	seenRows := make(map[string]bool, len(ftsRows))
+	for _, row := range ftsRows {
+		seenRows[row.ID] = true
+	}
+	for id := range failureMatches {
+		if seenRows[id] {
+			continue
+		}
+		rows, err := es.loadSearchRows([]string{id})
+		if err != nil {
+			return nil, err
+		}
+		ftsRows = append(ftsRows, rows...)
 	}
 
 	scored := make(map[string]float64)
@@ -213,7 +243,10 @@ func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, rep
 				}
 			}
 		}
-		if tagMatches > 0 && len(tagsFilter) > 0 {
+		if len(tagsFilter) > 0 && tagMatches != len(tagsFilter) {
+			continue
+		}
+		if tagMatches > 0 {
 			score += float64(tagMatches) / float64(len(tagsFilter)) * 0.3
 		}
 
@@ -236,11 +269,11 @@ func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, rep
 				continue
 			}
 		}
-		if repoFilter != "" && !strings.Contains(strings.ToLower(r.Repo), strings.ToLower(repoFilter)) {
+		if repoFilter != "" && !strings.EqualFold(r.Repo, repoFilter) {
 			continue
 		}
 
-		if repoFilter != "" && r.Repo == repoFilter {
+		if repoFilter != "" {
 			score += 0.2
 		}
 
@@ -260,6 +293,9 @@ func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, rep
 			ctScore += 0.3
 		}
 		score += ctScore
+		if matches := failureMatches[r.ID]; len(matches) > 0 {
+			score += 0.15
+		}
 
 		if score > 0 {
 			if existing, ok := scored[r.ID]; !ok || score > existing {
@@ -268,13 +304,11 @@ func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, rep
 		}
 	}
 
+	createdAt := make(map[string]string, len(ftsRows))
 	for _, r := range ftsRows {
-		if _, ok := scored[r.ID]; !ok {
-			scored[r.ID] = 0.1
-		}
+		createdAt[r.ID] = r.CreatedAt
 	}
-
-	sorted := rankByScore(scored, topK)
+	sorted := rankByScore(scored, createdAt, topK)
 
 	var results []models.EpisodeSummary
 	for _, entry := range sorted {
@@ -327,6 +361,7 @@ func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, rep
 					StepTypes:       stepTypes(steps),
 					ModelID:         r.ModelID,
 					DurationSeconds: r.DurationSeconds,
+					FailureMatches:  failureMatches[r.ID],
 					LocalScore:      math.Round(entry.score*1000) / 1000,
 				}
 				results = append(results, s)
@@ -336,6 +371,93 @@ func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, rep
 	}
 
 	return results, nil
+}
+
+func (es *EpisodeStore) searchFailedApproaches(query string) (map[string][]models.FailureMatch, error) {
+	terms := strings.Fields(query)
+	if len(terms) == 0 {
+		return map[string][]models.FailureMatch{}, nil
+	}
+	parts := make([]string, len(terms))
+	for i, term := range terms {
+		parts[i] = fmt.Sprintf(`"%s"`, strings.ReplaceAll(term, `"`, `""`))
+	}
+	rows, err := es.db.Query(`SELECT f.episode_id, f.approach, f.failure_mode, f.root_cause, f.lesson, bm25(failed_approaches_fts)
+		FROM failed_approaches_fts x JOIN episode_failed_approaches f ON f.id = x.rowid
+		WHERE failed_approaches_fts MATCH ? LIMIT 100`, strings.Join(parts, " OR "))
+	if err != nil {
+		return es.fallbackSearchFailedApproaches(terms)
+	}
+	defer rows.Close()
+	out := make(map[string][]models.FailureMatch)
+	for rows.Next() {
+		var id string
+		var match models.FailureMatch
+		var rank float64
+		if err := rows.Scan(&id, &match.Approach, &match.FailureMode, &match.RootCause, &match.Lesson, &rank); err != nil {
+			return nil, err
+		}
+		match.Score = 1 / (1 + math.Abs(rank))
+		out[id] = append(out[id], match)
+	}
+	return out, rows.Err()
+}
+
+func (es *EpisodeStore) fallbackSearchFailedApproaches(terms []string) (map[string][]models.FailureMatch, error) {
+	if len(terms) == 0 {
+		return map[string][]models.FailureMatch{}, nil
+	}
+	var conditions []string
+	var args []any
+	for _, term := range terms {
+		escaped := strings.ReplaceAll(term, "'", "''")
+		escaped = strings.ReplaceAll(escaped, "\\", "\\\\")
+		pattern := "%" + escaped + "%"
+		conditions = append(conditions, "(approach LIKE ? ESCAPE '\\' OR failure_mode LIKE ? ESCAPE '\\' OR root_cause LIKE ? ESCAPE '\\' OR lesson LIKE ? ESCAPE '\\')")
+		args = append(args, pattern, pattern, pattern, pattern)
+	}
+	query := `SELECT episode_id, approach, failure_mode, root_cause, lesson FROM episode_failed_approaches WHERE ` + strings.Join(conditions, " OR ") + ` LIMIT 100`
+	rows, err := es.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("fallback search failed approaches: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string][]models.FailureMatch)
+	for rows.Next() {
+		var id string
+		var match models.FailureMatch
+		if err := rows.Scan(&id, &match.Approach, &match.FailureMode, &match.RootCause, &match.Lesson); err != nil {
+			return nil, err
+		}
+		match.Score = 0.5
+		out[id] = append(out[id], match)
+	}
+	return out, rows.Err()
+}
+
+func (es *EpisodeStore) loadSearchRows(ids []string) ([]searchRow, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := make([]any, len(ids))
+	for i := range ids {
+		args[i] = ids[i]
+	}
+	rows, err := es.db.Query(`SELECT id, problem, thinking_trace, domain, outcome, tier, tags, repo, labels, steps, tool_calls, created_at, updated_at, project, provenance, confidence, model_id, duration_seconds FROM episodes WHERE id IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []searchRow
+	for rows.Next() {
+		var r searchRow
+		if err := rows.Scan(&r.ID, &r.Problem, &r.ThinkingTrace, &r.Domain, &r.Outcome, &r.Tier, &r.TagsJSON, &r.Repo, &r.LabelsJSON, &r.StepsJSON, &r.ToolCallsJSON, &r.CreatedAt, &r.UpdatedAt, &r.Project, &r.Provenance, &r.Confidence, &r.ModelID, &r.DurationSeconds); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 func (es *EpisodeStore) searchFTS(query, repoFilter string) ([]searchRow, error) {
@@ -355,7 +477,7 @@ func (es *EpisodeStore) searchFTS(query, repoFilter string) ([]searchRow, error)
 		            e.repo, e.labels, e.steps, e.tool_calls, e.created_at, e.updated_at, e.project, e.provenance, e.confidence, e.model_id, e.duration_seconds
 		     FROM episodes_fts f
 		     JOIN episodes e ON e.rowid = f.rowid
-		     WHERE episodes_fts MATCH ? AND e.repo = ?
+		     WHERE episodes_fts MATCH ? AND LOWER(e.repo) = LOWER(?)
 		     LIMIT 50`
 		args = append(args, ftsQuery, repoFilter)
 	} else {
@@ -401,7 +523,7 @@ func (es *EpisodeStore) fallbackSearch(query, repoFilter string) ([]searchRow, e
 		            repo, labels, steps, tool_calls, created_at, updated_at, project, provenance, confidence, model_id, duration_seconds
 		     FROM episodes
 		     WHERE (problem LIKE ? ESCAPE '\' OR thinking_trace LIKE ? ESCAPE '\')
-		       AND repo = ?
+		       AND LOWER(repo) = LOWER(?)
 		     LIMIT 50`
 		args = append(args, likePattern, likePattern, repoFilter)
 	} else {
@@ -434,28 +556,73 @@ func (es *EpisodeStore) fallbackSearch(query, repoFilter string) ([]searchRow, e
 }
 
 type scoredID struct {
-	id    string
-	score float64
+	id        string
+	score     float64
+	createdAt string
 }
 
-func rankByScore(scored map[string]float64, topK int) []scoredID {
+func rankByScore(scored map[string]float64, createdAt map[string]string, topK int) []scoredID {
 	var entries []scoredID
 	for id, score := range scored {
-		entries = append(entries, scoredID{id: id, score: score})
+		entries = append(entries, scoredID{id: id, score: score, createdAt: createdAt[id]})
 	}
 
-	for i := 0; i < len(entries); i++ {
-		for j := i + 1; j < len(entries); j++ {
-			if entries[j].score > entries[i].score {
-				entries[i], entries[j] = entries[j], entries[i]
-			}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].score != entries[j].score {
+			return entries[i].score > entries[j].score
 		}
-	}
+		if entries[i].createdAt != entries[j].createdAt {
+			return entries[i].createdAt > entries[j].createdAt
+		}
+		return entries[i].id < entries[j].id
+	})
 
 	if topK < len(entries) {
 		entries = entries[:topK]
 	}
 	return entries
+}
+
+func matchesSearchFilters(summary *models.EpisodeSummary, domainFilter, outcomeFilter, repoFilter string, tagsFilter []string, metadataFilter map[string][]string) bool {
+	if domainFilter != "" && summary.Domain != domainFilter {
+		return false
+	}
+	if outcomeFilter != "" && string(summary.Outcome) != outcomeFilter {
+		return false
+	}
+	if repoFilter != "" && !strings.EqualFold(summary.Repo, repoFilter) {
+		return false
+	}
+	for _, filterTag := range tagsFilter {
+		found := false
+		for _, tag := range summary.Tags {
+			if tag == filterTag {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	for key, filterValues := range metadataFilter {
+		found := false
+		for _, filterValue := range filterValues {
+			for _, value := range summary.Labels[key] {
+				if strings.EqualFold(value, filterValue) {
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 func parseTags(jsonStr string) []string {

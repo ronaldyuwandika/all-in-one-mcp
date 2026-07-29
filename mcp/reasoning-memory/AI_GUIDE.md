@@ -31,13 +31,14 @@ config.yaml                — Retrieval, embedding, consolidation settings
 
 ## Hybrid Search
 
-Two-layer retrieval with configurable weighting (`retrieval.hybrid_weight`):
+Two-layer retrieval combines structured failure memory with episode text:
 
-1. **FTS5**: Full-text search on problem + thinking_trace, scored by term frequency + metadata match
-2. **Vector**: Semantic similarity via chromem-go embeddings (cosine similarity)
-3. **Merged**: Hybrid score = vector_score × weight + fts_score × (1-weight)
+1. **FTS5**: Searches `problem` + `thinking_trace`; a second FTS5 index searches `failed_approaches.approach`, `failure_mode`, `root_cause`, and `lesson`. Either index can admit an episode. Missing/corrupt FTS tables fall back to bounded SQL `LIKE` queries.
+2. **Vector**: Semantic similarity over problem, trace, and serialized failed approaches; candidates below `0.3` similarity are discarded.
+3. **Merged**: Deduplicated score = vector score × `0.5` + local score × `0.5`. Failure matches add a local boost. Equal scores sort by newest `created_at`, then ascending episode ID.
+4. **Filters**: Domain, outcome, repository, tags, and metadata are applied to FTS and vector candidates. Repository matching is exact and case-insensitive; metadata values OR within a key and keys AND together.
 
-When vector embeddings are disabled, falls back to FTS5-only search.
+Results expose `_local_score`, `_vector_score`, and `failure_matches` with the four failure fields plus match score. When vector embeddings are disabled or unavailable, retrieval remains FTS/SQL-only.
 
 ## Vector Embeddings
 
@@ -71,7 +72,8 @@ After reconciliation, startup performs a full reindex only when SQLite contains 
 
 - Canonical outcomes: `verified_success`, `unverified_success`, `partial_success`, `failure`, and `abandoned`.
 - Compatibility mappings: input and search filter `success` becomes `unverified_success`; `partial` becomes `partial_success`.
-- Scope: `repo` identifies the repository used by repository filters; `project` is a distinct optional project scope and is not a repo alias.
+- Scope: `repo` identifies the repository used by repository filters; matching is exact and case-insensitive (`strings.EqualFold` / `LOWER(repo) = LOWER(?)`); `project` is a distinct optional project scope and is not a repo alias.
+- Failure memory: `failed_approaches` accepts up to 20 objects (`approach`, `failure_mode`, `root_cause`, `lesson`), validated to non-blank strings up to 2,000 code points each, with exact duplicate objects deduplicated after trimming whitespace. Failure content is indexed in FTS5/SQLite, concatenated to vector documents, rendered as warnings in `polish_prompt`, and protected from archive hard pruning.
 - Attribution: `provenance` records the episode origin; optional `confidence` must be finite and in `[0, 1]`.
 - Structured fields: `objectives`, `decisions`, `alternatives`, `verification`, and `lessons` are string arrays.
 - Lifecycle: creation initializes `created_at` and `updated_at`; replacement updates preserve `created_at` and advance `updated_at`; archive records retain all rich fields.
@@ -89,9 +91,9 @@ Capture auto-detects `repo` only when it is omitted. Detection uses the current 
 | `update_episode` | Replaces an active record from the required complete `episode` object. The object must contain an existing `id`. |
 | `delete_episode` | Deletes an active record by `episode_id`; archived records are not deleted. |
 
-Validation rejects blank problems, unsupported outcomes, invalid tiers, and non-finite or out-of-range confidence. The MCP create tools additionally require `thinking_trace`. Updates use replacement semantics, preserve the original creation time, update FTS5 and metadata indexes, and synchronize the vector document.
+Validation rejects blank problems, unsupported outcomes, invalid tiers, non-finite or out-of-range confidence, and malformed `failed_approaches`. The MCP create tools additionally require `thinking_trace`. Updates use replacement semantics, preserve the original creation time, update FTS5 and metadata indexes, and synchronize the vector document.
 
-All array arguments declare explicit item schemas for Gemini-compatible clients. Rich string arrays use string items, while `tool_calls` uses structured objects.
+All array arguments declare explicit item schemas for Gemini-compatible clients. Rich string arrays use string items; `tool_calls` uses structured objects; `failed_approaches` uses objects with four required string properties and no partial entries. Create/capture/update/get accept or return `failed_approaches`; retrieve summaries return query-specific `failure_matches` instead of the entire failure list.
 
 ## How It Works
 
@@ -121,8 +123,8 @@ Opening SQLite applies idempotent migrations automatically:
 
 Vector operations coordinate through this queue:
 - Creates and updates record pending vector content in `vector_reconcile` within the primary SQLite transaction. Their configured vector-store operation runs after commit and clears the queue entry when synchronization succeeds.
-- Deletes remove SQLite episode data and any stale reconciliation entry transactionally, then delete the configured vector document when vector storage is enabled.
-- `NewWithVector` flushes pending `vector_reconcile` entries during store initialization. `Readiness` repeats reconciliation before reporting ready.
+- Deletes and compaction archive moves enqueue a tombstone (`problem = '', thinking_trace = ''`) in `vector_reconcile`. If vector deletion fails or the provider is unavailable, the queue row persists to ensure durable reconciliation.
+- `NewWithVector` flushes pending `vector_reconcile` entries during store initialization (deleting vectors when problem and trace are empty, replacing when non-empty). `Readiness` repeats reconciliation before reporting ready.
 - When embeddings are disabled or vector initialization fails, startup uses the SQLite-only store. Queued reconciliation resumes on a later successful `NewWithVector` startup.
 
 ## Legacy Frontmatter Migration (`migrate.py`)

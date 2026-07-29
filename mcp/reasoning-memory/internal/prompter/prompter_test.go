@@ -3,6 +3,8 @@ package prompter
 import (
 	"strings"
 	"testing"
+
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/models"
 )
 
 func TestPolishCodingPrompt(t *testing.T) {
@@ -170,15 +172,65 @@ func TestPolishDeterministic(t *testing.T) {
 	}
 }
 
-func TestContextCountPreserved(t *testing.T) {
-	result, err := PolishPromptWithOptions(Options{
-		RawPrompt: "fix auth", Context: "two concise memories",
-		ContextCount: 2, OutputFormat: "markdown",
+func TestStrictBudgetAllFormats(t *testing.T) {
+	for _, format := range []string{"json", "xml", "markdown"} {
+		t.Run(format, func(t *testing.T) {
+			result, err := PolishPromptWithOptions(Options{
+				RawPrompt:    strings.Repeat("tight budget objective ", 80),
+				TargetAgent:  "codex",
+				OutputFormat: format,
+				MaxChars:     180,
+				Episodes: []EpisodeContext{{
+					EpisodeID: "ep-budget",
+					FailedApproaches: []models.FailedApproach{{
+						Approach:    strings.Repeat("failed approach ", 30),
+						FailureMode: strings.Repeat("failure mode ", 30),
+						RootCause:   strings.Repeat("root cause ", 30),
+						Lesson:      strings.Repeat("lesson ", 30),
+					}},
+				}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			chars := len([]rune(result.PolishedPrompt))
+			if chars > 180 {
+				t.Fatalf("%s output exceeded MaxChars: got %d, want <= 180", format, chars)
+			}
+			if !result.Truncated {
+				t.Fatalf("expected %s output to report truncation", format)
+			}
+		})
+	}
+}
+
+func TestFailedApproachesPopulated(t *testing.T) {
+	episodes := []EpisodeContext{
+		{
+			EpisodeID: "ep100",
+			Problem:   "Failed approach test",
+			Domain:    "coding",
+			Outcome:   "failure",
+			FailedApproaches: []models.FailedApproach{
+				{
+					Approach:    "Approach A",
+					FailureMode: "Mode A",
+					RootCause:   "Cause A",
+					Lesson:      "Lesson A",
+				},
+			},
+		},
+	}
+	res, err := PolishPromptWithOptions(Options{
+		RawPrompt:    "fix bug",
+		TargetAgent:  "generic",
+		OutputFormat: "json",
+		Episodes:     episodes,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ContextCount != 2 {
-		t.Fatalf("context count = %d, want 2", result.ContextCount)
+	if !strings.Contains(res.PolishedPrompt, "failed_approaches") || !strings.Contains(res.PolishedPrompt, "Approach A") {
+		t.Fatalf("expected structured failed_approaches in JSON prompt output, got: %s", res.PolishedPrompt)
 	}
 }

@@ -142,6 +142,32 @@ func TestCompaction(t *testing.T) {
 		t.Errorf("ep-very-old should have been permanently deleted")
 	}
 
+	// Verify failure-bearing archived episode is NEVER hard-pruned
+	veryOldFailureTime := time.Now().UTC().AddDate(0, 0, -100).Format(time.RFC3339)
+	_, err = es.db.Exec(`
+		INSERT INTO episodes_archive (id, created_at, domain, outcome, tags, problem, thinking_trace, tier)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, "ep-very-old-failure", veryOldFailureTime, "coding", "failure", `["go"]`, "failure problem", "failure trace", "episodic")
+	if err != nil {
+		t.Fatalf("failed to insert failure archived episode: %v", err)
+	}
+	_, err = es.db.Exec(`
+		INSERT INTO episode_failed_approaches_archive (episode_id, position, approach, failure_mode, root_cause, lesson)
+		VALUES (?, 0, ?, ?, ?, ?)
+	`, "ep-very-old-failure", "app", "fail", "root", "lesson")
+	if err != nil {
+		t.Fatalf("failed to insert failed approach archive record: %v", err)
+	}
+	report, err = es.Compact(ctx, cfg, false)
+	if err != nil {
+		t.Fatalf("compact after failure archive failed: %v", err)
+	}
+	var existsFailure int
+	_ = es.db.QueryRow("SELECT COUNT(*) FROM episodes_archive WHERE id = 'ep-very-old-failure'").Scan(&existsFailure)
+	if existsFailure != 1 {
+		t.Errorf("failure-bearing archived episode should not be pruned")
+	}
+
 	// Verify traces of ep-3, ep-4, ep-5 are summarized (shorter than longTrace)
 	for _, id := range []string{"ep-3", "ep-4", "ep-5"} {
 		ep, err := es.GetEpisode(id)
@@ -161,8 +187,8 @@ func TestCompaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get summary stats: %v", err)
 	}
-	if stats.TotalArchived != 1 {
-		t.Errorf("expected TotalArchived 1, got %d", stats.TotalArchived)
+	if stats.TotalArchived != 2 {
+		t.Errorf("expected TotalArchived 2, got %d", stats.TotalArchived)
 	}
 	if stats.TotalPruned != 1 {
 		t.Errorf("expected TotalPruned 1, got %d", stats.TotalPruned)
