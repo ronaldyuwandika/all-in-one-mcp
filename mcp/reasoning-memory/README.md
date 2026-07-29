@@ -1,6 +1,6 @@
 # reasoning-memory
 
-[![Go 1.24](https://img.shields.io/badge/go-1.24-00ADD8?style=flat-square&logo=go)](https://golang.org/doc/go1.24)
+[![Go 1.25](https://img.shields.io/badge/go-1.25-00ADD8?style=flat-square&logo=go)](https://golang.org/doc/go1.25)
 [![MCP](https://img.shields.io/badge/MCP-compatible-6B21A8?style=flat-square)](https://modelcontextprotocol.io)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](../../LICENSE)
 [![Build](https://img.shields.io/github/actions/workflow/status/ronaldyuwandika/all-in-one-mcp/lint.yaml?branch=main&style=flat-square)](../../actions)
@@ -10,34 +10,151 @@
 
 ## Quick Start
 
+From the repository root:
+
 ```bash
-make run-reasoning-memory
-# Or installed:
+make run-mcp-reasoning-memory
+```
+
+Or run an installed binary:
+
+```bash
 reasoning-memory
 ```
 
-## Gemini-Compatible MCP Schemas
+## Episode records
 
-Tool schemas declare explicit item types for every array so Gemini-compatible clients can validate structured arguments without inferring `items`:
+Episodes retain the original problem and trace while adding structured fields for later retrieval and maintenance:
 
-- `record_decision`: `tradeoffs`, `assumptions`, and `evidence` are arrays of strings; `alternatives` is an array of structured alternative objects, including its nested `tradeoffs` string array.
-- `capture_reasoning_episode`: `tags` is a string array and `tool_calls` is an array of structured tool-call objects.
-- `retrieve_reasoning` and `memorize_concept`: `tags` are string arrays.
+| Field | Meaning |
+|---|---|
+| `created_at`, `updated_at` | UTC timestamps. Creation initializes both; every successful update preserves `created_at` and advances `updated_at`. |
+| `problem`, `thinking_trace` | Required capture text. |
+| `outcome` | One of `verified_success`, `unverified_success`, `partial_success`, `failure`, or `abandoned`. |
+| `objectives`, `decisions`, `alternatives`, `verification`, `lessons` | Optional string arrays that preserve the reusable parts of an episode without parsing the trace. |
+| `repo` | Repository identity used by repository filters. When omitted during capture, it is detected from the current Git origin; detection returns the repository basename, or the working-directory basename when no origin is available. |
+| `project` | Optional scope within or across repositories. It is stored independently and does not replace or populate `repo`. |
+| `provenance` | Optional origin or producer, such as an agent, import, or workflow name. |
+| `confidence` | Optional finite number from `0` through `1`. |
+| `tier` | `episodic` by default, or `semantic`. |
+| `tags`, `labels`, `domain`, `steps`, `tool_calls`, `model_id`, `duration_seconds` | Existing classification, trace, and execution metadata. |
 
-This fix applies to the MCP schemas served by this repository. OpenCode-side serializer defense-in-depth is outside this repository and is not covered here.
+Legacy outcome inputs remain accepted at compatibility boundaries: `success` maps to `unverified_success`, and `partial` maps to `partial_success`. New clients should send and persist only the five canonical values above.
+
+Validation requires a non-blank `problem`, a canonical or supported legacy outcome, a confidence in the inclusive `[0, 1]` range, and a tier of `episodic` or `semantic` when supplied. `thinking_trace` remains required by the MCP create tools. Invalid records are rejected rather than partially stored.
 
 ## MCP Tools
 
-| Tool | Description | Required Params |
-|------|-------------|-----------------|
-| `capture_reasoning_episode` | Store full trace at task end | `problem`, `thinking_trace`, `outcome` |
-| `record_decision` | Store a structured decision | `episode_id`, `title`, `selected`, `rationale` |
+| Tool | Description | Required parameters |
+|---|---|---|
+| `create_episode` | Create a rich episode | `problem`, `thinking_trace`, `outcome` |
+| `capture_reasoning_episode` | Compatibility alias for `create_episode` | `problem`, `thinking_trace`, `outcome` |
+| `get_episode` | Read an active episode, or an archived episode when requested | `episode_id` |
+| `list_episodes` | List active episode summaries with pagination | — |
+| `update_episode` | Replace an active episode with a complete validated record | `episode` |
+| `delete_episode` | Delete an active episode | `episode_id` |
+| `record_decision` | Store a decision with rationale, trade-offs, assumptions, evidence, and rejected alternatives | `episode_id`, `title`, `selected`, `rationale` |
 | `retrieve_decisions` | Retrieve repository-scoped decisions | `query`, `repo` |
-| `retrieve_reasoning` | Search episodes | `problem` |
-| `inject_reasoning_context` | Get XML block for prompt injection | `problem` |
-| `enrich_episode` | Auto-enrich labels for an existing episode | `episode_id` |
-| `consolidate_reasoning` | Cluster, merge, prune, reindex | — |
+| `retrieve_reasoning` | Search episodes using hybrid FTS5 and vector retrieval | `problem` |
+| `inject_reasoning_context` | Get `<reasoning_memory>` XML context for prompt injection | `problem` |
+| `enrich_episode` | Auto-enrich metadata labels for an existing episode | `episode_id` |
+| `consolidate_reasoning` | Cluster, merge, prune, and reindex episodes | — |
 | `polish_prompt` | Build a secret-safe agent prompt with optional memory and skill context | `raw_prompt` |
+| `memorize_concept` | Store a standalone semantic concept | `entity_name`, `description` |
+| `recall_semantic` | Search semantic concepts by similarity | `query` |
+| `link_entities` | Create a directed relationship between concepts or episodes | `source_id`, `target_id`, `relationship` |
+| `traverse_concepts` | Graph-traverse related concepts | `start_id` |
+
+*(17 registered MCP tools total)*
+
+### Create and capture
+
+`create_episode` and `capture_reasoning_episode` use the same schema and handler. The capture name remains available so existing MCP clients do not need an immediate rename.
+
+```json
+{
+  "problem": "Make retry behavior observable",
+  "thinking_trace": "Compared counters and traces, implemented both, then ran tests.",
+  "outcome": "verified_success",
+  "domain": "coding",
+  "tier": "episodic",
+  "repo": "retry-service",
+  "project": "worker-runtime",
+  "provenance": "coding-agent",
+  "confidence": 0.95,
+  "objectives": ["Expose retry attempts"],
+  "decisions": ["Use a counter and a trace attribute"],
+  "alternatives": ["Log-only instrumentation"],
+  "verification": ["go test ./...", "go test -race ./..."],
+  "lessons": ["Keep metric labels bounded"],
+  "tags": ["go", "observability"],
+  "labels": {"language": ["go"]},
+  "tool_calls": [
+    {
+      "tool": "go_test",
+      "args": {"packages": "./..."},
+      "result_excerpt": "pass",
+      "outcome": "success"
+    }
+  ],
+  "duration_seconds": 120,
+  "model_id": "example-model"
+}
+```
+
+The response contains the generated episode ID. Labels are auto-enriched when omitted.
+
+### Read, list, update, and delete
+
+```json
+{"episode_id": "re-20260729-001", "include_archived": true}
+```
+
+`get_episode` checks active storage first. Set `include_archived` to `true` to fall back to the archive. `list_episodes` accepts numeric `limit` and `offset` and returns active summaries; the store defaults a non-positive limit and caps it at 1,000.
+
+`update_episode` is replacement, not patch, semantics. Send the complete episode object, including its `id`; omitted optional fields are cleared. The store rejects a missing ID or unknown active episode, preserves the original `created_at`, sets a new `updated_at`, refreshes FTS5 and metadata indexes, and reconciles the vector document.
+
+```json
+{
+  "episode": {
+    "id": "re-20260729-001",
+    "problem": "Make retry behavior observable",
+    "thinking_trace": "Updated trace",
+    "outcome": "verified_success",
+    "domain": "coding",
+    "tier": "episodic",
+    "repo": "retry-service",
+    "project": "worker-runtime",
+    "provenance": "reviewed-by-human",
+    "confidence": 1,
+    "objectives": ["Expose retry attempts"],
+    "decisions": ["Use a counter and a trace attribute"],
+    "alternatives": [],
+    "verification": ["go test ./..."],
+    "lessons": ["Keep metric labels bounded"],
+    "tags": ["go", "observability"],
+    "labels": {"language": ["go"]},
+    "steps": [],
+    "tool_calls": [],
+    "model_id": "example-model",
+    "duration_seconds": 140
+  }
+}
+```
+
+```json
+{"episode_id": "re-20260729-001"}
+```
+
+`delete_episode` removes the active episode and associated SQLite metadata. It does not delete archived episodes.
+
+### Upgrade behavior
+
+Opening `~/.reasoning-memory/store.db` applies the rich-episode migration automatically. It adds missing rich fields to active and archived episodes, maps persisted `success` to `unverified_success` and `partial` to `partial_success`, backfills missing `updated_at` from `created_at`, and rebuilds FTS5 after those backfills.
+
+When embeddings are configured and initialize successfully, startup uses `NewWithVector`. Creates and updates place pending vector content in the durable SQLite `vector_reconcile` queue as part of the primary transaction, synchronize the configured vector store after commit, and clear completed entries. `NewWithVector` drains remaining entries during initialization, and readiness repeats reconciliation before reporting ready. A full vector reindex runs only when SQLite has episodes and the configured vector collection is empty.
+
+The separate `migrate.py` helper imports legacy episode Markdown and pattern YAML without a record cap. Missing episode values default to current UTC `created_at`, `coding` domain, `unknown` outcome, empty collections/strings, and zero duration. It writes SQLite only; a later vector-enabled startup reindexes imported episodes only when the vector collection is empty.
 
 ### `record_decision`
 
@@ -46,79 +163,34 @@ Stores a decision with its selected approach, rationale, trade-offs, assumptions
 ```json
 {
   "episode_id": "re-20260726-001",
-  "repo": "my-org/my-service",
+  "repo": "my-service",
   "title": "Choose SQLite for Embedded Storage",
   "selected": "SQLite in WAL mode",
-  "rationale": "Avoids external process dependency while keeping concurrent read throughput high.",
+  "rationale": "Avoids an external process while supporting concurrent reads.",
   "tradeoffs": ["single writer restriction"],
   "assumptions": ["low concurrent write frequency"],
   "evidence": ["benchmark shows 10k ops/s"],
-  "alternatives": [
-    {
-      "name": "Postgres",
-      "rejection_reason": "High operational overhead and Cgo dependency",
-      "tradeoffs": ["external daemon required"]
-    }
-  ]
+  "alternatives": [{"name": "Postgres", "rejection_reason": "Operational overhead", "tradeoffs": ["external service"]}]
 }
 ```
-
-### `retrieve_decisions`
-
-Retrieves repository-scoped decision records matching a search query.
-
-```json
-{
-  "query": "SQLite",
-  "repo": "my-org/my-service",
-  "limit": 5
-}
-```
-
-### `capture_reasoning_episode`
-
-Persists a complete reasoning trace (problem, thinking trace, outcome, tool calls, tags, domain, duration, model) to SQLite with FTS5 + optional vector indexing.
-
-```json
-{
-  "problem": "How do I implement retry-with-backoff?",
-  "thinking_trace": "...",
-  "outcome": "success",
-  "domain": "coding",
-  "tags": ["resilience", "retry"],
-  "tool_calls": [{"tool": "grep", "args": "...", "result_excerpt": "...", "outcome": "success"}],
-  "duration_seconds": 120,
-  "model_id": "claude-sonnet-4-20260514",
-  "repo": "my-org/my-service",
-  "labels": {
-    "language": ["go"],
-    "framework": ["net/http"],
-    "severity": ["high"]
-  }
-}
-```
-
-Labels are auto-enriched when omitted: language detection, framework detection (Go, Python, JS, Rust, Docker), severity (critical/high/medium/low), and entity extraction (cache, db, api, auth, deploy, test).
 
 ### `retrieve_reasoning`
 
-Hybrid FTS5 + vector search returning ranked, deduplicated episode summaries.
+Hybrid FTS5 and vector search returns ranked, deduplicated episode summaries, including `updated_at`, `project`, `provenance`, and `confidence` when present.
 
 ```json
 {
   "problem": "Go concurrency patterns",
   "domain": "coding",
-  "outcome": "success",
+  "outcome": "verified_success",
+  "repo": "my-service",
   "tags": ["concurrency"],
   "top_k": 5,
-  "metadata_filter": {
-    "language": ["go"],
-    "severity": ["high", "critical"]
-  }
+  "metadata_filter": {"language": ["go"], "severity": ["high", "critical"]}
 }
 ```
 
-`metadata_filter` narrows results by label key/value pairs. Multiple values per key are OR'ed; multiple keys are AND'ed.
+Legacy outcome filters are normalized using the same mappings as capture. `top_k` defaults to 5 and is capped at 20. `metadata_filter` ORs values within one key and ANDs separate keys.
 
 ### `inject_reasoning_context`
 
@@ -232,7 +304,7 @@ For example, `http://127.0.0.1/admin`, `http://169.254.169.254/latest/meta-data/
 
 ## Demo Episodes
 
-Live traces captured during a single session across all 5 tools. Full source: [`bench/results/demo-episodes.json`](./bench/results/demo-episodes.json).
+Demo traces exercise five core capture, enrichment, retrieval, injection, and consolidation workflows. Full source: [`bench/results/demo-episodes.json`](./bench/results/demo-episodes.json).
 
 ### Captured via `capture_reasoning_episode`
 
@@ -243,7 +315,7 @@ Live traces captured during a single session across all 5 tools. Full source: [`
   "id": "re-20260714-003",
   "problem": "Fix a nil pointer dereference in the Go HTTP handler",
   "thinking_trace": "1. I saw the panic in the logs: nil pointer dereference at handler.go:42\n2. The issue was that r.FormValue(\"id\") returns empty string...",
-  "outcome": "success",
+  "outcome": "verified_success",
   "domain": "coding",
   "tags": ["go", "nil-pointer", "http-handler"],
   "steps": [
@@ -269,7 +341,7 @@ Live traces captured during a single session across all 5 tools. Full source: [`
 {
   "id": "re-20260714-004",
   "problem": "Design a rate limiter middleware for a Go HTTP service",
-  "outcome": "success",
+  "outcome": "unverified_success",
   "domain": "coding",
   "tags": ["go", "middleware", "rate-limiter", "concurrency"],
   "steps": [
@@ -307,9 +379,9 @@ Strategy `auto` → found 1 merge candidate, merged into pattern `pat-re-2026071
 
 | # | Tool | Input | Output |
 |   |------|-------|--------|
-| 1 | `capture_reasoning_episode` | `{"problem": "Fix a nil pointer dereference...", "outcome": "success", "tags": ["go","nil-pointer","http-handler"]}` | `re-20260714-003` |
-| 2 | `capture_reasoning_episode` | `{"problem": "Design a rate limiter middleware...", "outcome": "success", "tags": ["go","middleware","rate-limiter","concurrency"]}` | `re-20260714-004` |
-| 3 | `enrich_episode` | `{"episode_id": "re-20260714-003"}` | `Enriched re-20260714-003: {"language":["go"],"framework":["net/http"],"severity":["high"],"tag":["go","nil-pointer","http-handler"],"domain":["coding"],"outcome":["success"]}` |
+| 1 | `capture_reasoning_episode` | `{"problem": "Fix a nil pointer dereference...", "outcome": "verified_success", "tags": ["go","nil-pointer","http-handler"]}` | `re-20260714-003` |
+| 2 | `capture_reasoning_episode` | `{"problem": "Design a rate limiter middleware...", "outcome": "verified_success", "tags": ["go","middleware","rate-limiter","concurrency"]}` | `re-20260714-004` |
+| 3 | `enrich_episode` | `{"episode_id": "re-20260714-003"}` | `Enriched re-20260714-003: {"language":["go"],"framework":["net/http"],"severity":["high"],"tag":["go","nil-pointer","http-handler"],"domain":["coding"],"outcome":["verified_success"]}` |
 | 4 | `retrieve_reasoning` | `{"problem": "How to handle nil pointers in Go HTTP handlers", "top_k": 5, "metadata_filter": {"language": ["go"]}}` | Top result: `re-20260714-003` (score 1.267, labels boosted) |
 | 5 | `inject_reasoning_context` | `{"problem": "Go middleware design patterns", "top_k": 3}` | `<reasoning_memory>` XML with 3 episodes |
 | 6 | `polish_prompt` | `{"raw_prompt": "build a dockerfile for my go service", "skill_name": "docker-expert"}` | `coding` task type, skill injected, 1 context episode appended |
@@ -340,7 +412,7 @@ Strategy `auto` → found 1 merge candidate, merged into pattern `pat-re-2026071
 
 ```yaml
 embedding:
-  provider: "openai"    # or gemini, ollama, none
+  provider: "openai"    # openai | openai-compat | ollama | mock
   model: "text-embedding-3-small"
   base_url: ""
   api_key: ""
@@ -390,7 +462,6 @@ The legacy `migrate.py` utility also passes imported episode and pattern JSON th
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `OPENAI_API_KEY` | API key for OpenAI embeddings | — |
-| `REASONING_MEMORY_DB` | SQLite database path | `~/.reasoning-memory/episodes.db` |
 | `REASONING_MEMORY_CONFIG` | Config file path | `~/.reasoning-memory/config.yaml` |
 | `OLLAMA_BASE_URL` | Ollama server URL | `http://localhost:11434` |
 
@@ -438,7 +509,7 @@ make bench-reasoning-memory
 
 ## Benchmarks
 
-Benchmarks run on Apple M3 Pro, Go 1.24, 1 000 episodes, SQLite WAL mode.
+Benchmarks run on Apple M3 Pro, Go 1.25, 1 000 episodes, SQLite WAL mode.
 
 | Scenario | p50 | p99 | Throughput |
 |----------|-----|-----|------------|
@@ -527,7 +598,7 @@ Go
   <episode id="1">
     <problem>Write unit tests for SQLite store in Go</problem>
     <domain>coding</domain>
-    <outcome>success</outcome>
+    <outcome>unverified_success</outcome>
   </episode>
 </reasoning_memory>
 ````

@@ -1,6 +1,11 @@
 package models
 
-import "time"
+import (
+	"fmt"
+	"math"
+	"strings"
+	"time"
+)
 
 type ToolCall struct {
 	Tool          string `json:"tool" yaml:"tool"`
@@ -17,21 +22,38 @@ type Step struct {
 
 type MemoryTier string
 
+type EpisodeOutcome = string
+
 const (
 	TierEpisodic MemoryTier = "episodic"
 	TierSemantic MemoryTier = "semantic"
+
+	OutcomeVerifiedSuccess   EpisodeOutcome = "verified_success"
+	OutcomeUnverifiedSuccess EpisodeOutcome = "unverified_success"
+	OutcomePartialSuccess    EpisodeOutcome = "partial_success"
+	OutcomeFailure           EpisodeOutcome = "failure"
+	OutcomeAbandoned         EpisodeOutcome = "abandoned"
 )
 
 type Episode struct {
 	ID              string              `json:"id" yaml:"id"`
 	CreatedAt       time.Time           `json:"created_at" yaml:"created_at"`
+	UpdatedAt       time.Time           `json:"updated_at" yaml:"updated_at"`
 	Domain          string              `json:"domain" yaml:"domain"`
-	Outcome         string              `json:"outcome" yaml:"outcome"`
+	Outcome         EpisodeOutcome      `json:"outcome" yaml:"outcome"`
 	Tier            MemoryTier          `json:"tier" yaml:"tier"`
 	Tags            []string            `json:"tags" yaml:"tags"`
 	Repo            string              `json:"repo,omitempty" yaml:"repo,omitempty"`
+	Project         string              `json:"project,omitempty" yaml:"project,omitempty"`
+	Provenance      string              `json:"provenance,omitempty" yaml:"provenance,omitempty"`
+	Confidence      *float64            `json:"confidence,omitempty" yaml:"confidence,omitempty"`
 	Labels          map[string][]string `json:"labels,omitempty" yaml:"labels,omitempty"`
 	Problem         string              `json:"problem" yaml:"problem"`
+	Objectives      []string            `json:"objectives,omitempty" yaml:"objectives,omitempty"`
+	Decisions       []string            `json:"decisions,omitempty" yaml:"decisions,omitempty"`
+	Alternatives    []string            `json:"alternatives,omitempty" yaml:"alternatives,omitempty"`
+	Verification    []string            `json:"verification,omitempty" yaml:"verification,omitempty"`
+	Lessons         []string            `json:"lessons,omitempty" yaml:"lessons,omitempty"`
 	ThinkingTrace   string              `json:"thinking_trace" yaml:"thinking_trace"`
 	Steps           []Step              `json:"steps" yaml:"steps"`
 	ToolCalls       []ToolCall          `json:"tool_calls" yaml:"tool_calls"`
@@ -42,12 +64,16 @@ type Episode struct {
 type EpisodeSummary struct {
 	ID              string              `json:"id" yaml:"id"`
 	CreatedAt       string              `json:"created_at" yaml:"created_at"`
+	UpdatedAt       string              `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
 	Problem         string              `json:"problem" yaml:"problem"`
 	Domain          string              `json:"domain" yaml:"domain"`
-	Outcome         string              `json:"outcome" yaml:"outcome"`
+	Outcome         EpisodeOutcome      `json:"outcome" yaml:"outcome"`
 	Tier            MemoryTier          `json:"tier" yaml:"tier"`
 	Tags            []string            `json:"tags" yaml:"tags"`
 	Repo            string              `json:"repo,omitempty" yaml:"repo,omitempty"`
+	Project         string              `json:"project,omitempty" yaml:"project,omitempty"`
+	Provenance      string              `json:"provenance,omitempty" yaml:"provenance,omitempty"`
+	Confidence      *float64            `json:"confidence,omitempty" yaml:"confidence,omitempty"`
 	Labels          map[string][]string `json:"labels,omitempty" yaml:"labels,omitempty"`
 	StepCount       int                 `json:"step_count" yaml:"step_count"`
 	ToolCount       int                 `json:"tool_count" yaml:"tool_count"`
@@ -56,6 +82,44 @@ type EpisodeSummary struct {
 	DurationSeconds int                 `json:"duration_seconds" yaml:"duration_seconds"`
 	LocalScore      float64             `json:"_local_score,omitempty" yaml:"_local_score,omitempty"`
 	VectorScore     float64             `json:"_vector_score,omitempty" yaml:"_vector_score,omitempty"`
+}
+
+func NormalizeOutcome(outcome string) (EpisodeOutcome, bool) {
+	switch outcome {
+	case "success", "unverified_success":
+		return OutcomeUnverifiedSuccess, true
+	case "verified_success":
+		return OutcomeVerifiedSuccess, true
+	case "partial", "partial_success":
+		return OutcomePartialSuccess, true
+	case "failure":
+		return OutcomeFailure, true
+	case "abandoned":
+		return OutcomeAbandoned, true
+	default:
+		return "", false
+	}
+}
+
+func (e *Episode) Validate() error {
+	if e == nil {
+		return fmt.Errorf("episode is required")
+	}
+	if strings.TrimSpace(e.Problem) == "" {
+		return fmt.Errorf("problem is required")
+	}
+	switch e.Outcome {
+	case OutcomeVerifiedSuccess, OutcomeUnverifiedSuccess, OutcomePartialSuccess, OutcomeFailure, OutcomeAbandoned:
+	default:
+		return fmt.Errorf("invalid outcome %q", e.Outcome)
+	}
+	if e.Confidence != nil && (math.IsNaN(*e.Confidence) || math.IsInf(*e.Confidence, 0) || *e.Confidence < 0 || *e.Confidence > 1) {
+		return fmt.Errorf("confidence must be a finite number between 0 and 1")
+	}
+	if e.Tier != "" && e.Tier != TierEpisodic && e.Tier != TierSemantic {
+		return fmt.Errorf("invalid tier %q", e.Tier)
+	}
+	return nil
 }
 
 func (e *Episode) IsSemantic() bool {

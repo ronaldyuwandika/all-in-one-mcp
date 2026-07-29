@@ -58,9 +58,9 @@ func (es *EpisodeStore) Compact(ctx context.Context, cfg models.ConsolidationCon
 
 			_, err = tx.Exec(`
 				INSERT OR REPLACE INTO episodes_archive (
-					id, created_at, domain, outcome, tags, problem, thinking_trace, steps, tool_calls, model_id, duration_seconds, repo, labels, tier
+					id, created_at, updated_at, domain, outcome, tier, tags, repo, project, provenance, confidence, labels, problem, objectives, decisions, alternatives, verification, lessons, thinking_trace, steps, tool_calls, model_id, duration_seconds
 				)
-				SELECT id, created_at, domain, outcome, tags, problem, thinking_trace, steps, tool_calls, model_id, duration_seconds, repo, labels, tier
+				SELECT id, created_at, updated_at, domain, outcome, tier, tags, repo, project, provenance, confidence, labels, problem, objectives, decisions, alternatives, verification, lessons, thinking_trace, steps, tool_calls, model_id, duration_seconds
 				FROM episodes WHERE id = ?
 			`, id)
 			if err != nil {

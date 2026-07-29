@@ -2,10 +2,12 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/models"
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/security"
@@ -24,6 +26,10 @@ type searchRow struct {
 	StepsJSON       string
 	ToolCallsJSON   string
 	CreatedAt       string
+	UpdatedAt       string
+	Project         string
+	Provenance      string
+	Confidence      sql.NullFloat64
 	ModelID         string
 	DurationSeconds int
 }
@@ -32,6 +38,9 @@ func (es *EpisodeStore) SearchLocal(query string, domainFilter, outcomeFilter, r
 	query = security.Text(query)
 	domainFilter = security.Text(domainFilter)
 	outcomeFilter = security.Text(outcomeFilter)
+	if normalized, ok := models.NormalizeOutcome(outcomeFilter); ok {
+		outcomeFilter = string(normalized)
+	}
 	repoFilter = security.Text(repoFilter)
 	tagsFilter = security.Strings(tagsFilter)
 	if topK <= 0 {
@@ -145,8 +154,14 @@ func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, rep
 		score := 0.0
 
 		problemLower := strings.ToLower(r.Problem)
-		tagsList := parseTags(r.TagsJSON)
-		labels := es.parseLabelsJSON(r.LabelsJSON)
+		tagsList, err := parseTagsErr(r.ID, r.TagsJSON)
+		if err != nil {
+			return nil, err
+		}
+		labels, err := es.parseLabelsJSONErr(r.ID, r.LabelsJSON)
+		if err != nil {
+			return nil, err
+		}
 
 		match := true
 		for mk, mv := range metadataFilter {
@@ -212,8 +227,14 @@ func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, rep
 		if domainFilter != "" && r.Domain != domainFilter {
 			continue
 		}
-		if outcomeFilter != "" && r.Outcome != outcomeFilter {
-			continue
+		if outcomeFilter != "" {
+			normalizedFilter, ok := models.NormalizeOutcome(outcomeFilter)
+			if ok && r.Outcome != string(normalizedFilter) {
+				continue
+			}
+			if !ok && r.Outcome != outcomeFilter {
+				continue
+			}
 		}
 		if repoFilter != "" && !strings.Contains(strings.ToLower(r.Repo), strings.ToLower(repoFilter)) {
 			continue
@@ -259,18 +280,47 @@ func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, rep
 	for _, entry := range sorted {
 		for _, r := range ftsRows {
 			if r.ID == entry.id {
-				steps := parseSteps(r.StepsJSON)
-				toolCalls := parseToolCalls(r.ToolCallsJSON)
-				labels := es.parseLabelsJSON(r.LabelsJSON)
+				var steps []models.Step
+				if err := decodePersistedJSON(r.ID, "steps", r.StepsJSON, &steps); err != nil {
+					return nil, err
+				}
+				var toolCalls []models.ToolCall
+				if err := decodePersistedJSON(r.ID, "tool_calls", r.ToolCallsJSON, &toolCalls); err != nil {
+					return nil, err
+				}
+				tags, err := parseTagsErr(r.ID, r.TagsJSON)
+				if err != nil {
+					return nil, err
+				}
+				labels, err := es.parseLabelsJSONErr(r.ID, r.LabelsJSON)
+				if err != nil {
+					return nil, err
+				}
+				if _, err := time.Parse(time.RFC3339, r.CreatedAt); err != nil {
+					return nil, fmt.Errorf("decode episode %s field created_at: %w", r.ID, err)
+				}
+				if r.UpdatedAt != "" {
+					if _, err := time.Parse(time.RFC3339, r.UpdatedAt); err != nil {
+						return nil, fmt.Errorf("decode episode %s field updated_at: %w", r.ID, err)
+					}
+				}
+				var confidencePtr *float64
+				if r.Confidence.Valid {
+					confidencePtr = &r.Confidence.Float64
+				}
 				s := models.EpisodeSummary{
 					ID:              r.ID,
 					CreatedAt:       r.CreatedAt,
+					UpdatedAt:       r.UpdatedAt,
 					Problem:         truncate(r.Problem, 200),
 					Domain:          r.Domain,
-					Outcome:         r.Outcome,
+					Outcome:         models.EpisodeOutcome(r.Outcome),
 					Tier:            models.MemoryTier(r.Tier),
-					Tags:            parseTags(r.TagsJSON),
+					Tags:            tags,
 					Repo:            r.Repo,
+					Project:         r.Project,
+					Provenance:      r.Provenance,
+					Confidence:      confidencePtr,
 					Labels:          labels,
 					StepCount:       len(steps),
 					ToolCount:       len(toolCalls),
@@ -302,7 +352,7 @@ func (es *EpisodeStore) searchFTS(query, repoFilter string) ([]searchRow, error)
 	var args []interface{}
 	if repoFilter != "" {
 		q = `SELECT e.id, e.problem, e.thinking_trace, e.domain, e.outcome, e.tier, e.tags,
-		            e.repo, e.labels, e.steps, e.tool_calls, e.created_at, e.model_id, e.duration_seconds
+		            e.repo, e.labels, e.steps, e.tool_calls, e.created_at, e.updated_at, e.project, e.provenance, e.confidence, e.model_id, e.duration_seconds
 		     FROM episodes_fts f
 		     JOIN episodes e ON e.rowid = f.rowid
 		     WHERE episodes_fts MATCH ? AND e.repo = ?
@@ -310,7 +360,7 @@ func (es *EpisodeStore) searchFTS(query, repoFilter string) ([]searchRow, error)
 		args = append(args, ftsQuery, repoFilter)
 	} else {
 		q = `SELECT e.id, e.problem, e.thinking_trace, e.domain, e.outcome, e.tier, e.tags,
-		            e.repo, e.labels, e.steps, e.tool_calls, e.created_at, e.model_id, e.duration_seconds
+		            e.repo, e.labels, e.steps, e.tool_calls, e.created_at, e.updated_at, e.project, e.provenance, e.confidence, e.model_id, e.duration_seconds
 		     FROM episodes_fts f
 		     JOIN episodes e ON e.rowid = f.rowid
 		     WHERE episodes_fts MATCH ?
@@ -330,7 +380,7 @@ func (es *EpisodeStore) searchFTS(query, repoFilter string) ([]searchRow, error)
 		if err := rows.Scan(
 			&r.ID, &r.Problem, &r.ThinkingTrace, &r.Domain, &r.Outcome, &r.Tier,
 			&r.TagsJSON, &r.Repo, &r.LabelsJSON, &r.StepsJSON, &r.ToolCallsJSON, &r.CreatedAt,
-			&r.ModelID, &r.DurationSeconds,
+			&r.UpdatedAt, &r.Project, &r.Provenance, &r.Confidence, &r.ModelID, &r.DurationSeconds,
 		); err != nil {
 			return nil, fmt.Errorf("scan fts result: %w", err)
 		}
@@ -348,7 +398,7 @@ func (es *EpisodeStore) fallbackSearch(query, repoFilter string) ([]searchRow, e
 	var args []interface{}
 	if repoFilter != "" {
 		q = `SELECT id, problem, thinking_trace, domain, outcome, tier, tags,
-		            repo, labels, steps, tool_calls, created_at, model_id, duration_seconds
+		            repo, labels, steps, tool_calls, created_at, updated_at, project, provenance, confidence, model_id, duration_seconds
 		     FROM episodes
 		     WHERE (problem LIKE ? ESCAPE '\' OR thinking_trace LIKE ? ESCAPE '\')
 		       AND repo = ?
@@ -356,7 +406,7 @@ func (es *EpisodeStore) fallbackSearch(query, repoFilter string) ([]searchRow, e
 		args = append(args, likePattern, likePattern, repoFilter)
 	} else {
 		q = `SELECT id, problem, thinking_trace, domain, outcome, tier, tags,
-		            repo, labels, steps, tool_calls, created_at, model_id, duration_seconds
+		            repo, labels, steps, tool_calls, created_at, updated_at, project, provenance, confidence, model_id, duration_seconds
 		     FROM episodes WHERE problem LIKE ? ESCAPE '\' OR thinking_trace LIKE ? ESCAPE '\'
 		     LIMIT 50`
 		args = append(args, likePattern, likePattern)
@@ -374,7 +424,7 @@ func (es *EpisodeStore) fallbackSearch(query, repoFilter string) ([]searchRow, e
 		if err := rows.Scan(
 			&r.ID, &r.Problem, &r.ThinkingTrace, &r.Domain, &r.Outcome, &r.Tier,
 			&r.TagsJSON, &r.Repo, &r.LabelsJSON, &r.StepsJSON, &r.ToolCallsJSON, &r.CreatedAt,
-			&r.ModelID, &r.DurationSeconds,
+			&r.UpdatedAt, &r.Project, &r.Provenance, &r.Confidence, &r.ModelID, &r.DurationSeconds,
 		); err != nil {
 			return nil, fmt.Errorf("scan fallback result: %w", err)
 		}
@@ -417,22 +467,12 @@ func parseTags(jsonStr string) []string {
 	return tags
 }
 
-func parseSteps(jsonStr string) []models.Step {
-	if jsonStr == "" {
-		return nil
+func parseTagsErr(episodeID, jsonStr string) ([]string, error) {
+	var tags []string
+	if err := decodePersistedJSON(episodeID, "tags", jsonStr, &tags); err != nil {
+		return nil, err
 	}
-	var steps []models.Step
-	_ = json.Unmarshal([]byte(jsonStr), &steps)
-	return steps
-}
-
-func parseToolCalls(jsonStr string) []models.ToolCall {
-	if jsonStr == "" {
-		return nil
-	}
-	var tc []models.ToolCall
-	_ = json.Unmarshal([]byte(jsonStr), &tc)
-	return tc
+	return tags, nil
 }
 
 func stepTypes(steps []models.Step) []string {

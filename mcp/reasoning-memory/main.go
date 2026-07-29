@@ -194,9 +194,39 @@ func runMCPServer() error {
 			mcp.WithString("model_id", mcp.Description("Model identifier e.g. \"claude-sonnet-4-20260514\".")),
 			mcp.WithString("repo", mcp.Description("Optional repository/project name for filtering. Auto-detected from git remote if omitted.")),
 			mcp.WithObject("labels", mcp.Description("Optional metadata labels (key → [values]) for VectorDB-style mapping. Auto-enriched if omitted.")),
+			mcp.WithString("project", mcp.Description("Optional project scope distinct from repository.")),
+			mcp.WithString("provenance", mcp.Description("Optional origin or producer of this episode.")),
+			mcp.WithNumber("confidence", mcp.Description("Optional finite confidence from 0 to 1.")),
+			mcp.WithArray("objectives", mcp.WithStringItems()),
+			mcp.WithArray("decisions", mcp.WithStringItems()),
+			mcp.WithArray("alternatives", mcp.WithStringItems()),
+			mcp.WithArray("verification", mcp.WithStringItems()),
+			mcp.WithArray("lessons", mcp.WithStringItems()),
 		),
 		handleCapture(es, cfg),
 	)
+	s.AddTool(
+		mcp.NewTool("create_episode",
+			mcp.WithDescription("Alias for capture_reasoning_episode."),
+			mcp.WithString("problem", mcp.Required()),
+			mcp.WithString("thinking_trace", mcp.Required()),
+			mcp.WithArray("tool_calls", mcp.Items(toolCallSchema)),
+			mcp.WithString("outcome", mcp.Required()),
+			mcp.WithArray("tags", mcp.WithStringItems()),
+			mcp.WithString("domain"), mcp.WithString("tier"), mcp.WithNumber("duration_seconds"),
+			mcp.WithString("model_id"), mcp.WithString("repo"), mcp.WithObject("labels"),
+			mcp.WithString("project"), mcp.WithString("provenance"), mcp.WithNumber("confidence"),
+			mcp.WithArray("objectives", mcp.WithStringItems()), mcp.WithArray("decisions", mcp.WithStringItems()),
+			mcp.WithArray("alternatives", mcp.WithStringItems()), mcp.WithArray("verification", mcp.WithStringItems()),
+			mcp.WithArray("lessons", mcp.WithStringItems()),
+		),
+		handleCapture(es, cfg),
+	)
+
+	s.AddTool(mcp.NewTool("get_episode", mcp.WithDescription("Read one active or archived episode by ID."), mcp.WithString("episode_id", mcp.Required()), mcp.WithBoolean("include_archived")), handleGetEpisode(es))
+	s.AddTool(mcp.NewTool("list_episodes", mcp.WithDescription("List active episode summaries."), mcp.WithNumber("limit"), mcp.WithNumber("offset")), handleListEpisodes(es))
+	s.AddTool(mcp.NewTool("update_episode", mcp.WithDescription("Replace an active episode with a complete validated episode record."), mcp.WithObject("episode", mcp.Required())), handleUpdateEpisode(es))
+	s.AddTool(mcp.NewTool("delete_episode", mcp.WithDescription("Delete one active episode by ID."), mcp.WithString("episode_id", mcp.Required())), handleDeleteEpisode(es))
 
 	s.AddTool(
 		mcp.NewTool("retrieve_reasoning",
@@ -444,7 +474,10 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 				problem += "\n\n<linked_sources>\n" + string(encoded) + "\n</linked_sources>"
 			}
 		}
-		outcome := getString(args, "outcome")
+		outcome, ok := models.NormalizeOutcome(getString(args, "outcome"))
+		if !ok {
+			return mcp.NewToolResultError("capture failed: invalid outcome"), nil
+		}
 		domain := getString(args, "domain")
 		if domain == "" {
 			domain = "coding"
@@ -464,6 +497,14 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 		modelID := getString(args, "model_id")
 
 		toolCalls := getToolCalls(args, "tool_calls")
+		var confidence *float64
+		if value, exists := args["confidence"]; exists {
+			parsed, err := getFloat64(map[string]interface{}{"confidence": value}, "confidence")
+			if err != nil {
+				return mcp.NewToolResultError("capture failed: invalid confidence"), nil
+			}
+			confidence = &parsed
+		}
 
 		ep := &models.Episode{
 			ID:              es.NextID(),
@@ -472,8 +513,16 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 			Tier:            models.MemoryTier(tier),
 			Tags:            tags,
 			Repo:            repo,
+			Project:         getString(args, "project"),
+			Provenance:      getString(args, "provenance"),
+			Confidence:      confidence,
 			Labels:          labels,
 			Problem:         problem,
+			Objectives:      getStringSlice(args, "objectives"),
+			Decisions:       getStringSlice(args, "decisions"),
+			Alternatives:    getStringSlice(args, "alternatives"),
+			Verification:    getStringSlice(args, "verification"),
+			Lessons:         getStringSlice(args, "lessons"),
 			ThinkingTrace:   thinkingTrace,
 			ToolCalls:       toolCalls,
 			ModelID:         modelID,
@@ -488,6 +537,82 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 		}
 
 		return mcp.NewToolResultText(episodeID), nil
+	}
+}
+
+func handleGetEpisode(es *store.EpisodeStore) server.ToolHandlerFunc {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args := toolArguments(req)
+		ep, err := es.GetEpisode(getString(args, "episode_id"))
+		if err == nil && ep == nil {
+			if include, _ := args["include_archived"].(bool); include {
+				ep, err = es.GetArchivedEpisode(getString(args, "episode_id"))
+			}
+		}
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		if ep == nil {
+			return mcp.NewToolResultError("episode not found"), nil
+		}
+		data, err := json.Marshal(ep)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+func handleListEpisodes(es *store.EpisodeStore) server.ToolHandlerFunc {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		args := toolArguments(req)
+		limit, offset := 20, 0
+		if value, err := getFloat64(args, "limit"); err == nil && value > 0 && value <= 100 {
+			limit = int(value)
+		}
+		if value, err := getFloat64(args, "offset"); err == nil && value >= 0 {
+			offset = int(value)
+		}
+		episodes, err := es.ListEpisodes(limit, offset)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		data, err := json.Marshal(episodes)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+func handleUpdateEpisode(es *store.EpisodeStore) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		raw, ok := toolArguments(req)["episode"]
+		if !ok {
+			return mcp.NewToolResultError("episode is required"), nil
+		}
+		data, err := json.Marshal(raw)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		var ep models.Episode
+		if err := json.Unmarshal(data, &ep); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		if err := es.UpdateEpisode(ctx, &ep); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		return mcp.NewToolResultText(ep.ID), nil
+	}
+}
+
+func handleDeleteEpisode(es *store.EpisodeStore) server.ToolHandlerFunc {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		id := getString(toolArguments(req), "episode_id")
+		if err := es.DeleteEpisode(id); err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		return mcp.NewToolResultText(id), nil
 	}
 }
 
@@ -544,7 +669,7 @@ func handleEnrich(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerFu
 			Problem:       ep.Problem,
 			ThinkingTrace: ep.ThinkingTrace,
 			ToolCalls:     string(tcJSON),
-			Outcome:       ep.Outcome,
+			Outcome:       string(ep.Outcome),
 			Domain:        ep.Domain,
 			ExistingTags:  ep.Tags,
 			ExistingRepo:  ep.Repo,

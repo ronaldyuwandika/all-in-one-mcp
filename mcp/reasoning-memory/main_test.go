@@ -287,6 +287,60 @@ func TestAPIPolish(t *testing.T) {
 	}
 }
 
+func TestMCPRichEpisodeToolsAndGetArchived(t *testing.T) {
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"problem": "mcp rich", "thinking_trace": "trace", "outcome": "verified_success", "confidence": 0.8, "objectives": []any{"obj1"}, "project": "prj"}
+	result, err := handleCapture(es, cfg)(context.Background(), req)
+	if err != nil || result.IsError {
+		t.Fatalf("handleCapture: %v result=%#v", err, result)
+	}
+	id := result.Content[0].(mcp.TextContent).Text
+	reqGet := mcp.CallToolRequest{}
+	reqGet.Params.Arguments = map[string]any{"episode_id": id}
+	resultGet, err := handleGetEpisode(es)(context.Background(), reqGet)
+	if err != nil || resultGet.IsError {
+		t.Fatalf("handleGetEpisode: %v result=%#v", err, resultGet)
+	}
+	var ep models.Episode
+	if err := json.Unmarshal([]byte(resultGet.Content[0].(mcp.TextContent).Text), &ep); err != nil {
+		t.Fatal(err)
+	}
+	if ep.Project != "prj" || ep.Confidence == nil || *ep.Confidence != 0.8 || len(ep.Objectives) != 1 {
+		t.Fatalf("MCP get_episode mismatch: %#v", ep)
+	}
+	reqUpdate := mcp.CallToolRequest{}
+	ep.Lessons = []string{"learned"}
+	reqUpdate.Params.Arguments = map[string]any{"episode": ep}
+	resultUpdate, err := handleUpdateEpisode(es)(context.Background(), reqUpdate)
+	if err != nil || resultUpdate.IsError {
+		t.Fatalf("handleUpdateEpisode: %v result=%#v", err, resultUpdate)
+	}
+	reqList := mcp.CallToolRequest{}
+	reqList.Params.Arguments = map[string]any{"limit": 10, "offset": 0}
+	resultList, err := handleListEpisodes(es)(context.Background(), reqList)
+	if err != nil || resultList.IsError {
+		t.Fatalf("handleListEpisodes: %v result=%#v", err, resultList)
+	}
+	var summaries []models.EpisodeSummary
+	if err := json.Unmarshal([]byte(resultList.Content[0].(mcp.TextContent).Text), &summaries); err != nil || len(summaries) == 0 {
+		t.Fatalf("MCP list_episodes mismatch: %#v err=%v", summaries, err)
+	}
+}
+
+func TestCreateEpisodeAlias(t *testing.T) {
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{"problem": "alias test", "thinking_trace": "trace", "outcome": "verified_success"}
+	result, err := handleCapture(es, cfg)(context.Background(), req)
+	if err != nil || result.IsError {
+		t.Fatalf("handleCapture: %v result=%#v", err, result)
+	}
+	id := result.Content[0].(mcp.TextContent).Text
+	ep, err := es.GetEpisode(id)
+	if err != nil || ep == nil || ep.Outcome != models.OutcomeVerifiedSuccess {
+		t.Fatalf("create_episode alias result mismatch: %#v err=%v", ep, err)
+	}
+}
+
 func TestAPIGraph(t *testing.T) {
 	// Add a semantic concept first
 	cid, err := es.MemorizeConcept(context.Background(), "http-server", "concept", "Go http server component", []string{"go", "http"}, "re-20260726-001")
