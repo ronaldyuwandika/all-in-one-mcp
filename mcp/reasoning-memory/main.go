@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -140,6 +141,35 @@ func main() {
 	}
 }
 
+var failedApproachSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"approach":     map[string]any{"type": "string"},
+		"failure_mode": map[string]any{"type": "string"},
+		"root_cause":   map[string]any{"type": "string"},
+		"lesson":       map[string]any{"type": "string"},
+	},
+	"required": []string{"approach", "failure_mode", "root_cause", "lesson"},
+}
+
+func decodeFailedApproachesStrict(args map[string]interface{}) ([]models.FailedApproach, error) {
+	raw, ok := args["failed_approaches"]
+	if !ok || raw == nil {
+		return nil, nil
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid failed_approaches array: %w", err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var values []models.FailedApproach
+	if err := dec.Decode(&values); err != nil {
+		return nil, fmt.Errorf("invalid failed_approaches array: %w", err)
+	}
+	return models.NormalizeFailedApproaches(values)
+}
+
 var toolCallSchema = map[string]any{
 	"type": "object",
 	"properties": map[string]any{
@@ -202,6 +232,7 @@ func runMCPServer() error {
 			mcp.WithArray("alternatives", mcp.WithStringItems()),
 			mcp.WithArray("verification", mcp.WithStringItems()),
 			mcp.WithArray("lessons", mcp.WithStringItems()),
+			mcp.WithArray("failed_approaches", mcp.Description("Optional failed approaches records containing approach, failure_mode, root_cause, lesson."), mcp.Items(failedApproachSchema)),
 		),
 		handleCapture(es, cfg),
 	)
@@ -219,6 +250,7 @@ func runMCPServer() error {
 			mcp.WithArray("objectives", mcp.WithStringItems()), mcp.WithArray("decisions", mcp.WithStringItems()),
 			mcp.WithArray("alternatives", mcp.WithStringItems()), mcp.WithArray("verification", mcp.WithStringItems()),
 			mcp.WithArray("lessons", mcp.WithStringItems()),
+			mcp.WithArray("failed_approaches", mcp.Items(failedApproachSchema)),
 		),
 		handleCapture(es, cfg),
 	)
@@ -360,7 +392,7 @@ func reindexEpisodes(ctx context.Context, es *store.EpisodeStore, vec *store.Vec
 			}
 			contents = append(contents, store.EpisodeContent{
 				ID:      ep.ID,
-				Content: ep.Problem + "\n" + ep.ThinkingTrace,
+				Content: ep.Problem + "\n" + ep.ThinkingTrace + store.FailedApproachesText(ep.FailedApproaches),
 			})
 		}
 		if len(contents) > 0 {
@@ -497,6 +529,10 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 		modelID := getString(args, "model_id")
 
 		toolCalls := getToolCalls(args, "tool_calls")
+		failedApproaches, err := decodeFailedApproachesStrict(args)
+		if err != nil {
+			return mcp.NewToolResultError("capture failed: " + err.Error()), nil
+		}
 		var confidence *float64
 		if value, exists := args["confidence"]; exists {
 			parsed, err := getFloat64(map[string]interface{}{"confidence": value}, "confidence")
@@ -507,26 +543,27 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 		}
 
 		ep := &models.Episode{
-			ID:              es.NextID(),
-			Domain:          domain,
-			Outcome:         outcome,
-			Tier:            models.MemoryTier(tier),
-			Tags:            tags,
-			Repo:            repo,
-			Project:         getString(args, "project"),
-			Provenance:      getString(args, "provenance"),
-			Confidence:      confidence,
-			Labels:          labels,
-			Problem:         problem,
-			Objectives:      getStringSlice(args, "objectives"),
-			Decisions:       getStringSlice(args, "decisions"),
-			Alternatives:    getStringSlice(args, "alternatives"),
-			Verification:    getStringSlice(args, "verification"),
-			Lessons:         getStringSlice(args, "lessons"),
-			ThinkingTrace:   thinkingTrace,
-			ToolCalls:       toolCalls,
-			ModelID:         modelID,
-			DurationSeconds: durationSeconds,
+			ID:               es.NextID(),
+			Domain:           domain,
+			Outcome:          outcome,
+			Tier:             models.MemoryTier(tier),
+			Tags:             tags,
+			Repo:             repo,
+			Project:          getString(args, "project"),
+			Provenance:       getString(args, "provenance"),
+			Confidence:       confidence,
+			Labels:           labels,
+			Problem:          problem,
+			Objectives:       getStringSlice(args, "objectives"),
+			Decisions:        getStringSlice(args, "decisions"),
+			Alternatives:     getStringSlice(args, "alternatives"),
+			Verification:     getStringSlice(args, "verification"),
+			Lessons:          getStringSlice(args, "lessons"),
+			FailedApproaches: failedApproaches,
+			ThinkingTrace:    thinkingTrace,
+			ToolCalls:        toolCalls,
+			ModelID:          modelID,
+			DurationSeconds:  durationSeconds,
 		}
 		security.Episode(ep)
 		ep.Steps = extractSteps(ep.ThinkingTrace)
@@ -596,8 +633,17 @@ func handleUpdateEpisode(es *store.EpisodeStore) server.ToolHandlerFunc {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		var ep models.Episode
-		if err := json.Unmarshal(data, &ep); err != nil {
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&ep); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
+		}
+		if rawMap, ok := raw.(map[string]interface{}); ok {
+			if idVal, exists := rawMap["id"]; exists {
+				if idStr, isString := idVal.(string); isString && strings.TrimSpace(idStr) != "" && ep.ID != "" && strings.TrimSpace(idStr) != ep.ID {
+					return mcp.NewToolResultError("ID mutation forbidden"), nil
+				}
+			}
 		}
 		if err := es.UpdateEpisode(ctx, &ep); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -712,19 +758,28 @@ func handleInject(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 				ep, _ := es.GetEpisode(r.ID)
 				if ep != nil {
 					episodes = append(episodes, prompter.EpisodeContext{
-						Problem:       r.Problem,
-						Domain:        r.Domain,
-						Outcome:       r.Outcome,
-						Tags:          r.Tags,
-						ThinkingTrace: ep.ThinkingTrace,
+						Problem:          r.Problem,
+						Domain:           r.Domain,
+						Outcome:          r.Outcome,
+						Tags:             r.Tags,
+						ThinkingTrace:    ep.ThinkingTrace,
+						FailedApproaches: ep.FailedApproaches,
+						EpisodeID:        ep.ID,
 					})
 				}
 			} else {
+				ep, _ := es.GetEpisode(r.ID)
+				var failed []models.FailedApproach
+				if ep != nil {
+					failed = ep.FailedApproaches
+				}
 				episodes = append(episodes, prompter.EpisodeContext{
-					Problem: r.Problem,
-					Domain:  r.Domain,
-					Outcome: r.Outcome,
-					Tags:    r.Tags,
+					Problem:          r.Problem,
+					Domain:           r.Domain,
+					Outcome:          r.Outcome,
+					Tags:             r.Tags,
+					FailedApproaches: failed,
+					EpisodeID:        r.ID,
 				})
 			}
 		}
@@ -827,6 +882,7 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 		}
 
 		var contextStr string
+		var promptEpisodes []prompter.EpisodeContext
 		var linkedContextStr string
 		linkedWarnings := []string{}
 		if linkService != nil {
@@ -853,23 +909,41 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 			if err == nil {
 				var ctxEpisodes []prompter.EpisodeContext
 				for _, r := range results {
+					ep, _ := es.GetEpisode(r.ID)
+					var failed []models.FailedApproach
+					if ep != nil {
+						failed = ep.FailedApproaches
+					}
 					ctxEpisodes = append(ctxEpisodes, prompter.EpisodeContext{
-						Problem: r.Problem,
-						Domain:  r.Domain,
-						Outcome: r.Outcome,
-						Tags:    r.Tags,
+						Problem:          r.Problem,
+						Domain:           r.Domain,
+						Outcome:          r.Outcome,
+						Tags:             r.Tags,
+						FailedApproaches: failed,
+						EpisodeID:        r.ID,
 					})
 				}
 				if cfg.PromptPolishing.IncludeFailureLessons && len(ctxEpisodes) < topK {
 					failures, failureErr := es.SearchLocal(rawPrompt, domain, "failure", repo, nil, 1)
 					if failureErr == nil && len(failures) > 0 {
 						r := failures[0]
+						ep, _ := es.GetEpisode(r.ID)
+						var failed []models.FailedApproach
+						if ep != nil {
+							failed = ep.FailedApproaches
+						}
 						ctxEpisodes = append(ctxEpisodes, prompter.EpisodeContext{
-							Problem: r.Problem, Domain: r.Domain, Outcome: r.Outcome, Tags: r.Tags,
+							Problem:          r.Problem,
+							Domain:           r.Domain,
+							Outcome:          r.Outcome,
+							Tags:             r.Tags,
+							FailedApproaches: failed,
+							EpisodeID:        r.ID,
 						})
 					}
 				}
 				contextCount = len(ctxEpisodes)
+				promptEpisodes = ctxEpisodes
 				contextStr = prompter.BuildXMLEpisodeBlock(ctxEpisodes)
 			}
 		}
@@ -878,7 +952,7 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 			RawPrompt: rawPrompt, TargetAgent: targetAgent, Domain: domain,
 			Repo: repo, Context: contextStr, LinkedContext: linkedContextStr, SkillName: skillName,
 			OutputFormat: outputFormat, MaxChars: cfg.PromptPolishing.MaxPromptChars,
-			ContextCount: contextCount,
+			ContextCount: contextCount, Episodes: promptEpisodes,
 		})
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("polish failed: %v", err)), nil

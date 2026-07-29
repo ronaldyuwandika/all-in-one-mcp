@@ -5,6 +5,7 @@ import (
 	"math"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type ToolCall struct {
@@ -24,6 +25,21 @@ type MemoryTier string
 
 type EpisodeOutcome = string
 
+type FailedApproach struct {
+	Approach    string `json:"approach" yaml:"approach"`
+	FailureMode string `json:"failure_mode" yaml:"failure_mode"`
+	RootCause   string `json:"root_cause" yaml:"root_cause"`
+	Lesson      string `json:"lesson" yaml:"lesson"`
+}
+
+type FailureMatch struct {
+	Approach    string  `json:"approach" yaml:"approach"`
+	FailureMode string  `json:"failure_mode" yaml:"failure_mode"`
+	RootCause   string  `json:"root_cause" yaml:"root_cause"`
+	Lesson      string  `json:"lesson" yaml:"lesson"`
+	Score       float64 `json:"score" yaml:"score"`
+}
+
 const (
 	TierEpisodic MemoryTier = "episodic"
 	TierSemantic MemoryTier = "semantic"
@@ -36,29 +52,30 @@ const (
 )
 
 type Episode struct {
-	ID              string              `json:"id" yaml:"id"`
-	CreatedAt       time.Time           `json:"created_at" yaml:"created_at"`
-	UpdatedAt       time.Time           `json:"updated_at" yaml:"updated_at"`
-	Domain          string              `json:"domain" yaml:"domain"`
-	Outcome         EpisodeOutcome      `json:"outcome" yaml:"outcome"`
-	Tier            MemoryTier          `json:"tier" yaml:"tier"`
-	Tags            []string            `json:"tags" yaml:"tags"`
-	Repo            string              `json:"repo,omitempty" yaml:"repo,omitempty"`
-	Project         string              `json:"project,omitempty" yaml:"project,omitempty"`
-	Provenance      string              `json:"provenance,omitempty" yaml:"provenance,omitempty"`
-	Confidence      *float64            `json:"confidence,omitempty" yaml:"confidence,omitempty"`
-	Labels          map[string][]string `json:"labels,omitempty" yaml:"labels,omitempty"`
-	Problem         string              `json:"problem" yaml:"problem"`
-	Objectives      []string            `json:"objectives,omitempty" yaml:"objectives,omitempty"`
-	Decisions       []string            `json:"decisions,omitempty" yaml:"decisions,omitempty"`
-	Alternatives    []string            `json:"alternatives,omitempty" yaml:"alternatives,omitempty"`
-	Verification    []string            `json:"verification,omitempty" yaml:"verification,omitempty"`
-	Lessons         []string            `json:"lessons,omitempty" yaml:"lessons,omitempty"`
-	ThinkingTrace   string              `json:"thinking_trace" yaml:"thinking_trace"`
-	Steps           []Step              `json:"steps" yaml:"steps"`
-	ToolCalls       []ToolCall          `json:"tool_calls" yaml:"tool_calls"`
-	ModelID         string              `json:"model_id" yaml:"model_id"`
-	DurationSeconds int                 `json:"duration_seconds" yaml:"duration_seconds"`
+	ID               string              `json:"id" yaml:"id"`
+	CreatedAt        time.Time           `json:"created_at" yaml:"created_at"`
+	UpdatedAt        time.Time           `json:"updated_at" yaml:"updated_at"`
+	Domain           string              `json:"domain" yaml:"domain"`
+	Outcome          EpisodeOutcome      `json:"outcome" yaml:"outcome"`
+	Tier             MemoryTier          `json:"tier" yaml:"tier"`
+	Tags             []string            `json:"tags" yaml:"tags"`
+	Repo             string              `json:"repo,omitempty" yaml:"repo,omitempty"`
+	Project          string              `json:"project,omitempty" yaml:"project,omitempty"`
+	Provenance       string              `json:"provenance,omitempty" yaml:"provenance,omitempty"`
+	Confidence       *float64            `json:"confidence,omitempty" yaml:"confidence,omitempty"`
+	Labels           map[string][]string `json:"labels,omitempty" yaml:"labels,omitempty"`
+	Problem          string              `json:"problem" yaml:"problem"`
+	Objectives       []string            `json:"objectives,omitempty" yaml:"objectives,omitempty"`
+	Decisions        []string            `json:"decisions,omitempty" yaml:"decisions,omitempty"`
+	Alternatives     []string            `json:"alternatives,omitempty" yaml:"alternatives,omitempty"`
+	Verification     []string            `json:"verification,omitempty" yaml:"verification,omitempty"`
+	Lessons          []string            `json:"lessons,omitempty" yaml:"lessons,omitempty"`
+	FailedApproaches []FailedApproach    `json:"failed_approaches,omitempty" yaml:"failed_approaches,omitempty"`
+	ThinkingTrace    string              `json:"thinking_trace" yaml:"thinking_trace"`
+	Steps            []Step              `json:"steps" yaml:"steps"`
+	ToolCalls        []ToolCall          `json:"tool_calls" yaml:"tool_calls"`
+	ModelID          string              `json:"model_id" yaml:"model_id"`
+	DurationSeconds  int                 `json:"duration_seconds" yaml:"duration_seconds"`
 }
 
 type EpisodeSummary struct {
@@ -80,6 +97,7 @@ type EpisodeSummary struct {
 	StepTypes       []string            `json:"step_types" yaml:"step_types"`
 	ModelID         string              `json:"model_id" yaml:"model_id"`
 	DurationSeconds int                 `json:"duration_seconds" yaml:"duration_seconds"`
+	FailureMatches  []FailureMatch      `json:"failure_matches,omitempty" yaml:"failure_matches,omitempty"`
 	LocalScore      float64             `json:"_local_score,omitempty" yaml:"_local_score,omitempty"`
 	VectorScore     float64             `json:"_vector_score,omitempty" yaml:"_vector_score,omitempty"`
 }
@@ -119,7 +137,47 @@ func (e *Episode) Validate() error {
 	if e.Tier != "" && e.Tier != TierEpisodic && e.Tier != TierSemantic {
 		return fmt.Errorf("invalid tier %q", e.Tier)
 	}
+	failed, err := NormalizeFailedApproaches(e.FailedApproaches)
+	if err != nil {
+		return err
+	}
+	e.FailedApproaches = failed
 	return nil
+}
+
+func NormalizeFailedApproaches(values []FailedApproach) ([]FailedApproach, error) {
+	if len(values) > 20 {
+		return nil, fmt.Errorf("failed_approaches must contain at most 20 records")
+	}
+	out := make([]FailedApproach, 0, len(values))
+	seen := make(map[FailedApproach]struct{}, len(values))
+	for i, value := range values {
+		value.Approach = strings.TrimSpace(value.Approach)
+		value.FailureMode = strings.TrimSpace(value.FailureMode)
+		value.RootCause = strings.TrimSpace(value.RootCause)
+		value.Lesson = strings.TrimSpace(value.Lesson)
+		fields := []struct {
+			name  string
+			value string
+		}{{"approach", value.Approach}, {"failure_mode", value.FailureMode}, {"root_cause", value.RootCause}, {"lesson", value.Lesson}}
+		for _, field := range fields {
+			if !utf8.ValidString(field.value) {
+				return nil, fmt.Errorf("failed_approaches[%d].%s must be valid UTF-8", i, field.name)
+			}
+			if field.value == "" {
+				return nil, fmt.Errorf("failed_approaches[%d].%s is required", i, field.name)
+			}
+			if utf8.RuneCountInString(field.value) > 2000 {
+				return nil, fmt.Errorf("failed_approaches[%d].%s must contain at most 2000 runes", i, field.name)
+			}
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out, nil
 }
 
 func (e *Episode) IsSemantic() bool {

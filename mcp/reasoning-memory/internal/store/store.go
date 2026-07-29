@@ -124,6 +124,32 @@ func migrate(db *sql.DB) error {
 			labels TEXT NOT NULL DEFAULT '{}',
 			tier TEXT NOT NULL DEFAULT 'episodic'
 		)`,
+		`CREATE TABLE IF NOT EXISTS episode_failed_approaches (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			episode_id TEXT NOT NULL,
+			position INTEGER NOT NULL,
+			approach TEXT NOT NULL,
+			failure_mode TEXT NOT NULL,
+			root_cause TEXT NOT NULL,
+			lesson TEXT NOT NULL,
+			UNIQUE(episode_id, position),
+			FOREIGN KEY (episode_id) REFERENCES episodes(id) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS episode_failed_approaches_archive (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			episode_id TEXT NOT NULL,
+			position INTEGER NOT NULL,
+			approach TEXT NOT NULL,
+			failure_mode TEXT NOT NULL,
+			root_cause TEXT NOT NULL,
+			lesson TEXT NOT NULL,
+			UNIQUE(episode_id, position),
+			FOREIGN KEY (episode_id) REFERENCES episodes_archive(id) ON DELETE CASCADE
+		)`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS failed_approaches_fts USING fts5(
+			episode_id UNINDEXED, approach, failure_mode, root_cause, lesson,
+			content='episode_failed_approaches', content_rowid='id'
+		)`,
 		`CREATE TABLE IF NOT EXISTS compaction_stats (
 			key TEXT PRIMARY KEY,
 			value INTEGER NOT NULL DEFAULT 0
@@ -173,6 +199,8 @@ func migrate(db *sql.DB) error {
 		name string
 		ddl  string
 	}{
+		{"model_id", "TEXT NOT NULL DEFAULT ''"},
+		{"duration_seconds", "INTEGER NOT NULL DEFAULT 0"},
 		{"updated_at", "TEXT NOT NULL DEFAULT ''"},
 		{"project", "TEXT NOT NULL DEFAULT ''"},
 		{"provenance", "TEXT NOT NULL DEFAULT ''"},
@@ -183,6 +211,7 @@ func migrate(db *sql.DB) error {
 		{"verification", "TEXT NOT NULL DEFAULT '[]'"},
 		{"lessons", "TEXT NOT NULL DEFAULT '[]'"},
 	}
+
 	for _, table := range []string{"episodes", "episodes_archive"} {
 		for _, column := range richColumns {
 			var count int
@@ -214,6 +243,12 @@ func migrate(db *sql.DB) error {
 	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'episodes_fts'").Scan(&hasFTS); err == nil && hasFTS > 0 {
 		if _, err := db.Exec("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild')"); err != nil {
 			return fmt.Errorf("rebuild episodes fts after backfills: %w", err)
+		}
+	}
+	var hasFaFTS int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'failed_approaches_fts'").Scan(&hasFaFTS); err == nil && hasFaFTS > 0 {
+		if _, err := db.Exec("INSERT INTO failed_approaches_fts(failed_approaches_fts) VALUES('rebuild')"); err != nil {
+			return fmt.Errorf("rebuild failed_approaches fts after backfills: %w", err)
 		}
 	}
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS vector_reconcile (
@@ -259,6 +294,12 @@ func migrate(db *sql.DB) error {
 	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_episode_sources_eid ON episode_sources(episode_id)"); err != nil {
 		return fmt.Errorf("create idx_episode_sources_eid: %w", err)
 	}
+	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_failed_approaches_eid ON episode_failed_approaches(episode_id)"); err != nil {
+		return fmt.Errorf("create idx_failed_approaches_eid: %w", err)
+	}
+	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_failed_approaches_arch_eid ON episode_failed_approaches_archive(episode_id)"); err != nil {
+		return fmt.Errorf("create idx_failed_approaches_arch_eid: %w", err)
+	}
 
 	if err := migrateGraph(db); err != nil {
 		return fmt.Errorf("migrate graph: %w", err)
@@ -284,6 +325,20 @@ func migrate(db *sql.DB) error {
 			VALUES ('delete', old.rowid, old.problem, old.thinking_trace, old.domain, old.outcome, old.tags);
 			INSERT INTO episodes_fts(rowid, problem, thinking_trace, domain, outcome, tags)
 			VALUES (new.rowid, new.problem, new.thinking_trace, new.domain, new.outcome, new.tags);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS failed_approaches_ai AFTER INSERT ON episode_failed_approaches BEGIN
+			INSERT INTO failed_approaches_fts(rowid, episode_id, approach, failure_mode, root_cause, lesson)
+			VALUES (new.id, new.episode_id, new.approach, new.failure_mode, new.root_cause, new.lesson);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS failed_approaches_ad AFTER DELETE ON episode_failed_approaches BEGIN
+			INSERT INTO failed_approaches_fts(failed_approaches_fts, rowid, episode_id, approach, failure_mode, root_cause, lesson)
+			VALUES ('delete', old.id, old.episode_id, old.approach, old.failure_mode, old.root_cause, old.lesson);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS failed_approaches_au AFTER UPDATE ON episode_failed_approaches BEGIN
+			INSERT INTO failed_approaches_fts(failed_approaches_fts, rowid, episode_id, approach, failure_mode, root_cause, lesson)
+			VALUES ('delete', old.id, old.episode_id, old.approach, old.failure_mode, old.root_cause, old.lesson);
+			INSERT INTO failed_approaches_fts(rowid, episode_id, approach, failure_mode, root_cause, lesson)
+			VALUES (new.id, new.episode_id, new.approach, new.failure_mode, new.root_cause, new.lesson);
 		END`,
 	}
 	for _, trigger := range triggers {
@@ -495,12 +550,16 @@ func (es *EpisodeStore) createEpisodeWithSources(ctx context.Context, request *m
 		}
 	}
 
+	if err := insertFailedApproaches(ctx, tx, "episode_failed_approaches", ep.ID, ep.FailedApproaches); err != nil {
+		return "", err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return "", fmt.Errorf("commit episode tx: %w", err)
 	}
 
 	if es.vec != nil && es.vec.Enabled() {
-		if verr := es.vec.AddEpisode(ctx, ep.ID, ep.Problem, ep.ThinkingTrace); verr != nil {
+		if verr := es.vec.AddEpisode(ctx, ep.ID, ep.Problem, ep.ThinkingTrace+FailedApproachesText(ep.FailedApproaches)); verr != nil {
 			if derr := es.DeleteEpisode(ep.ID); derr != nil {
 				return "", errors.Join(
 					fmt.Errorf("add episode vector: %w", verr),
@@ -520,6 +579,46 @@ func (es *EpisodeStore) CreateEpisodeContext(ctx context.Context, ep *models.Epi
 
 func (es *EpisodeStore) CreateEpisodeWithSourcesContext(ctx context.Context, ep *models.Episode, sources []linkcontent.Source) (string, error) {
 	return es.createEpisodeWithSources(ctx, ep, sources)
+}
+
+func insertFailedApproaches(ctx context.Context, tx *sql.Tx, table, episodeID string, values []models.FailedApproach) error {
+	if table != "episode_failed_approaches" && table != "episode_failed_approaches_archive" {
+		return fmt.Errorf("invalid failed approaches table %q", table)
+	}
+	for i, value := range values {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO `+table+` (episode_id, position, approach, failure_mode, root_cause, lesson) VALUES (?, ?, ?, ?, ?, ?)`, episodeID, i, value.Approach, value.FailureMode, value.RootCause, value.Lesson); err != nil {
+			return fmt.Errorf("insert failed approach: %w", err)
+		}
+	}
+	return nil
+}
+
+func (es *EpisodeStore) getFailedApproaches(table, episodeID string) ([]models.FailedApproach, error) {
+	if table != "episode_failed_approaches" && table != "episode_failed_approaches_archive" {
+		return nil, fmt.Errorf("invalid failed approaches table %q", table)
+	}
+	rows, err := es.db.Query(`SELECT approach, failure_mode, root_cause, lesson FROM `+table+` WHERE episode_id = ? ORDER BY position`, episodeID)
+	if err != nil {
+		return nil, fmt.Errorf("get failed approaches: %w", err)
+	}
+	defer rows.Close()
+	var values []models.FailedApproach
+	for rows.Next() {
+		var value models.FailedApproach
+		if err := rows.Scan(&value.Approach, &value.FailureMode, &value.RootCause, &value.Lesson); err != nil {
+			return nil, fmt.Errorf("scan failed approach: %w", err)
+		}
+		values = append(values, value)
+	}
+	return values, rows.Err()
+}
+
+func FailedApproachesText(values []models.FailedApproach) string {
+	var b strings.Builder
+	for _, value := range values {
+		fmt.Fprintf(&b, "\nFailed approach: %s\nFailure mode: %s\nRoot cause: %s\nLesson: %s", value.Approach, value.FailureMode, value.RootCause, value.Lesson)
+	}
+	return b.String()
 }
 
 func decodePersistedJSON(episodeID, field, raw string, destination any) error {
@@ -554,8 +653,17 @@ func (es *EpisodeStore) ReconcileVectorStore(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close vector_reconcile rows: %w", err)
+	}
 	for _, item := range pending {
-		if verr := es.vec.ReplaceEpisode(ctx, item.id, item.problem, item.thinkingTrace); verr != nil {
+		var verr error
+		if item.problem == "" && item.thinkingTrace == "" {
+			verr = es.vec.DeleteEpisode(ctx, item.id)
+		} else {
+			verr = es.vec.ReplaceEpisode(ctx, item.id, item.problem, item.thinkingTrace)
+		}
+		if verr != nil {
 			return fmt.Errorf("reconcile vector episode %s: %w", item.id, verr)
 		}
 		if _, err := es.db.ExecContext(ctx, "DELETE FROM vector_reconcile WHERE episode_id = ?", item.id); err != nil {
@@ -626,6 +734,15 @@ func (es *EpisodeStore) getEpisodeFrom(table, id string) (*models.Episode, error
 			return nil, err
 		}
 	}
+	failedTable := "episode_failed_approaches"
+	if table == "episodes_archive" {
+		failedTable = "episode_failed_approaches_archive"
+	}
+	failed, err := es.getFailedApproaches(failedTable, ep.ID)
+	if err != nil {
+		return nil, err
+	}
+	ep.FailedApproaches = failed
 	security.Episode(&ep)
 	return &ep, nil
 }
@@ -823,9 +940,16 @@ func (es *EpisodeStore) UpdateEpisode(ctx context.Context, request *models.Episo
 			}
 		}
 	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM episode_failed_approaches WHERE episode_id = ?", ep.ID); err != nil {
+		return fmt.Errorf("replace failed approaches: %w", err)
+	}
+	if err := insertFailedApproaches(ctx, tx, "episode_failed_approaches", ep.ID, ep.FailedApproaches); err != nil {
+		return err
+	}
+	vectorTrace := ep.ThinkingTrace + FailedApproachesText(ep.FailedApproaches)
 	if es.vec != nil && es.vec.Enabled() {
 		if _, err := tx.ExecContext(ctx, `INSERT INTO vector_reconcile (episode_id, problem, thinking_trace, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(episode_id) DO UPDATE SET problem=excluded.problem, thinking_trace=excluded.thinking_trace, updated_at=excluded.updated_at`,
-			ep.ID, ep.Problem, ep.ThinkingTrace, ep.UpdatedAt.Format(time.RFC3339),
+			ep.ID, ep.Problem, vectorTrace, ep.UpdatedAt.Format(time.RFC3339),
 		); err != nil {
 			return fmt.Errorf("insert vector_reconcile: %w", err)
 		}
@@ -834,15 +958,16 @@ func (es *EpisodeStore) UpdateEpisode(ctx context.Context, request *models.Episo
 		return fmt.Errorf("commit update episode tx: %w", err)
 	}
 	if es.vec != nil && es.vec.Enabled() {
-		if verr := es.vec.ReplaceEpisode(ctx, ep.ID, ep.Problem, ep.ThinkingTrace); verr != nil {
+		if verr := es.vec.ReplaceEpisode(ctx, ep.ID, ep.Problem, vectorTrace); verr != nil {
 			var compensation []error
 			if oldEp != nil {
+				oldVectorTrace := oldEp.ThinkingTrace + FailedApproachesText(oldEp.FailedApproaches)
 				if err := es.restoreEpisodeDB(ctx, oldEp); err != nil {
 					compensation = append(compensation, fmt.Errorf("restore previous episode database: %w", err))
-				} else if _, err := es.db.ExecContext(ctx, `UPDATE vector_reconcile SET problem=?, thinking_trace=?, updated_at=? WHERE episode_id=?`, oldEp.Problem, oldEp.ThinkingTrace, time.Now().UTC().Format(time.RFC3339), oldEp.ID); err != nil {
+				} else if _, err := es.db.ExecContext(ctx, `UPDATE vector_reconcile SET problem=?, thinking_trace=?, updated_at=? WHERE episode_id=?`, oldEp.Problem, oldVectorTrace, time.Now().UTC().Format(time.RFC3339), oldEp.ID); err != nil {
 					compensation = append(compensation, fmt.Errorf("persist previous vector reconciliation: %w", err))
 				}
-				if err := es.vec.ReplaceEpisode(ctx, oldEp.ID, oldEp.Problem, oldEp.ThinkingTrace); err != nil {
+				if err := es.vec.ReplaceEpisode(ctx, oldEp.ID, oldEp.Problem, oldVectorTrace); err != nil {
 					compensation = append(compensation, fmt.Errorf("restore previous episode vector: %w", err))
 				}
 			}
@@ -881,6 +1006,12 @@ func (es *EpisodeStore) restoreEpisodeDB(ctx context.Context, ep *models.Episode
 			}
 		}
 	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM episode_failed_approaches WHERE episode_id = ?", ep.ID); err != nil {
+		return err
+	}
+	if err := insertFailedApproaches(ctx, tx, "episode_failed_approaches", ep.ID, ep.FailedApproaches); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -896,6 +1027,9 @@ func (es *EpisodeStore) DeleteEpisode(id string) error {
 	if _, err := tx.Exec("DELETE FROM metadata_idx WHERE episode_id = ?", id); err != nil {
 		return fmt.Errorf("delete episode metadata_idx: %w", err)
 	}
+	if _, err := tx.Exec("DELETE FROM episode_failed_approaches WHERE episode_id = ?", id); err != nil {
+		return fmt.Errorf("delete episode failed approaches: %w", err)
+	}
 	if _, err := tx.Exec("DELETE FROM vector_reconcile WHERE episode_id = ?", id); err != nil {
 		return fmt.Errorf("delete vector_reconcile: %w", err)
 	}
@@ -907,7 +1041,14 @@ func (es *EpisodeStore) DeleteEpisode(id string) error {
 	}
 	if es.vec != nil && es.vec.Enabled() {
 		if verr := es.vec.DeleteEpisode(context.Background(), id); verr != nil {
-			return fmt.Errorf("delete episode vector: %w", verr)
+			if _, err := es.db.Exec(`INSERT INTO vector_reconcile (episode_id, problem, thinking_trace, updated_at) VALUES (?, '', '', ?) ON CONFLICT(episode_id) DO UPDATE SET problem='', thinking_trace='', updated_at=excluded.updated_at`,
+				id, time.Now().UTC().Format(time.RFC3339),
+			); err != nil {
+				return errors.Join(
+					fmt.Errorf("delete episode vector: %w", verr),
+					fmt.Errorf("enqueue vector deletion reconciliation: %w", err),
+				)
+			}
 		}
 	}
 	return nil

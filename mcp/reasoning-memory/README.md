@@ -32,7 +32,8 @@ Episodes retain the original problem and trace while adding structured fields fo
 | `problem`, `thinking_trace` | Required capture text. |
 | `outcome` | One of `verified_success`, `unverified_success`, `partial_success`, `failure`, or `abandoned`. |
 | `objectives`, `decisions`, `alternatives`, `verification`, `lessons` | Optional string arrays that preserve the reusable parts of an episode without parsing the trace. |
-| `repo` | Repository identity used by repository filters. When omitted during capture, it is detected from the current Git origin; detection returns the repository basename, or the working-directory basename when no origin is available. |
+| `failed_approaches` | Optional array of failure-memory objects. Each object requires valid UTF-8 and non-blank `approach`, `failure_mode`, `root_cause`, and `lesson`; at most 20 objects are accepted and each field is limited to 2,000 Unicode code points. Exact duplicate objects are removed after whitespace is trimmed. |
+| `repo` | Repository identity used by repository filters. Matching is exact and case-insensitive. When omitted during capture, it is detected from the current Git origin; detection returns the repository basename, or the working-directory basename when no origin is available. |
 | `project` | Optional scope within or across repositories. It is stored independently and does not replace or populate `repo`. |
 | `provenance` | Optional origin or producer, such as an agent, import, or workflow name. |
 | `confidence` | Optional finite number from `0` through `1`. |
@@ -87,6 +88,14 @@ Validation requires a non-blank `problem`, a canonical or supported legacy outco
   "alternatives": ["Log-only instrumentation"],
   "verification": ["go test ./...", "go test -race ./..."],
   "lessons": ["Keep metric labels bounded"],
+  "failed_approaches": [
+    {
+      "approach": "Global lock for rate counter",
+      "failure_mode": "Lock contention under concurrency",
+      "root_cause": "Single mutex serialized all requests",
+      "lesson": "Use sharded counters or atomics"
+    }
+  ],
   "tags": ["go", "observability"],
   "labels": {"language": ["go"]},
   "tool_calls": [
@@ -154,7 +163,9 @@ Opening `~/.reasoning-memory/store.db` applies the rich-episode migration automa
 
 When embeddings are configured and initialize successfully, startup uses `NewWithVector`. Creates and updates place pending vector content in the durable SQLite `vector_reconcile` queue as part of the primary transaction, synchronize the configured vector store after commit, and clear completed entries. `NewWithVector` drains remaining entries during initialization, and readiness repeats reconciliation before reporting ready. A full vector reindex runs only when SQLite has episodes and the configured vector collection is empty.
 
-The separate `migrate.py` helper imports legacy episode Markdown and pattern YAML without a record cap. Missing episode values default to current UTC `created_at`, `coding` domain, `unknown` outcome, empty collections/strings, and zero duration. It writes SQLite only; a later vector-enabled startup reindexes imported episodes only when the vector collection is empty.
+Vector reconciliation uses the same durable queue for replacement and deletion. A queue row with empty `problem` and `thinking_trace` is a deletion tombstone; failed deletes remain queued and are retried during vector-enabled startup or readiness. Archive compaction enqueues the tombstone in the same SQLite transaction as removing the active episode.
+
+The separate `migrate.py` helper imports legacy episode Markdown and pattern YAML without a record cap. Missing episode values default to current UTC `created_at`, `coding` domain, `unknown` outcome, empty collections/strings, and zero duration. It imports legacy `failed_approaches` into the normalized failure tables. It writes SQLite only; a later vector-enabled startup reindexes imported episodes only when the vector collection is empty.
 
 ### `record_decision`
 
@@ -176,7 +187,7 @@ Stores a decision with its selected approach, rationale, trade-offs, assumptions
 
 ### `retrieve_reasoning`
 
-Hybrid FTS5 and vector search returns ranked, deduplicated episode summaries, including `updated_at`, `project`, `provenance`, and `confidence` when present.
+Hybrid search indexes `problem`, `thinking_trace`, and structured `failed_approaches`. FTS and failure-memory matches are merged with vector candidates, filtered identically, deduplicated by episode ID, and ranked by `vector_score × 0.5 + local_score × 0.5`; ties use newest `created_at`, then ascending ID. Results include `_local_score`, `_vector_score`, and matching `failure_matches` objects (`approach`, `failure_mode`, `root_cause`, `lesson`, `score`) plus `updated_at`, `project`, `provenance`, and `confidence`. FTS5 failures fall back to bounded SQL `LIKE` retrieval.
 
 ```json
 {
@@ -218,7 +229,7 @@ Returns a confirmation with the enriched labels.
 
 ### `consolidate_reasoning`
 
-Multi-phase pipeline: find merge candidates → merge similar episodes → prune stale failures → rebuild index.
+Multi-phase pipeline: find merge candidates → merge similar episodes → archive old episodic memories → prune eligible archive rows → rebuild index. `failed_approaches` move with their episode into archive; archived episodes containing any failed approach are never hard-pruned, regardless of `max_archive_days`.
 
 ```json
 {
@@ -228,7 +239,7 @@ Multi-phase pipeline: find merge candidates → merge similar episodes → prune
 
 ### `polish_prompt`
 
-Auto-detects task type (coding/agentic/analysis/general), programming language, injects skill rules from SKILL.md, and merges relevant past reasoning context.
+Auto-detects task type (coding/agentic/analysis/general), programming language, injects skill rules from SKILL.md, renders failure warnings from past negative experiences, and merges relevant past reasoning context within structured character budgets.
 
 ```json
 {

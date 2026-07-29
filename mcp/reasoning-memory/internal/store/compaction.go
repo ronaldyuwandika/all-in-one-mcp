@@ -69,6 +69,27 @@ func (es *EpisodeStore) Compact(ctx context.Context, cfg models.ConsolidationCon
 				continue
 			}
 
+			_, err = tx.Exec(`INSERT OR REPLACE INTO episode_failed_approaches_archive (episode_id, position, approach, failure_mode, root_cause, lesson)
+				SELECT episode_id, position, approach, failure_mode, root_cause, lesson FROM episode_failed_approaches WHERE episode_id = ?`, id)
+			if err != nil {
+				_ = tx.Rollback()
+				slog.Error("Failed to copy failed approaches to archive", "id", id, "error", err)
+				continue
+			}
+			_, err = tx.Exec("DELETE FROM episode_failed_approaches WHERE episode_id = ?", id)
+			if err != nil {
+				_ = tx.Rollback()
+				slog.Error("Failed to delete active failed approaches", "id", id, "error", err)
+				continue
+			}
+			if es.vec != nil && es.vec.Enabled() {
+				_, err = tx.Exec(`INSERT INTO vector_reconcile (episode_id, problem, thinking_trace, updated_at) VALUES (?, '', '', ?) ON CONFLICT(episode_id) DO UPDATE SET problem='', thinking_trace='', updated_at=excluded.updated_at`, id, time.Now().UTC().Format(time.RFC3339))
+				if err != nil {
+					_ = tx.Rollback()
+					slog.Error("Failed to enqueue vector deletion", "id", id, "error", err)
+					continue
+				}
+			}
 			_, err = tx.Exec("DELETE FROM episodes WHERE id = ?", id)
 			if err != nil {
 				_ = tx.Rollback()
@@ -83,7 +104,9 @@ func (es *EpisodeStore) Compact(ctx context.Context, cfg models.ConsolidationCon
 
 			// Delete from vector DB if enabled
 			if es.vec != nil && es.vec.Enabled() {
-				_ = es.vec.DeleteEpisode(ctx, id)
+				if verr := es.vec.DeleteEpisode(ctx, id); verr == nil {
+					_, _ = es.db.Exec("DELETE FROM vector_reconcile WHERE episode_id = ?", id)
+				}
 			}
 
 			report.ArchivedCount++
@@ -91,16 +114,17 @@ func (es *EpisodeStore) Compact(ctx context.Context, cfg models.ConsolidationCon
 	}
 
 	// 2. Prune permanently archived episodes older than MaxArchiveDays (default 90 days)
+	// NEVER hard-prune failure-bearing archived episodes.
 	pruneCutoff := time.Now().UTC().Add(time.Duration(-cfg.MaxArchiveDays*24) * time.Hour).Format(time.RFC3339)
 	var pruneCount int
-	err = es.db.QueryRow("SELECT COUNT(*) FROM episodes_archive WHERE created_at < ?", pruneCutoff).Scan(&pruneCount)
+	err = es.db.QueryRow("SELECT COUNT(*) FROM episodes_archive WHERE created_at < ? AND id NOT IN (SELECT DISTINCT episode_id FROM episode_failed_approaches_archive)", pruneCutoff).Scan(&pruneCount)
 	if err != nil {
 		slog.Error("Failed to count prune candidates", "error", err)
 	} else {
 		if dryRun {
 			report.PrunedCount = pruneCount
 		} else {
-			res, err := es.db.Exec("DELETE FROM episodes_archive WHERE created_at < ?", pruneCutoff)
+			res, err := es.db.Exec("DELETE FROM episodes_archive WHERE created_at < ? AND id NOT IN (SELECT DISTINCT episode_id FROM episode_failed_approaches_archive)", pruneCutoff)
 			if err != nil {
 				slog.Error("Failed to prune archived episodes", "error", err)
 			} else {

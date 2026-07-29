@@ -98,6 +98,12 @@ func Episode(ep *models.Episode) {
 	ep.Alternatives = Strings(ep.Alternatives)
 	ep.Verification = Strings(ep.Verification)
 	ep.Lessons = Strings(ep.Lessons)
+	for i := range ep.FailedApproaches {
+		ep.FailedApproaches[i].Approach = Text(ep.FailedApproaches[i].Approach)
+		ep.FailedApproaches[i].FailureMode = Text(ep.FailedApproaches[i].FailureMode)
+		ep.FailedApproaches[i].RootCause = Text(ep.FailedApproaches[i].RootCause)
+		ep.FailedApproaches[i].Lesson = Text(ep.FailedApproaches[i].Lesson)
+	}
 	ep.ThinkingTrace = Text(ep.ThinkingTrace)
 	ep.ModelID = Text(ep.ModelID)
 	for i := range ep.Steps {
