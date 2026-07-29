@@ -139,6 +139,26 @@ func main() {
 	}
 }
 
+var toolCallSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"tool":           map[string]any{"type": "string"},
+		"args":           map[string]any{"type": "object", "additionalProperties": true},
+		"result_excerpt": map[string]any{"type": "string"},
+		"outcome":        map[string]any{"type": "string"},
+	},
+}
+
+var alternativeSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"name":             map[string]any{"type": "string"},
+		"description":      map[string]any{"type": "string"},
+		"rejection_reason": map[string]any{"type": "string"},
+		"tradeoffs":        map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+	},
+}
+
 func runMCPServer() error {
 	go handleSignals()
 
@@ -155,7 +175,7 @@ func runMCPServer() error {
 	mcpServer = s
 
 	s.AddTool(mcp.NewTool("record_decision", mcp.WithDescription("Store a decision with rationale, trade-offs, assumptions, evidence, and rejected alternatives."),
-		mcp.WithString("episode_id", mcp.Required()), mcp.WithString("repo"), mcp.WithString("title", mcp.Required()), mcp.WithString("selected", mcp.Required()), mcp.WithString("rationale", mcp.Required()), mcp.WithArray("tradeoffs"), mcp.WithArray("assumptions"), mcp.WithArray("evidence"), mcp.WithArray("alternatives")), handleCreateDecision(es))
+		mcp.WithString("episode_id", mcp.Required()), mcp.WithString("repo"), mcp.WithString("title", mcp.Required()), mcp.WithString("selected", mcp.Required()), mcp.WithString("rationale", mcp.Required()), mcp.WithArray("tradeoffs", mcp.WithStringItems()), mcp.WithArray("assumptions", mcp.WithStringItems()), mcp.WithArray("evidence", mcp.WithStringItems()), mcp.WithArray("alternatives", mcp.Items(alternativeSchema))), handleCreateDecision(es))
 	s.AddTool(mcp.NewTool("retrieve_decisions", mcp.WithDescription("Retrieve repository-scoped decision records explaining selected and rejected approaches."), mcp.WithString("query", mcp.Required()), mcp.WithString("repo", mcp.Required()), mcp.WithNumber("limit")), handleSearchDecisions(es))
 
 	s.AddTool(
@@ -164,9 +184,9 @@ func runMCPServer() error {
 				"Stores full trace in SQLite with FTS5 indexing and optional vector embedding. Returns episode ID."),
 			mcp.WithString("problem", mcp.Description("The user's request or task description verbatim."), mcp.Required()),
 			mcp.WithString("thinking_trace", mcp.Description("Full chain-of-thought reasoning text."), mcp.Required()),
-			mcp.WithArray("tool_calls", mcp.Description("List of tool calling records, each with: tool (name), args, result_excerpt, outcome (success/failure).")),
+			mcp.WithArray("tool_calls", mcp.Description("List of tool calling records, each with: tool (name), args, result_excerpt, outcome (success/failure)."), mcp.Items(toolCallSchema)),
 			mcp.WithString("outcome", mcp.Description("Overall task outcome: success, partial, or failure."), mcp.Required()),
-			mcp.WithArray("tags", mcp.Description("Domain tags e.g. [\"coding\", \"resilience\", \"retry\"].")),
+			mcp.WithArray("tags", mcp.Description("Domain tags e.g. [\"coding\", \"resilience\", \"retry\"]."), mcp.WithStringItems()),
 			mcp.WithString("domain", mcp.Description("Broad domain: \"coding\" or \"agentic\". Defaults to \"coding\".")),
 			mcp.WithString("tier", mcp.Description("Memory tier: \"episodic\" (default, short-term) or \"semantic\" (long-term, survives pruning).")),
 			mcp.WithNumber("duration_seconds", mcp.Description("Total task duration in seconds.")),
@@ -184,7 +204,7 @@ func runMCPServer() error {
 			mcp.WithString("domain", mcp.Description("Filter by domain: \"coding\" or \"agentic\".")),
 			mcp.WithString("outcome", mcp.Description("Filter by outcome: \"success\", \"partial\", or \"failure\".")),
 			mcp.WithString("repo", mcp.Description("Filter by repository/project name.")),
-			mcp.WithArray("tags", mcp.Description("Filter by tags (any match).")),
+			mcp.WithArray("tags", mcp.Description("Filter by tags (any match)."), mcp.WithStringItems()),
 			mcp.WithObject("metadata_filter", mcp.Description("Filter by metadata labels e.g. {\"language\": \"go\", \"severity\": \"bug\"}")),
 			mcp.WithNumber("top_k", mcp.Description("Max results (default 5, max 20).")),
 		),
@@ -241,7 +261,7 @@ func runMCPServer() error {
 			mcp.WithString("entity_name", mcp.Description("The entity or concept name."), mcp.Required()),
 			mcp.WithString("concept_type", mcp.Description("Concept type/category e.g. 'tool', 'service', 'library', 'pattern'.")),
 			mcp.WithString("description", mcp.Description("Description or definition of the concept."), mcp.Required()),
-			mcp.WithArray("tags", mcp.Description("Optional tags for filtering.")),
+			mcp.WithArray("tags", mcp.Description("Optional tags for filtering."), mcp.WithStringItems()),
 			mcp.WithString("source_episode_id", mcp.Description("Optional source episode ID this concept was extracted from.")),
 		),
 		handleMemorizeConcept(es),

@@ -62,6 +62,16 @@ Vector data stored in `~/.reasoning-memory/vector/` (chromem-go persistent DB).
 
 On startup, if vector DB is enabled and has zero documents but SQLite has episodes, the server automatically reindexes all episodes to build the vector index. Progress is logged.
 
+## Gemini-Compatible MCP Schemas
+
+MCP array arguments use explicit item schemas rather than relying on client inference. The affected structured arguments are:
+
+- `record_decision`: string arrays for `tradeoffs`, `assumptions`, and `evidence`; structured objects for `alternatives`, with nested string items in each alternative's `tradeoffs`.
+- `capture_reasoning_episode`: string items for `tags`; structured objects for `tool_calls`.
+- `retrieve_reasoning` and `memorize_concept`: string items for `tags`.
+
+The schema fix is implemented in this repository's MCP server. OpenCode-side serializer defense-in-depth would be a separate change outside this repository.
+
 ## How It Works
 
 1. **Capture**: At task end, `capture_reasoning_episode()` writes episode to SQLite with FTS5 indexing + optional vector embedding.
