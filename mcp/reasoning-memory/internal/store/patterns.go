@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -204,7 +206,10 @@ func (es *EpisodeStore) GetPattern(id string) (*models.Pattern, error) {
 		&p.ID, &p.CreatedAt, &p.Domain, &p.MergeScore, &sourcesJSON,
 		&p.ConsolidatedPrompt, &p.MasterThinkingPath, &toolsJSON, &tagsJSON,
 	); err != nil {
-		return nil, nil
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get pattern %s: %w", id, err)
 	}
 
 	_ = json.Unmarshal([]byte(sourcesJSON), &p.Sources)
