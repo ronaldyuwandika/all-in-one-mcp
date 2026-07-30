@@ -212,9 +212,15 @@ func (es *EpisodeStore) GetPattern(id string) (*models.Pattern, error) {
 		return nil, fmt.Errorf("get pattern %s: %w", id, err)
 	}
 
-	_ = json.Unmarshal([]byte(sourcesJSON), &p.Sources)
-	_ = json.Unmarshal([]byte(toolsJSON), &p.MasterToolCalls)
-	_ = json.Unmarshal([]byte(tagsJSON), &p.Tags)
+	if err := json.Unmarshal([]byte(sourcesJSON), &p.Sources); err != nil {
+		return nil, fmt.Errorf("decode pattern %s sources: %w", id, err)
+	}
+	if err := json.Unmarshal([]byte(toolsJSON), &p.MasterToolCalls); err != nil {
+		return nil, fmt.Errorf("decode pattern %s master_tool_calls: %w", id, err)
+	}
+	if err := json.Unmarshal([]byte(tagsJSON), &p.Tags); err != nil {
+		return nil, fmt.Errorf("decode pattern %s tags: %w", id, err)
+	}
 	security.Pattern(&p)
 
 	return &p, nil
@@ -244,9 +250,15 @@ func (es *EpisodeStore) ListPatterns() ([]models.Pattern, error) {
 		); err != nil {
 			return nil, fmt.Errorf("scan pattern: %w", err)
 		}
-		_ = json.Unmarshal([]byte(sourcesJSON), &p.Sources)
-		_ = json.Unmarshal([]byte(toolsJSON), &p.MasterToolCalls)
-		_ = json.Unmarshal([]byte(tagsJSON), &p.Tags)
+		if err := json.Unmarshal([]byte(sourcesJSON), &p.Sources); err != nil {
+			return nil, fmt.Errorf("decode pattern %s sources: %w", p.ID, err)
+		}
+		if err := json.Unmarshal([]byte(toolsJSON), &p.MasterToolCalls); err != nil {
+			return nil, fmt.Errorf("decode pattern %s master_tool_calls: %w", p.ID, err)
+		}
+		if err := json.Unmarshal([]byte(tagsJSON), &p.Tags); err != nil {
+			return nil, fmt.Errorf("decode pattern %s tags: %w", p.ID, err)
+		}
 		security.Pattern(&p)
 		patterns = append(patterns, p)
 	}
@@ -295,9 +307,15 @@ func (es *EpisodeStore) SearchPatterns(query string, domainFilter string, tagsFi
 		); err != nil {
 			return nil, err
 		}
-		_ = json.Unmarshal([]byte(sourcesJSON), &p.Sources)
-		_ = json.Unmarshal([]byte(toolsJSON), &p.MasterToolCalls)
-		_ = json.Unmarshal([]byte(tagsJSON), &p.Tags)
+		if err := json.Unmarshal([]byte(sourcesJSON), &p.Sources); err != nil {
+			return nil, fmt.Errorf("decode pattern %s sources: %w", p.ID, err)
+		}
+		if err := json.Unmarshal([]byte(toolsJSON), &p.MasterToolCalls); err != nil {
+			return nil, fmt.Errorf("decode pattern %s master_tool_calls: %w", p.ID, err)
+		}
+		if err := json.Unmarshal([]byte(tagsJSON), &p.Tags); err != nil {
+			return nil, fmt.Errorf("decode pattern %s tags: %w", p.ID, err)
+		}
 		security.Pattern(&p)
 
 		if domainFilter != "" && p.Domain != domainFilter {
@@ -364,9 +382,15 @@ func (es *EpisodeStore) fallbackSearchPatterns(query string, domainFilter string
 		); err != nil {
 			return nil, err
 		}
-		_ = json.Unmarshal([]byte(sourcesJSON), &p.Sources)
-		_ = json.Unmarshal([]byte(toolsJSON), &p.MasterToolCalls)
-		_ = json.Unmarshal([]byte(tagsJSON), &p.Tags)
+		if err := json.Unmarshal([]byte(sourcesJSON), &p.Sources); err != nil {
+			return nil, fmt.Errorf("decode pattern %s sources: %w", p.ID, err)
+		}
+		if err := json.Unmarshal([]byte(toolsJSON), &p.MasterToolCalls); err != nil {
+			return nil, fmt.Errorf("decode pattern %s master_tool_calls: %w", p.ID, err)
+		}
+		if err := json.Unmarshal([]byte(tagsJSON), &p.Tags); err != nil {
+			return nil, fmt.Errorf("decode pattern %s tags: %w", p.ID, err)
+		}
 		security.Pattern(&p)
 
 		if domainFilter != "" && p.Domain != domainFilter {
