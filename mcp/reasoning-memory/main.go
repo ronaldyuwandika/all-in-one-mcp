@@ -786,11 +786,7 @@ func handleInject(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 
 		var promptPatterns []prompter.PatternContext
 		if cfg.Retrieval.IncludePatterns {
-			maxPats := cfg.Retrieval.MaxPatterns
-			if maxPats <= 0 {
-				maxPats = 2
-			}
-			pats, err := es.SearchPatterns(problem, "", nil, maxPats)
+			pats, err := es.SearchPatterns(problem, "", nil, cfg.Retrieval.MaxPatterns)
 			if err == nil {
 				for _, p := range pats {
 					promptPatterns = append(promptPatterns, prompter.PatternContext{
@@ -965,11 +961,7 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 					}
 				}
 				if cfg.PromptPolishing.IncludePatterns {
-					maxPats := cfg.PromptPolishing.MaxPatterns
-					if maxPats <= 0 {
-						maxPats = 2
-					}
-					pats, err := es.SearchPatterns(rawPrompt, domain, nil, maxPats)
+					pats, err := es.SearchPatterns(rawPrompt, domain, nil, cfg.PromptPolishing.MaxPatterns)
 					if err == nil {
 						for _, p := range pats {
 							promptPatterns = append(promptPatterns, prompter.PatternContext{
