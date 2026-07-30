@@ -70,17 +70,10 @@ func (es *EpisodeStore) Compact(ctx context.Context, cfg models.ConsolidationCon
 			}
 
 			_, err = tx.Exec(`INSERT OR REPLACE INTO episode_failed_approaches_archive (episode_id, position, approach, failure_mode, root_cause, lesson)
-				SELECT episode_id, position, approach, failure_mode, root_cause, lesson FROM episode_failed_approaches WHERE episode_id = ? ORDER BY position`, id)
+				SELECT episode_id, position, approach, failure_mode, root_cause, lesson FROM episode_failed_approaches WHERE episode_id = ?`, id)
 			if err != nil {
 				_ = tx.Rollback()
 				slog.Error("Failed to copy failed approaches to archive", "id", id, "error", err)
-				continue
-			}
-			_, err = tx.Exec(`INSERT OR REPLACE INTO episode_verifications_archive (episode_id, position, type, command, result, success, evidence)
-				SELECT episode_id, position, type, command, result, success, evidence FROM episode_verifications WHERE episode_id = ? ORDER BY position`, id)
-			if err != nil {
-				_ = tx.Rollback()
-				slog.Error("Failed to copy verifications to archive", "id", id, "error", err)
 				continue
 			}
 			_, err = tx.Exec("DELETE FROM episode_failed_approaches WHERE episode_id = ?", id)
@@ -89,14 +82,8 @@ func (es *EpisodeStore) Compact(ctx context.Context, cfg models.ConsolidationCon
 				slog.Error("Failed to delete active failed approaches", "id", id, "error", err)
 				continue
 			}
-			_, err = tx.Exec("DELETE FROM episode_verifications WHERE episode_id = ?", id)
-			if err != nil {
-				_ = tx.Rollback()
-				slog.Error("Failed to delete active verifications", "id", id, "error", err)
-				continue
-			}
 			if es.vec != nil && es.vec.Enabled() {
-				err = enqueueVectorReconcileTx(ctx, tx, id, "", "")
+				_, err = tx.Exec(`INSERT INTO vector_reconcile (episode_id, problem, thinking_trace, updated_at) VALUES (?, '', '', ?) ON CONFLICT(episode_id) DO UPDATE SET problem='', thinking_trace='', updated_at=excluded.updated_at`, id, time.Now().UTC().Format(time.RFC3339))
 				if err != nil {
 					_ = tx.Rollback()
 					slog.Error("Failed to enqueue vector deletion", "id", id, "error", err)
@@ -118,7 +105,7 @@ func (es *EpisodeStore) Compact(ctx context.Context, cfg models.ConsolidationCon
 			// Delete from vector DB if enabled
 			if es.vec != nil && es.vec.Enabled() {
 				if verr := es.vec.DeleteEpisode(ctx, id); verr == nil {
-					_ = deleteVectorReconcileDB(ctx, es.db, id)
+					_, _ = es.db.Exec("DELETE FROM vector_reconcile WHERE episode_id = ?", id)
 				}
 			}
 

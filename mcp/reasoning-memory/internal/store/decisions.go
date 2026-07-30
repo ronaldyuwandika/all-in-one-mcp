@@ -11,7 +11,7 @@ import (
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/models"
 )
 
-func migrateDecisions(db sqlExecutor) error {
+func migrateDecisions(db *sql.DB) error {
 	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS decisions (
 		id TEXT PRIMARY KEY, episode_id TEXT NOT NULL, created_at TEXT NOT NULL,
 		repo TEXT NOT NULL DEFAULT '', title TEXT NOT NULL, selected TEXT NOT NULL,

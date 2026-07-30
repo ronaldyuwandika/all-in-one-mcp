@@ -170,36 +170,6 @@ func decodeFailedApproachesStrict(args map[string]interface{}) ([]models.FailedA
 	return models.NormalizeFailedApproaches(values)
 }
 
-var verificationRecordSchema = map[string]any{
-	"type": "object",
-	"properties": map[string]any{
-		"type":     map[string]any{"type": "string"},
-		"command":  map[string]any{"type": "string"},
-		"result":   map[string]any{"type": "string"},
-		"success":  map[string]any{"type": "boolean"},
-		"evidence": map[string]any{"type": "string"},
-	},
-	"required": []string{"type", "success"},
-}
-
-func decodeVerificationRecordsStrict(args map[string]interface{}) ([]models.VerificationRecord, error) {
-	raw, ok := args["verification"]
-	if !ok || raw == nil {
-		return nil, nil
-	}
-	data, err := json.Marshal(raw)
-	if err != nil {
-		return nil, fmt.Errorf("invalid verification array: %w", err)
-	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	var values []models.VerificationRecord
-	if err := dec.Decode(&values); err != nil {
-		return nil, fmt.Errorf("invalid verification array: %w", err)
-	}
-	return models.NormalizeVerificationRecords(values)
-}
-
 var toolCallSchema = map[string]any{
 	"type": "object",
 	"properties": map[string]any{
@@ -260,7 +230,7 @@ func runMCPServer() error {
 			mcp.WithArray("objectives", mcp.WithStringItems()),
 			mcp.WithArray("decisions", mcp.WithStringItems()),
 			mcp.WithArray("alternatives", mcp.WithStringItems()),
-			mcp.WithArray("verification", mcp.Description("Optional verification records containing type, command, result, success, evidence."), mcp.Items(verificationRecordSchema)),
+			mcp.WithArray("verification", mcp.WithStringItems()),
 			mcp.WithArray("lessons", mcp.WithStringItems()),
 			mcp.WithArray("failed_approaches", mcp.Description("Optional failed approaches records containing approach, failure_mode, root_cause, lesson."), mcp.Items(failedApproachSchema)),
 		),
@@ -278,7 +248,7 @@ func runMCPServer() error {
 			mcp.WithString("model_id"), mcp.WithString("repo"), mcp.WithObject("labels"),
 			mcp.WithString("project"), mcp.WithString("provenance"), mcp.WithNumber("confidence"),
 			mcp.WithArray("objectives", mcp.WithStringItems()), mcp.WithArray("decisions", mcp.WithStringItems()),
-			mcp.WithArray("alternatives", mcp.WithStringItems()), mcp.WithArray("verification", mcp.Items(verificationRecordSchema)),
+			mcp.WithArray("alternatives", mcp.WithStringItems()), mcp.WithArray("verification", mcp.WithStringItems()),
 			mcp.WithArray("lessons", mcp.WithStringItems()),
 			mcp.WithArray("failed_approaches", mcp.Items(failedApproachSchema)),
 		),
@@ -299,8 +269,6 @@ func runMCPServer() error {
 			mcp.WithString("repo", mcp.Description("Filter by repository/project name.")),
 			mcp.WithArray("tags", mcp.Description("Filter by tags (any match)."), mcp.WithStringItems()),
 			mcp.WithObject("metadata_filter", mcp.Description("Filter by metadata labels e.g. {\"language\": \"go\", \"severity\": \"bug\"}")),
-			mcp.WithArray("verification_types", mcp.Description("Filter by verification types; all supplied types must be present."), mcp.WithStringItems(mcp.Enum("tests", "lint", "builds", "benchmarks", "deployments", "smoke_tests", "review", "observation"))),
-			mcp.WithBoolean("verification_success", mcp.Description("Filter for episodes containing a verification record with this success value.")),
 			mcp.WithNumber("top_k", mcp.Description("Max results (default 5, max 20).")),
 		),
 		handleRetrieve(es, cfg),
@@ -424,7 +392,7 @@ func reindexEpisodes(ctx context.Context, es *store.EpisodeStore, vec *store.Vec
 			}
 			contents = append(contents, store.EpisodeContent{
 				ID:      ep.ID,
-				Content: ep.Problem + "\n" + store.VectorContentText(ep),
+				Content: ep.Problem + "\n" + ep.ThinkingTrace + store.FailedApproachesText(ep.FailedApproaches),
 			})
 		}
 		if len(contents) > 0 {
@@ -565,10 +533,6 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 		if err != nil {
 			return mcp.NewToolResultError("capture failed: " + err.Error()), nil
 		}
-		verification, err := decodeVerificationRecordsStrict(args)
-		if err != nil {
-			return mcp.NewToolResultError("capture failed: " + err.Error()), nil
-		}
 		var confidence *float64
 		if value, exists := args["confidence"]; exists {
 			parsed, err := getFloat64(map[string]interface{}{"confidence": value}, "confidence")
@@ -593,7 +557,7 @@ func handleCapture(es *store.EpisodeStore, _ *models.Config) server.ToolHandlerF
 			Objectives:       getStringSlice(args, "objectives"),
 			Decisions:        getStringSlice(args, "decisions"),
 			Alternatives:     getStringSlice(args, "alternatives"),
-			Verification:     verification,
+			Verification:     getStringSlice(args, "verification"),
 			Lessons:          getStringSlice(args, "lessons"),
 			FailedApproaches: failedApproaches,
 			ThinkingTrace:    thinkingTrace,
@@ -714,16 +678,6 @@ func handleRetrieve(es *store.EpisodeStore, _ *models.Config) server.ToolHandler
 		repo := getString(args, "repo")
 		tags := getStringSlice(args, "tags")
 		metadataFilter := getStringMap(args, "metadata_filter")
-		verificationTypes := getStringSlice(args, "verification_types")
-		for _, vt := range verificationTypes {
-			if !models.IsCanonicalVerificationType(vt) {
-				return mcp.NewToolResultError("search failed: invalid verification_types filter item " + vt), nil
-			}
-		}
-		var verificationSuccess *bool
-		if value, ok := args["verification_success"].(bool); ok {
-			verificationSuccess = &value
-		}
 
 		topK := 5
 		if tk, err := getFloat64(args, "top_k"); err == nil {
@@ -733,11 +687,7 @@ func handleRetrieve(es *store.EpisodeStore, _ *models.Config) server.ToolHandler
 			topK = 20
 		}
 
-		results, err := es.SearchLocal(problem, domain, outcome, repo, tags, topK, store.SearchOptions{
-			MetadataFilter:      metadataFilter,
-			VerificationTypes:   verificationTypes,
-			VerificationSuccess: verificationSuccess,
-		})
+		results, err := es.SearchLocal(problem, domain, outcome, repo, tags, topK, metadataFilter)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 		}
@@ -814,17 +764,14 @@ func handleInject(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 						Tags:             r.Tags,
 						ThinkingTrace:    ep.ThinkingTrace,
 						FailedApproaches: ep.FailedApproaches,
-						Verification:     ep.Verification,
 						EpisodeID:        ep.ID,
 					})
 				}
 			} else {
 				ep, _ := es.GetEpisode(r.ID)
 				var failed []models.FailedApproach
-				var verif []models.VerificationRecord
 				if ep != nil {
 					failed = ep.FailedApproaches
-					verif = ep.Verification
 				}
 				episodes = append(episodes, prompter.EpisodeContext{
 					Problem:          r.Problem,
@@ -832,13 +779,33 @@ func handleInject(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 					Outcome:          r.Outcome,
 					Tags:             r.Tags,
 					FailedApproaches: failed,
-					Verification:     verif,
 					EpisodeID:        r.ID,
 				})
 			}
 		}
 
-		xmlBlock := prompter.BuildXMLEpisodeBlock(episodes)
+		var promptPatterns []prompter.PatternContext
+		if cfg.Retrieval.IncludePatterns {
+			maxPats := cfg.Retrieval.MaxPatterns
+			if maxPats <= 0 {
+				maxPats = 2
+			}
+			pats, err := es.SearchPatterns(problem, "", nil, maxPats)
+			if err == nil {
+				for _, p := range pats {
+					promptPatterns = append(promptPatterns, prompter.PatternContext{
+						ID:                 p.ID,
+						Domain:             p.Domain,
+						ConsolidatedPrompt: p.ConsolidatedPrompt,
+						MasterThinkingPath: p.MasterThinkingPath,
+						Tags:               p.Tags,
+						MergeScore:         p.MergeScore,
+					})
+				}
+			}
+		}
+
+		xmlBlock := prompter.BuildXMLReasoningMemoryBlock(episodes, promptPatterns)
 		return mcp.NewToolResultText(xmlBlock), nil
 	}
 }
@@ -937,6 +904,7 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 
 		var contextStr string
 		var promptEpisodes []prompter.EpisodeContext
+		var promptPatterns []prompter.PatternContext
 		var linkedContextStr string
 		linkedWarnings := []string{}
 		if linkService != nil {
@@ -996,9 +964,28 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 						})
 					}
 				}
-				contextCount = len(ctxEpisodes)
+				if cfg.PromptPolishing.IncludePatterns {
+					maxPats := cfg.PromptPolishing.MaxPatterns
+					if maxPats <= 0 {
+						maxPats = 2
+					}
+					pats, err := es.SearchPatterns(rawPrompt, domain, nil, maxPats)
+					if err == nil {
+						for _, p := range pats {
+							promptPatterns = append(promptPatterns, prompter.PatternContext{
+								ID:                 p.ID,
+								Domain:             p.Domain,
+								ConsolidatedPrompt: p.ConsolidatedPrompt,
+								MasterThinkingPath: p.MasterThinkingPath,
+								Tags:               p.Tags,
+								MergeScore:         p.MergeScore,
+							})
+						}
+					}
+				}
+				contextCount = len(ctxEpisodes) + len(promptPatterns)
 				promptEpisodes = ctxEpisodes
-				contextStr = prompter.BuildXMLEpisodeBlock(ctxEpisodes)
+				contextStr = prompter.BuildXMLReasoningMemoryBlock(ctxEpisodes, promptPatterns)
 			}
 		}
 
@@ -1006,7 +993,7 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 			RawPrompt: rawPrompt, TargetAgent: targetAgent, Domain: domain,
 			Repo: repo, Context: contextStr, LinkedContext: linkedContextStr, SkillName: skillName,
 			OutputFormat: outputFormat, MaxChars: cfg.PromptPolishing.MaxPromptChars,
-			ContextCount: contextCount, Episodes: promptEpisodes,
+			ContextCount: contextCount, Episodes: promptEpisodes, Patterns: promptPatterns,
 		})
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("polish failed: %v", err)), nil

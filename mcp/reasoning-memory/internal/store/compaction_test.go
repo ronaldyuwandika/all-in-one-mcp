@@ -33,10 +33,6 @@ func TestCompaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to insert old episode: %v", err)
 	}
-	_, err = es.db.Exec(`INSERT INTO episode_verifications (episode_id, position, type, command, result, success, evidence) VALUES (?, 0, 'tests', 'go test ./...', 'pass', 1, 'all tests passed')`, "ep-old")
-	if err != nil {
-		t.Fatalf("failed to insert old episode verification: %v", err)
-	}
 
 	// Insert another archived episode to test pruning (older than 90 days)
 	veryOldTime := time.Now().UTC().AddDate(0, 0, -100).Format(time.RFC3339)
@@ -137,15 +133,6 @@ func TestCompaction(t *testing.T) {
 	_ = es.db.QueryRow("SELECT COUNT(*) FROM episodes_archive WHERE id = 'ep-old'").Scan(&existsInArchive)
 	if existsInArchive != 1 {
 		t.Errorf("ep-old should exist in episodes_archive")
-	}
-
-	var archVerifCount int
-	if err := es.db.QueryRow("SELECT COUNT(*) FROM episode_verifications_archive WHERE episode_id = 'ep-old'").Scan(&archVerifCount); err != nil || archVerifCount != 1 {
-		t.Errorf("expected 1 verification in archive for ep-old, got %d (err: %v)", archVerifCount, err)
-	}
-	var activeVerifCount int
-	if err := es.db.QueryRow("SELECT COUNT(*) FROM episode_verifications WHERE episode_id = 'ep-old'").Scan(&activeVerifCount); err != nil || activeVerifCount != 0 {
-		t.Errorf("expected 0 active verifications for ep-old, got %d (err: %v)", activeVerifCount, err)
 	}
 
 	// Verify ep-very-old was permanently pruned

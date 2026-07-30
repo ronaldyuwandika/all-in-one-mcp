@@ -96,17 +96,7 @@ func Episode(ep *models.Episode) {
 	ep.Objectives = Strings(ep.Objectives)
 	ep.Decisions = Strings(ep.Decisions)
 	ep.Alternatives = Strings(ep.Alternatives)
-	verification := ep.Verification
-	ep.Verification = make([]models.VerificationRecord, len(verification))
-	for i, v := range verification {
-		ep.Verification[i] = models.VerificationRecord{
-			Type:     models.VerificationType(Text(string(v.Type))),
-			Command:  Text(v.Command),
-			Result:   Text(v.Result),
-			Success:  v.Success,
-			Evidence: Text(v.Evidence),
-		}
-	}
+	ep.Verification = Strings(ep.Verification)
 	ep.Lessons = Strings(ep.Lessons)
 	for i := range ep.FailedApproaches {
 		ep.FailedApproaches[i].Approach = Text(ep.FailedApproaches[i].Approach)
@@ -143,12 +133,6 @@ func Summary(summary *models.EpisodeSummary) {
 	summary.Labels = Labels(summary.Labels)
 	summary.ModelID = Text(summary.ModelID)
 	summary.StepTypes = Strings(summary.StepTypes)
-	summary.VerificationTypes = Strings(summary.VerificationTypes)
-	for i := range summary.VerificationSummaries {
-		summary.VerificationSummaries[i].Type = Text(summary.VerificationSummaries[i].Type)
-		summary.VerificationSummaries[i].ResultExcerpt = Text(summary.VerificationSummaries[i].ResultExcerpt)
-		summary.VerificationSummaries[i].EvidenceExcerpt = Text(summary.VerificationSummaries[i].EvidenceExcerpt)
-	}
 }
 
 func Pattern(pattern *models.Pattern) {

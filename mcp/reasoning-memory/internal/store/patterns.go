@@ -248,6 +248,149 @@ func (es *EpisodeStore) ListPatterns() ([]models.Pattern, error) {
 	return patterns, rows.Err()
 }
 
+func (es *EpisodeStore) SearchPatterns(query string, domainFilter string, tagsFilter []string, topK int) ([]models.Pattern, error) {
+	if topK <= 0 {
+		topK = 2
+	}
+	query = security.Text(strings.TrimSpace(query))
+	domainFilter = security.Text(strings.TrimSpace(domainFilter))
+	tagsFilter = security.Strings(tagsFilter)
+	terms := strings.Fields(query)
+	if len(terms) == 0 {
+		return nil, nil
+	}
+	parts := make([]string, len(terms))
+	for i, term := range terms {
+		parts[i] = fmt.Sprintf(`"%s"`, strings.ReplaceAll(term, `"`, `""`))
+	}
+	ftsQuery := strings.Join(parts, " OR ")
+
+	rows, err := es.db.Query(`SELECT p.id, p.created_at, p.domain, p.merge_score, p.sources, p.consolidated_prompt, p.master_thinking_path, p.master_tool_calls, p.tags
+		FROM patterns_fts f
+		JOIN patterns p ON p.rowid = f.rowid
+		WHERE patterns_fts MATCH ?
+		ORDER BY bm25(patterns_fts) ASC LIMIT ?`, ftsQuery, topK*2)
+
+	if err != nil {
+		return es.fallbackSearchPatterns(query, domainFilter, tagsFilter, topK)
+	}
+	defer rows.Close()
+
+	var patterns []models.Pattern
+	for rows.Next() {
+		var (
+			sourcesJSON string
+			toolsJSON   string
+			tagsJSON    string
+			p           models.Pattern
+		)
+		if err := rows.Scan(
+			&p.ID, &p.CreatedAt, &p.Domain, &p.MergeScore, &sourcesJSON,
+			&p.ConsolidatedPrompt, &p.MasterThinkingPath, &toolsJSON, &tagsJSON,
+		); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(sourcesJSON), &p.Sources)
+		_ = json.Unmarshal([]byte(toolsJSON), &p.MasterToolCalls)
+		_ = json.Unmarshal([]byte(tagsJSON), &p.Tags)
+		security.Pattern(&p)
+
+		if domainFilter != "" && p.Domain != domainFilter {
+			continue
+		}
+		if len(tagsFilter) > 0 {
+			match := false
+			for _, ft := range tagsFilter {
+				for _, pt := range p.Tags {
+					if strings.EqualFold(pt, ft) {
+						match = true
+						break
+					}
+				}
+				if match {
+					break
+				}
+			}
+			if !match {
+				continue
+			}
+		}
+		patterns = append(patterns, p)
+		if len(patterns) >= topK {
+			break
+		}
+	}
+	return patterns, rows.Err()
+}
+
+func (es *EpisodeStore) fallbackSearchPatterns(query string, domainFilter string, tagsFilter []string, topK int) ([]models.Pattern, error) {
+	terms := strings.Fields(query)
+	if len(terms) == 0 {
+		return nil, nil
+	}
+	var conditions []string
+	var args []any
+	for _, term := range terms {
+		escaped := strings.ReplaceAll(term, "'", "''")
+		escaped = strings.ReplaceAll(escaped, "\\", "\\\\")
+		pattern := "%" + escaped + "%"
+		conditions = append(conditions, "(consolidated_prompt LIKE ? ESCAPE '\\' OR master_thinking_path LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')")
+		args = append(args, pattern, pattern, pattern)
+	}
+	q := `SELECT id, created_at, domain, merge_score, sources, consolidated_prompt, master_thinking_path, master_tool_calls, tags FROM patterns WHERE ` + strings.Join(conditions, " OR ") + ` LIMIT 50`
+	rows, err := es.db.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("fallback search patterns: %w", err)
+	}
+	defer rows.Close()
+
+	var patterns []models.Pattern
+	for rows.Next() {
+		var (
+			sourcesJSON string
+			toolsJSON   string
+			tagsJSON    string
+			p           models.Pattern
+		)
+		if err := rows.Scan(
+			&p.ID, &p.CreatedAt, &p.Domain, &p.MergeScore, &sourcesJSON,
+			&p.ConsolidatedPrompt, &p.MasterThinkingPath, &toolsJSON, &tagsJSON,
+		); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(sourcesJSON), &p.Sources)
+		_ = json.Unmarshal([]byte(toolsJSON), &p.MasterToolCalls)
+		_ = json.Unmarshal([]byte(tagsJSON), &p.Tags)
+		security.Pattern(&p)
+
+		if domainFilter != "" && p.Domain != domainFilter {
+			continue
+		}
+		if len(tagsFilter) > 0 {
+			match := false
+			for _, ft := range tagsFilter {
+				for _, pt := range p.Tags {
+					if strings.EqualFold(pt, ft) {
+						match = true
+						break
+					}
+				}
+				if match {
+					break
+				}
+			}
+			if !match {
+				continue
+			}
+		}
+		patterns = append(patterns, p)
+		if len(patterns) >= topK {
+			break
+		}
+	}
+	return patterns, rows.Err()
+}
+
 func (es *EpisodeStore) PruneFailures(olderThanDays int) (int, error) {
 	cutoff := time.Now().UTC().AddDate(0, 0, -olderThanDays).Format(time.RFC3339)
 	result, err := es.db.Exec(

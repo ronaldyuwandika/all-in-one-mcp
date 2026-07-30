@@ -152,20 +152,42 @@ func TestPruneFailures(t *testing.T) {
 	}
 }
 
-func TestPatternCount(t *testing.T) {
+func TestSearchPatterns(t *testing.T) {
 	es := testStore(t)
 
-	count, _ := es.PatternCount()
-	if count != 0 {
-		t.Errorf("expected 0 patterns, got %d", count)
+	epA := &models.Episode{
+		ID:            es.NextID(),
+		Domain:        "coding",
+		Outcome:       "success",
+		Tags:          []string{"go", "database"},
+		Problem:       "Design high performance PostgreSQL connection pool",
+		ThinkingTrace: "Use pgxpool and tune max connections based on CPU cores",
+	}
+	_, _ = es.CreateEpisode(epA)
+
+	epB := &models.Episode{
+		ID:            es.NextID(),
+		Domain:        "coding",
+		Outcome:       "success",
+		Tags:          []string{"go", "database"},
+		Problem:       "Configure database connection pooling for high concurrency",
+		ThinkingTrace: "Set max idle connections and connection lifetime limits",
+	}
+	_, _ = es.CreateEpisode(epB)
+
+	pid, err := es.MergeToPattern(MergeCandidate{A: epA.ID, B: epB.ID, Score: 0.9})
+	if err != nil {
+		t.Fatalf("merge to pattern: %v", err)
 	}
 
-	_, _ = es.CreateEpisode(&models.Episode{ID: es.NextID(), Domain: "coding", Outcome: "success", Tags: []string{"x"}, Problem: "A", ThinkingTrace: "A"})
-	_, _ = es.CreateEpisode(&models.Episode{ID: es.NextID(), Domain: "coding", Outcome: "success", Tags: []string{"x"}, Problem: "B", ThinkingTrace: "B"})
-	_, _ = es.MergeToPattern(MergeCandidate{A: "re-20260713-003", B: "re-20260713-004", Score: 0.5})
-
-	count, _ = es.PatternCount()
-	if count != 0 {
-		t.Logf("pattern count: %d (expected >= 0)", count)
+	pats, err := es.SearchPatterns("PostgreSQL connection pool", "coding", nil, 5)
+	if err != nil {
+		t.Fatalf("search patterns: %v", err)
+	}
+	if len(pats) == 0 {
+		t.Fatal("expected matching pattern, got 0")
+	}
+	if pats[0].ID != pid {
+		t.Errorf("expected pattern ID %s, got %s", pid, pats[0].ID)
 	}
 }

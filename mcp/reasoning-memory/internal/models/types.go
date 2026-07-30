@@ -6,8 +6,6 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
-
-	"github.com/ronaldyuwandika/all-in-one-mcp/pkg/secretdetect"
 )
 
 type ToolCall struct {
@@ -34,35 +32,6 @@ type FailedApproach struct {
 	Lesson      string `json:"lesson" yaml:"lesson"`
 }
 
-type VerificationType string
-
-const (
-	VerificationTests       VerificationType = "tests"
-	VerificationLint        VerificationType = "lint"
-	VerificationBuilds      VerificationType = "builds"
-	VerificationBenchmarks  VerificationType = "benchmarks"
-	VerificationDeployments VerificationType = "deployments"
-	VerificationSmokeTests  VerificationType = "smoke_tests"
-	VerificationReview      VerificationType = "review"
-	VerificationObservation VerificationType = "observation"
-)
-
-type VerificationRecord struct {
-	Type     VerificationType `json:"type" yaml:"type"`
-	Command  string           `json:"command,omitempty" yaml:"command,omitempty"`
-	Result   string           `json:"result,omitempty" yaml:"result,omitempty"`
-	Success  bool             `json:"success" yaml:"success"`
-	Evidence string           `json:"evidence,omitempty" yaml:"evidence,omitempty"`
-}
-
-type VerificationSummary struct {
-	Type            string `json:"type" yaml:"type"`
-	Success         bool   `json:"success" yaml:"success"`
-	CommandPresent  bool   `json:"command_present" yaml:"command_present"`
-	ResultExcerpt   string `json:"result_excerpt,omitempty" yaml:"result_excerpt,omitempty"`
-	EvidenceExcerpt string `json:"evidence_excerpt,omitempty" yaml:"evidence_excerpt,omitempty"`
-}
-
 type FailureMatch struct {
 	Approach    string  `json:"approach" yaml:"approach"`
 	FailureMode string  `json:"failure_mode" yaml:"failure_mode"`
@@ -83,58 +52,54 @@ const (
 )
 
 type Episode struct {
-	ID               string               `json:"id" yaml:"id"`
-	CreatedAt        time.Time            `json:"created_at" yaml:"created_at"`
-	UpdatedAt        time.Time            `json:"updated_at" yaml:"updated_at"`
-	Domain           string               `json:"domain" yaml:"domain"`
-	Outcome          EpisodeOutcome       `json:"outcome" yaml:"outcome"`
-	Tier             MemoryTier           `json:"tier" yaml:"tier"`
-	Tags             []string             `json:"tags" yaml:"tags"`
-	Repo             string               `json:"repo,omitempty" yaml:"repo,omitempty"`
-	Project          string               `json:"project,omitempty" yaml:"project,omitempty"`
-	Provenance       string               `json:"provenance,omitempty" yaml:"provenance,omitempty"`
-	Confidence       *float64             `json:"confidence,omitempty" yaml:"confidence,omitempty"`
-	Labels           map[string][]string  `json:"labels,omitempty" yaml:"labels,omitempty"`
-	Problem          string               `json:"problem" yaml:"problem"`
-	Objectives       []string             `json:"objectives,omitempty" yaml:"objectives,omitempty"`
-	Decisions        []string             `json:"decisions,omitempty" yaml:"decisions,omitempty"`
-	Alternatives     []string             `json:"alternatives,omitempty" yaml:"alternatives,omitempty"`
-	Verification     []VerificationRecord `json:"verification,omitempty" yaml:"verification,omitempty"`
-	Lessons          []string             `json:"lessons,omitempty" yaml:"lessons,omitempty"`
-	FailedApproaches []FailedApproach     `json:"failed_approaches,omitempty" yaml:"failed_approaches,omitempty"`
-	ThinkingTrace    string               `json:"thinking_trace" yaml:"thinking_trace"`
-	Steps            []Step               `json:"steps" yaml:"steps"`
-	ToolCalls        []ToolCall           `json:"tool_calls" yaml:"tool_calls"`
-	ModelID          string               `json:"model_id" yaml:"model_id"`
-	DurationSeconds  int                  `json:"duration_seconds" yaml:"duration_seconds"`
+	ID               string              `json:"id" yaml:"id"`
+	CreatedAt        time.Time           `json:"created_at" yaml:"created_at"`
+	UpdatedAt        time.Time           `json:"updated_at" yaml:"updated_at"`
+	Domain           string              `json:"domain" yaml:"domain"`
+	Outcome          EpisodeOutcome      `json:"outcome" yaml:"outcome"`
+	Tier             MemoryTier          `json:"tier" yaml:"tier"`
+	Tags             []string            `json:"tags" yaml:"tags"`
+	Repo             string              `json:"repo,omitempty" yaml:"repo,omitempty"`
+	Project          string              `json:"project,omitempty" yaml:"project,omitempty"`
+	Provenance       string              `json:"provenance,omitempty" yaml:"provenance,omitempty"`
+	Confidence       *float64            `json:"confidence,omitempty" yaml:"confidence,omitempty"`
+	Labels           map[string][]string `json:"labels,omitempty" yaml:"labels,omitempty"`
+	Problem          string              `json:"problem" yaml:"problem"`
+	Objectives       []string            `json:"objectives,omitempty" yaml:"objectives,omitempty"`
+	Decisions        []string            `json:"decisions,omitempty" yaml:"decisions,omitempty"`
+	Alternatives     []string            `json:"alternatives,omitempty" yaml:"alternatives,omitempty"`
+	Verification     []string            `json:"verification,omitempty" yaml:"verification,omitempty"`
+	Lessons          []string            `json:"lessons,omitempty" yaml:"lessons,omitempty"`
+	FailedApproaches []FailedApproach    `json:"failed_approaches,omitempty" yaml:"failed_approaches,omitempty"`
+	ThinkingTrace    string              `json:"thinking_trace" yaml:"thinking_trace"`
+	Steps            []Step              `json:"steps" yaml:"steps"`
+	ToolCalls        []ToolCall          `json:"tool_calls" yaml:"tool_calls"`
+	ModelID          string              `json:"model_id" yaml:"model_id"`
+	DurationSeconds  int                 `json:"duration_seconds" yaml:"duration_seconds"`
 }
 
 type EpisodeSummary struct {
-	ID                          string                `json:"id" yaml:"id"`
-	CreatedAt                   string                `json:"created_at" yaml:"created_at"`
-	UpdatedAt                   string                `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
-	Problem                     string                `json:"problem" yaml:"problem"`
-	Domain                      string                `json:"domain" yaml:"domain"`
-	Outcome                     EpisodeOutcome        `json:"outcome" yaml:"outcome"`
-	Tier                        MemoryTier            `json:"tier" yaml:"tier"`
-	Tags                        []string              `json:"tags" yaml:"tags"`
-	Repo                        string                `json:"repo,omitempty" yaml:"repo,omitempty"`
-	Project                     string                `json:"project,omitempty" yaml:"project,omitempty"`
-	Provenance                  string                `json:"provenance,omitempty" yaml:"provenance,omitempty"`
-	Confidence                  *float64              `json:"confidence,omitempty" yaml:"confidence,omitempty"`
-	Labels                      map[string][]string   `json:"labels,omitempty" yaml:"labels,omitempty"`
-	StepCount                   int                   `json:"step_count" yaml:"step_count"`
-	ToolCount                   int                   `json:"tool_count" yaml:"tool_count"`
-	StepTypes                   []string              `json:"step_types" yaml:"step_types"`
-	ModelID                     string                `json:"model_id" yaml:"model_id"`
-	DurationSeconds             int                   `json:"duration_seconds" yaml:"duration_seconds"`
-	FailureMatches              []FailureMatch        `json:"failure_matches,omitempty" yaml:"failure_matches,omitempty"`
-	VerificationCount           int                   `json:"verification_count" yaml:"verification_count"`
-	SuccessfulVerificationCount int                   `json:"successful_verification_count" yaml:"successful_verification_count"`
-	VerificationTypes           []string              `json:"verification_types,omitempty" yaml:"verification_types,omitempty"`
-	VerificationSummaries       []VerificationSummary `json:"verification_summaries,omitempty" yaml:"verification_summaries,omitempty"`
-	LocalScore                  float64               `json:"_local_score,omitempty" yaml:"_local_score,omitempty"`
-	VectorScore                 float64               `json:"_vector_score,omitempty" yaml:"_vector_score,omitempty"`
+	ID              string              `json:"id" yaml:"id"`
+	CreatedAt       string              `json:"created_at" yaml:"created_at"`
+	UpdatedAt       string              `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
+	Problem         string              `json:"problem" yaml:"problem"`
+	Domain          string              `json:"domain" yaml:"domain"`
+	Outcome         EpisodeOutcome      `json:"outcome" yaml:"outcome"`
+	Tier            MemoryTier          `json:"tier" yaml:"tier"`
+	Tags            []string            `json:"tags" yaml:"tags"`
+	Repo            string              `json:"repo,omitempty" yaml:"repo,omitempty"`
+	Project         string              `json:"project,omitempty" yaml:"project,omitempty"`
+	Provenance      string              `json:"provenance,omitempty" yaml:"provenance,omitempty"`
+	Confidence      *float64            `json:"confidence,omitempty" yaml:"confidence,omitempty"`
+	Labels          map[string][]string `json:"labels,omitempty" yaml:"labels,omitempty"`
+	StepCount       int                 `json:"step_count" yaml:"step_count"`
+	ToolCount       int                 `json:"tool_count" yaml:"tool_count"`
+	StepTypes       []string            `json:"step_types" yaml:"step_types"`
+	ModelID         string              `json:"model_id" yaml:"model_id"`
+	DurationSeconds int                 `json:"duration_seconds" yaml:"duration_seconds"`
+	FailureMatches  []FailureMatch      `json:"failure_matches,omitempty" yaml:"failure_matches,omitempty"`
+	LocalScore      float64             `json:"_local_score,omitempty" yaml:"_local_score,omitempty"`
+	VectorScore     float64             `json:"_vector_score,omitempty" yaml:"_vector_score,omitempty"`
 }
 
 func NormalizeOutcome(outcome string) (EpisodeOutcome, bool) {
@@ -177,111 +142,6 @@ func (e *Episode) Validate() error {
 		return err
 	}
 	e.FailedApproaches = failed
-	verification, err := NormalizeVerificationRecords(e.Verification)
-	if err != nil {
-		return err
-	}
-	e.Verification = verification
-	if e.Outcome == OutcomeVerifiedSuccess && !HasSuccessfulVerification(e.Verification) {
-		return fmt.Errorf("verified_success requires successful verification evidence")
-	}
-	return nil
-}
-
-func IsCanonicalVerificationType(value string) bool {
-	return canonicalVerificationType(VerificationType(value))
-}
-
-func canonicalVerificationType(value VerificationType) bool {
-	switch value {
-	case VerificationTests, VerificationLint, VerificationBuilds, VerificationBenchmarks, VerificationDeployments, VerificationSmokeTests, VerificationReview, VerificationObservation:
-		return true
-	default:
-		return false
-	}
-}
-
-func executableVerificationType(value VerificationType) bool {
-	switch value {
-	case VerificationTests, VerificationLint, VerificationBuilds, VerificationBenchmarks, VerificationDeployments, VerificationSmokeTests:
-		return true
-	default:
-		return false
-	}
-}
-
-func NormalizeVerificationRecords(values []VerificationRecord) ([]VerificationRecord, error) {
-	if len(values) > 20 {
-		return nil, fmt.Errorf("verification must contain at most 20 records")
-	}
-	out := make([]VerificationRecord, 0, len(values))
-	seen := make(map[VerificationRecord]struct{}, len(values))
-	redact := func(value string) string {
-		return secretdetect.RedactWithConfig(value, secretdetect.DefaultConfig()).Text
-	}
-	for i, value := range values {
-		value.Type = VerificationType(redact(strings.TrimSpace(string(value.Type))))
-		value.Command = redact(strings.TrimSpace(value.Command))
-		value.Result = redact(strings.TrimSpace(value.Result))
-		value.Evidence = redact(strings.TrimSpace(value.Evidence))
-		fields := []struct {
-			name  string
-			value string
-			max   int
-		}{{"type", string(value.Type), 64}, {"command", value.Command, 2000}, {"result", value.Result, 4000}, {"evidence", value.Evidence, 4000}}
-		for _, field := range fields {
-			if !utf8.ValidString(field.value) {
-				return nil, fmt.Errorf("verification[%d].%s must be valid UTF-8", i, field.name)
-			}
-			if utf8.RuneCountInString(field.value) > field.max {
-				return nil, fmt.Errorf("verification[%d].%s must contain at most %d runes", i, field.name, field.max)
-			}
-		}
-		if !canonicalVerificationType(value.Type) {
-			return nil, fmt.Errorf("verification[%d].type is invalid", i)
-		}
-		if value.Result == "" && value.Evidence == "" {
-			return nil, fmt.Errorf("verification[%d] requires result or evidence", i)
-		}
-		if executableVerificationType(value.Type) && value.Command == "" {
-			return nil, fmt.Errorf("verification[%d].command is required", i)
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	return out, nil
-}
-
-func HasSuccessfulVerification(values []VerificationRecord) bool {
-	for _, value := range values {
-		if canonicalVerificationType(value.Type) && value.Success && (strings.TrimSpace(value.Result) != "" || strings.TrimSpace(value.Evidence) != "") && (!executableVerificationType(value.Type) || strings.TrimSpace(value.Command) != "") {
-			return true
-		}
-	}
-	return false
-}
-
-func ValidateOutcomeTransition(previous, proposed *Episode) error {
-	if proposed == nil {
-		return fmt.Errorf("proposed episode is required")
-	}
-	if proposed.Outcome == OutcomeVerifiedSuccess && !HasSuccessfulVerification(proposed.Verification) {
-		return fmt.Errorf("verified_success requires successful verification evidence in replacement payload")
-	}
-	if previous == nil {
-		return nil
-	}
-	previousOutcome, previousCanonical := NormalizeOutcome(string(previous.Outcome))
-	proposedOutcome, proposedCanonical := NormalizeOutcome(string(proposed.Outcome))
-	if proposedOutcome == OutcomeVerifiedSuccess && (!proposedCanonical || proposed.Outcome != OutcomeVerifiedSuccess) {
-		return fmt.Errorf("outcome aliases cannot promote to verified_success")
-	}
-	if previousCanonical && previousOutcome == OutcomeVerifiedSuccess && proposedCanonical && proposedOutcome == OutcomeVerifiedSuccess && !HasSuccessfulVerification(proposed.Verification) {
-		return fmt.Errorf("cannot remove final successful verification while retaining verified_success")
-	}
 	return nil
 }
 
@@ -340,6 +200,15 @@ type Pattern struct {
 	Tags               []string   `json:"tags" yaml:"tags"`
 }
 
+type PatternContext struct {
+	ID                 string   `json:"id" yaml:"id"`
+	Domain             string   `json:"domain" yaml:"domain"`
+	ConsolidatedPrompt string   `json:"consolidated_prompt" yaml:"consolidated_prompt"`
+	MasterThinkingPath string   `json:"master_thinking_path" yaml:"master_thinking_path"`
+	Tags               []string `json:"tags,omitempty" yaml:"tags,omitempty"`
+	MergeScore         float64  `json:"merge_score,omitempty" yaml:"merge_score,omitempty"`
+}
+
 type Config struct {
 	Version         string                `yaml:"version"`
 	EpisodesDir     string                `yaml:"episodes_dir"`
@@ -379,9 +248,11 @@ type EmbeddingConfig struct {
 }
 
 type RetrievalConfig struct {
-	TopKDefault   int     `yaml:"top_k_default"`
-	MinSimilarity float64 `yaml:"min_similarity"`
-	HybridWeight  float64 `yaml:"hybrid_weight"`
+	TopKDefault     int     `yaml:"top_k_default"`
+	MinSimilarity   float64 `yaml:"min_similarity"`
+	HybridWeight    float64 `yaml:"hybrid_weight"`
+	IncludePatterns bool    `yaml:"include_patterns"`
+	MaxPatterns     int     `yaml:"max_patterns"`
 }
 
 type ConsolidationConfig struct {
@@ -414,6 +285,8 @@ type PromptPolishingConfig struct {
 	IncludeFailureLessons  bool   `yaml:"include_failure_lessons"`
 	IncludeFullTraces      bool   `yaml:"include_full_traces"`
 	DeduplicateContext     bool   `yaml:"deduplicate_context"`
+	IncludePatterns        bool   `yaml:"include_patterns"`
+	MaxPatterns            int    `yaml:"max_patterns"`
 }
 
 type PolishResult struct {

@@ -22,16 +22,6 @@ config.yaml                — Retrieval, embedding, consolidation settings
 .golangci.yml              — Linter configuration
 ```
 
-## Verification Memory (Issue #103)
-
-- Model: ordered `VerificationRecord` values with canonical types `tests`, `lint`, `builds`, `benchmarks`, `deployments`, `smoke_tests`, `review`, and `observation`; fields are `type`, `command`, `result`, `success`, and `evidence`.
-- Required evidence: executable types require a command; every record requires result or evidence; `verified_success` requires at least one valid successful record. Updates cannot retain `verified_success` after removing its final successful record. Compatibility input `success` normalizes to `unverified_success`.
-- Commands: store the commands actually run, especially `go test ./...`, `go vet ./...`, and `go test -race ./...`, with bounded result or evidence text.
-- Retrieval: `verification_fts` indexes `type`, `command`, `result`, and `evidence` (with SQL `LIKE` fallback if tables are missing). Search filters by verification presence, successful evidence (`verification_success`), and canonical types (`verification_types`). Verification matches contribute to local score alongside metadata and lexical/vector relevance. Prompt rendering emits sanitized, bounded summaries with command presence and result/evidence excerpts.
-- Migration: legacy verification JSON strings and objects become sanitized unsuccessful `observation` rows only when no structured rows exist. Legacy `verified_success` without valid successful evidence becomes `unverified_success` and gains an unsuccessful conversion observation. Rebuild `verification_fts` after backfill.
-- Vector consistency: vector replacement and deletion use durable `vector_reconcile` rows; empty problem and trace form a deletion tombstone. Failed vector replacement restores the complete database episode, including verification rows, before retry reconciliation.
-- Retention: compaction copies active verification rows to archive rows transactionally in position order. Active deletion cascades active rows, archived records survive normal retention, and permanent archive pruning cascades archived rows.
-
 ## Technology
 
 - **Go 1.25+** with **github.com/mark3labs/mcp-go** (stdio transport)
@@ -43,9 +33,9 @@ config.yaml                — Retrieval, embedding, consolidation settings
 
 Two-layer retrieval combines structured failure memory with episode text:
 
-1. **FTS5 / SQL**: Searches `problem` + `thinking_trace`, structured `failed_approaches`, and `verification_fts` (`type`, `command`, `result`, `evidence`). Any of these indices can admit an episode. Missing or corrupt FTS5 tables fall back to bounded SQL `LIKE` queries over the same fields.
-2. **Vector**: Semantic similarity over problem, trace, serialized failed approaches, and bounded verification text containing `type`, `success`, `result`, and `evidence` (commands are omitted); candidates below `0.3` similarity are discarded.
-3. **Merged**: The raw local score combines episode-text admission, verification admission, failure matches, metadata boosts, and verification boosts. Raw local scores are not exposed. When vectors are available, `_local_score` stores and displays the final combined score: `raw_local_score × 0.5 + vector_similarity × 0.5`; `_vector_score` remains the unweighted similarity. Local-only candidates expose half their raw local score as `_local_score`, and vector-only candidates contribute half their similarity. Equal scores sort by newest `created_at`, then ascending episode ID.
+1. **FTS5**: Searches `problem` + `thinking_trace`; a second FTS5 index searches `failed_approaches.approach`, `failure_mode`, `root_cause`, and `lesson`. Either index can admit an episode. Missing/corrupt FTS tables fall back to bounded SQL `LIKE` queries.
+2. **Vector**: Semantic similarity over problem, trace, and serialized failed approaches; candidates below `0.3` similarity are discarded.
+3. **Merged**: Deduplicated score = vector score × `0.5` + local score × `0.5`. Failure matches add a local boost. Equal scores sort by newest `created_at`, then ascending episode ID.
 4. **Filters**: Domain, outcome, repository, tags, and metadata are applied to FTS and vector candidates. Repository matching is exact and case-insensitive; metadata values OR within a key and keys AND together.
 
 Results expose `_local_score`, `_vector_score`, and `failure_matches` with the four failure fields plus match score. When vector embeddings are disabled or unavailable, retrieval remains FTS/SQL-only.
@@ -72,9 +62,7 @@ Vector data stored in `~/.reasoning-memory/vector/` (chromem-go persistent DB).
 
 ## Startup Reconciliation and Conditional Reindex
 
-When embeddings are enabled and the configured vector store initializes successfully, startup opens SQLite through `NewWithVector`. That path drains the durable SQLite `vector_reconcile` queue into the configured vector store before the server becomes available. Workers conditionally claim rows using unique owner tokens and 30-second expiries, delete only rows they own, immediately release failed claims, and retry expired claims. ReconcileVectorStore returns `ErrVectorReconciliationPending` after 10 bounded batches if queue items remain. Migration upserts preserve existing content, tombstones, claims, and each existing row's `queue_generation`, raising only `migration_version`. Producer updates through `enqueueVectorReconcileTx`, its `enqueueVectorReconcileDB` wrapper, or `enqueueVectorDeleteTx` increment `store_metadata.vector_queue_generation` and stamp the resulting generation on the inserted or updated row. Readiness checks call the same reconciliation path, so an unresolved vector operation or pending queue items make readiness fail with `ErrVectorReconciliationPending` instead of silently reporting a synchronized store.
-
-`store_metadata.vector_content_version` advances only after a transaction observes zero total queue rows across all generations; normal update rows and active claims therefore block version completion. Producer queue helpers (`enqueueVectorReconcileTx` and `enqueueVectorDeleteTx`) increment `store_metadata.vector_queue_generation` atomically and stamp that generation on new/updated queue rows. Diagnose stalls by querying `vector_reconcile` for `migration_version`, `claim_owner`, `claim_expires_at`, and `queue_generation`. An unexpired claim indicates current work; an expired claim is retryable. Verification backfill and FTS rebuild commit atomically before `verification_migration_phase` is set to `verification_backfill_complete`; schema completion uses `schema_migrations_complete`. Graph, concept, and decision families run as independently retryable phases; each completion marker is written after its callback succeeds and uses the exact markers `graph_migration_complete`, `concept_migration_complete`, and `decision_migration_complete`.
+When embeddings are enabled and the configured vector store initializes successfully, startup opens SQLite through `NewWithVector`. That path drains the durable SQLite `vector_reconcile` queue into the configured vector store before the server becomes available. Readiness checks call the same reconciliation path, so an unresolved vector operation makes readiness fail instead of silently reporting a synchronized store.
 
 After reconciliation, startup performs a full reindex only when SQLite contains episodes and the configured vector collection is empty. A non-empty vector collection is not rebuilt automatically.
 
@@ -87,7 +75,7 @@ After reconciliation, startup performs a full reindex only when SQLite contains 
 - Scope: `repo` identifies the repository used by repository filters; matching is exact and case-insensitive (`strings.EqualFold` / `LOWER(repo) = LOWER(?)`); `project` is a distinct optional project scope and is not a repo alias.
 - Failure memory: `failed_approaches` accepts up to 20 objects (`approach`, `failure_mode`, `root_cause`, `lesson`), validated to non-blank strings up to 2,000 code points each, with exact duplicate objects deduplicated after trimming whitespace. Failure content is indexed in FTS5/SQLite, concatenated to vector documents, rendered as warnings in `polish_prompt`, and protected from archive hard pruning.
 - Attribution: `provenance` records the episode origin; optional `confidence` must be finite and in `[0, 1]`.
-- Structured fields: `objectives`, `decisions`, `alternatives`, and `lessons` are string arrays. `verification` is an ordered array of `VerificationRecord` objects and is normalized into relational active/archive tables.
+- Structured fields: `objectives`, `decisions`, `alternatives`, `verification`, and `lessons` are string arrays.
 - Lifecycle: creation initializes `created_at` and `updated_at`; replacement updates preserve `created_at` and advance `updated_at`; archive records retain all rich fields.
 
 Capture auto-detects `repo` only when it is omitted. Detection uses the current Git origin's repository basename, falling back to the current directory basename. `project` is never auto-populated from `repo`.
@@ -111,9 +99,9 @@ All array arguments declare explicit item schemas for Gemini-compatible clients.
 
 1. **Capture**: At task end, `capture_reasoning_episode()` writes episode to SQLite with FTS5 indexing + optional vector embedding.
 
-2. **Retrieve**: `inject_reasoning_context()` at task start uses hybrid search (FTS5 + vector). Returns `<reasoning_memory>` XML for prompt injection.
+2. **Retrieve**: `inject_reasoning_context()` at task start uses hybrid search (FTS5 + vector) to retrieve episodes and `SearchPatterns` to retrieve matching consolidated patterns. Returns `<reasoning_memory>` XML containing `<episode>` and `<pattern>` elements for prompt injection.
 
-3. **Polish**: `polish_prompt()` detects task type (coding/agentic/analysis), detects language, injects skill context from SKILL.md files, and optionally embeds past reasoning.
+3. **Polish**: `polish_prompt()` detects task type (coding/agentic/analysis), detects language, injects skill context from SKILL.md files, embeds relevant prior reasoning, and incorporates pattern guidance (`<pattern>`).
 
 4. **Consolidate**: `consolidate_reasoning()` clusters episodes by domain, merges similar pairs into patterns, prunes stale failures, and rebuilds the search index.
 
@@ -127,7 +115,7 @@ Scans these locations for SKILL.md files:
 ## Migrations and Vector Reconciliation
 
 Opening SQLite applies idempotent migrations automatically:
-- Adds missing `repo`, `labels`, `tier`, `updated_at`, `project`, `provenance`, `confidence`, `objectives`, `decisions`, `alternatives`, `verification`, and `lessons` columns to `episodes` and `episodes_archive` (rich JSON array columns provide schema compatibility while verification data is migrated to structured `episode_verifications`/`episode_verifications_archive` tables).
+- Adds missing `repo`, `labels`, `tier`, `updated_at`, `project`, `provenance`, `confidence`, `objectives`, `decisions`, `alternatives`, `verification`, and `lessons` columns to `episodes` and `episodes_archive`.
 - Backfills legacy outcomes (`success` → `unverified_success`, `partial` → `partial_success`) and sets `updated_at = created_at` when missing.
 - Rebuilds the `episodes_fts` table after backfills.
 - Creates `vector_reconcile` as a durable SQLite queue table (`episode_id`, `problem`, `thinking_trace`, `updated_at`) to record pending vector operations during primary SQLite writes.
