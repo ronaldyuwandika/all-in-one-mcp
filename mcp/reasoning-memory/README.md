@@ -205,7 +205,7 @@ Legacy outcome filters are normalized using the same mappings as capture. `top_k
 
 ### `inject_reasoning_context`
 
-Returns a `<reasoning_memory>` XML block ready for prompt prepending.
+Returns a `<reasoning_memory>` XML block containing relevant episodes (`<episode>`) and consolidated pattern memories (`<pattern>`) ready for prompt prepending.
 
 ```json
 {
@@ -213,6 +213,22 @@ Returns a `<reasoning_memory>` XML block ready for prompt prepending.
   "top_k": 3,
   "include_traces": true
 }
+```
+
+```xml
+<reasoning_memory>
+  <episode>
+    <problem>Refactor service layer</problem>
+    <domain>coding</domain>
+    <outcome>verified_success</outcome>
+    <summary>Used pgxpool for database access</summary>
+  </episode>
+  <pattern id="pat-1">
+    <domain>coding</domain>
+    <consolidated_prompt>Master pattern for database service refactoring</consolidated_prompt>
+    <master_thinking_path>Step 1: Define interface... Step 2: Implement pool...</master_thinking_path>
+  </pattern>
+</reasoning_memory>
 ```
 
 ### `enrich_episode`

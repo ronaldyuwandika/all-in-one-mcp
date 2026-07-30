@@ -23,9 +23,11 @@ var DefaultConfig = models.Config{
 		Enabled:  false,
 	},
 	Retrieval: models.RetrievalConfig{
-		TopKDefault:   3,
-		MinSimilarity: 0.15,
-		HybridWeight:  0.5,
+		TopKDefault:     3,
+		MinSimilarity:   0.15,
+		HybridWeight:    0.5,
+		IncludePatterns: true,
+		MaxPatterns:     2,
 	},
 	Consolidation: models.ConsolidationConfig{
 		PruneAfterDays:        90,
@@ -55,6 +57,8 @@ var DefaultConfig = models.Config{
 		IncludeFailureLessons:  true,
 		IncludeFullTraces:      false,
 		DeduplicateContext:     true,
+		IncludePatterns:        true,
+		MaxPatterns:            2,
 	},
 	LinkIngestion: func() models.LinkIngestionConfig {
 		c := linkcontent.DefaultConfig()
@@ -100,6 +104,12 @@ func Load(path string) (*models.Config, error) {
 	}
 	if cfg.Retrieval.HybridWeight == 0 {
 		cfg.Retrieval.HybridWeight = DefaultConfig.Retrieval.HybridWeight
+	}
+	if cfg.Retrieval.MaxPatterns <= 0 {
+		cfg.Retrieval.MaxPatterns = DefaultConfig.Retrieval.MaxPatterns
+	}
+	if cfg.PromptPolishing.MaxPatterns <= 0 {
+		cfg.PromptPolishing.MaxPatterns = DefaultConfig.PromptPolishing.MaxPatterns
 	}
 	if cfg.Consolidation.PruneAfterDays == 0 {
 		cfg.Consolidation.PruneAfterDays = DefaultConfig.Consolidation.PruneAfterDays

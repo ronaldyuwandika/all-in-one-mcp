@@ -150,6 +150,10 @@ func migrate(db *sql.DB) error {
 			episode_id UNINDEXED, approach, failure_mode, root_cause, lesson,
 			content='episode_failed_approaches', content_rowid='id'
 		)`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS patterns_fts USING fts5(
+			id UNINDEXED, consolidated_prompt, master_thinking_path, domain, tags,
+			content='patterns', content_rowid='rowid'
+		)`,
 		`CREATE TABLE IF NOT EXISTS compaction_stats (
 			key TEXT PRIMARY KEY,
 			value INTEGER NOT NULL DEFAULT 0
@@ -251,6 +255,12 @@ func migrate(db *sql.DB) error {
 			return fmt.Errorf("rebuild failed_approaches fts after backfills: %w", err)
 		}
 	}
+	var hasPatFTS int
+	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'patterns_fts'").Scan(&hasPatFTS); err == nil && hasPatFTS > 0 {
+		if _, err := db.Exec("INSERT INTO patterns_fts(patterns_fts) VALUES('rebuild')"); err != nil {
+			return fmt.Errorf("rebuild patterns fts after backfills: %w", err)
+		}
+	}
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS vector_reconcile (
 		episode_id TEXT PRIMARY KEY,
 		problem TEXT NOT NULL,
@@ -339,6 +349,20 @@ func migrate(db *sql.DB) error {
 			VALUES ('delete', old.id, old.episode_id, old.approach, old.failure_mode, old.root_cause, old.lesson);
 			INSERT INTO failed_approaches_fts(rowid, episode_id, approach, failure_mode, root_cause, lesson)
 			VALUES (new.id, new.episode_id, new.approach, new.failure_mode, new.root_cause, new.lesson);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS patterns_ai AFTER INSERT ON patterns BEGIN
+			INSERT INTO patterns_fts(rowid, id, consolidated_prompt, master_thinking_path, domain, tags)
+			VALUES (new.rowid, new.id, new.consolidated_prompt, new.master_thinking_path, new.domain, new.tags);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS patterns_ad AFTER DELETE ON patterns BEGIN
+			INSERT INTO patterns_fts(patterns_fts, rowid, id, consolidated_prompt, master_thinking_path, domain, tags)
+			VALUES ('delete', old.rowid, old.id, old.consolidated_prompt, old.master_thinking_path, old.domain, old.tags);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS patterns_au AFTER UPDATE ON patterns BEGIN
+			INSERT INTO patterns_fts(patterns_fts, rowid, id, consolidated_prompt, master_thinking_path, domain, tags)
+			VALUES ('delete', old.rowid, old.id, old.consolidated_prompt, old.master_thinking_path, old.domain, old.tags);
+			INSERT INTO patterns_fts(rowid, id, consolidated_prompt, master_thinking_path, domain, tags)
+			VALUES (new.rowid, new.id, new.consolidated_prompt, new.master_thinking_path, new.domain, new.tags);
 		END`,
 	}
 	for _, trigger := range triggers {

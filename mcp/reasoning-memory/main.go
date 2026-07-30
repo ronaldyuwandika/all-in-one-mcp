@@ -784,7 +784,28 @@ func handleInject(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 			}
 		}
 
-		xmlBlock := prompter.BuildXMLEpisodeBlock(episodes)
+		var promptPatterns []prompter.PatternContext
+		if cfg.Retrieval.IncludePatterns {
+			maxPats := cfg.Retrieval.MaxPatterns
+			if maxPats <= 0 {
+				maxPats = 2
+			}
+			pats, err := es.SearchPatterns(problem, "", nil, maxPats)
+			if err == nil {
+				for _, p := range pats {
+					promptPatterns = append(promptPatterns, prompter.PatternContext{
+						ID:                 p.ID,
+						Domain:             p.Domain,
+						ConsolidatedPrompt: p.ConsolidatedPrompt,
+						MasterThinkingPath: p.MasterThinkingPath,
+						Tags:               p.Tags,
+						MergeScore:         p.MergeScore,
+					})
+				}
+			}
+		}
+
+		xmlBlock := prompter.BuildXMLReasoningMemoryBlock(episodes, promptPatterns)
 		return mcp.NewToolResultText(xmlBlock), nil
 	}
 }
@@ -883,6 +904,7 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 
 		var contextStr string
 		var promptEpisodes []prompter.EpisodeContext
+		var promptPatterns []prompter.PatternContext
 		var linkedContextStr string
 		linkedWarnings := []string{}
 		if linkService != nil {
@@ -942,9 +964,28 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 						})
 					}
 				}
-				contextCount = len(ctxEpisodes)
+				if cfg.PromptPolishing.IncludePatterns {
+					maxPats := cfg.PromptPolishing.MaxPatterns
+					if maxPats <= 0 {
+						maxPats = 2
+					}
+					pats, err := es.SearchPatterns(rawPrompt, domain, nil, maxPats)
+					if err == nil {
+						for _, p := range pats {
+							promptPatterns = append(promptPatterns, prompter.PatternContext{
+								ID:                 p.ID,
+								Domain:             p.Domain,
+								ConsolidatedPrompt: p.ConsolidatedPrompt,
+								MasterThinkingPath: p.MasterThinkingPath,
+								Tags:               p.Tags,
+								MergeScore:         p.MergeScore,
+							})
+						}
+					}
+				}
+				contextCount = len(ctxEpisodes) + len(promptPatterns)
 				promptEpisodes = ctxEpisodes
-				contextStr = prompter.BuildXMLEpisodeBlock(ctxEpisodes)
+				contextStr = prompter.BuildXMLReasoningMemoryBlock(ctxEpisodes, promptPatterns)
 			}
 		}
 
@@ -952,7 +993,7 @@ func handlePolish(es *store.EpisodeStore, cfg *models.Config) server.ToolHandler
 			RawPrompt: rawPrompt, TargetAgent: targetAgent, Domain: domain,
 			Repo: repo, Context: contextStr, LinkedContext: linkedContextStr, SkillName: skillName,
 			OutputFormat: outputFormat, MaxChars: cfg.PromptPolishing.MaxPromptChars,
-			ContextCount: contextCount, Episodes: promptEpisodes,
+			ContextCount: contextCount, Episodes: promptEpisodes, Patterns: promptPatterns,
 		})
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("polish failed: %v", err)), nil

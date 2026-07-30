@@ -99,9 +99,9 @@ All array arguments declare explicit item schemas for Gemini-compatible clients.
 
 1. **Capture**: At task end, `capture_reasoning_episode()` writes episode to SQLite with FTS5 indexing + optional vector embedding.
 
-2. **Retrieve**: `inject_reasoning_context()` at task start uses hybrid search (FTS5 + vector). Returns `<reasoning_memory>` XML for prompt injection.
+2. **Retrieve**: `inject_reasoning_context()` at task start uses hybrid search (FTS5 + vector) to retrieve episodes and `SearchPatterns` to retrieve matching consolidated patterns. Returns `<reasoning_memory>` XML containing `<episode>` and `<pattern>` elements for prompt injection.
 
-3. **Polish**: `polish_prompt()` detects task type (coding/agentic/analysis), detects language, injects skill context from SKILL.md files, and optionally embeds past reasoning.
+3. **Polish**: `polish_prompt()` detects task type (coding/agentic/analysis), detects language, injects skill context from SKILL.md files, embeds relevant prior reasoning, and incorporates pattern guidance (`<pattern>`).
 
 4. **Consolidate**: `consolidate_reasoning()` clusters episodes by domain, merges similar pairs into patterns, prunes stale failures, and rebuilds the search index.
 

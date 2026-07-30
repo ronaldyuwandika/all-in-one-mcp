@@ -98,6 +98,38 @@ func TestBuildXMLEpisodeBlock(t *testing.T) {
 	}
 }
 
+func TestBuildXMLReasoningMemoryBlockWithPatterns(t *testing.T) {
+	episodes := []EpisodeContext{
+		{
+			Problem:       "Test problem",
+			Domain:        "coding",
+			Outcome:       "success",
+			Tags:          []string{"go", "test"},
+			ThinkingTrace: "1. Write test\n2. Verify",
+		},
+	}
+	patterns := []PatternContext{
+		{
+			ID:                 "pat-100",
+			Domain:             "coding",
+			ConsolidatedPrompt: "Master pattern for testing",
+			MasterThinkingPath: "Step 1: Setup\nStep 2: Assert",
+			Tags:               []string{"testing"},
+		},
+	}
+
+	xml := BuildXMLReasoningMemoryBlock(episodes, patterns)
+	if !strings.Contains(xml, "<reasoning_memory>") {
+		t.Error("expected <reasoning_memory> wrapper")
+	}
+	if !strings.Contains(xml, "<pattern id=\"pat-100\">") {
+		t.Error("expected <pattern id=\"pat-100\"> in XML")
+	}
+	if !strings.Contains(xml, "Master pattern for testing") {
+		t.Error("expected consolidated prompt in XML")
+	}
+}
+
 func TestBuildXMLEpisodeBlockEmpty(t *testing.T) {
 	xml := BuildXMLEpisodeBlock(nil)
 	if xml != "" {

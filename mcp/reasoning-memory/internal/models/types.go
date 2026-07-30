@@ -200,6 +200,15 @@ type Pattern struct {
 	Tags               []string   `json:"tags" yaml:"tags"`
 }
 
+type PatternContext struct {
+	ID                 string   `json:"id" yaml:"id"`
+	Domain             string   `json:"domain" yaml:"domain"`
+	ConsolidatedPrompt string   `json:"consolidated_prompt" yaml:"consolidated_prompt"`
+	MasterThinkingPath string   `json:"master_thinking_path" yaml:"master_thinking_path"`
+	Tags               []string `json:"tags,omitempty" yaml:"tags,omitempty"`
+	MergeScore         float64  `json:"merge_score,omitempty" yaml:"merge_score,omitempty"`
+}
+
 type Config struct {
 	Version         string                `yaml:"version"`
 	EpisodesDir     string                `yaml:"episodes_dir"`
@@ -239,9 +248,11 @@ type EmbeddingConfig struct {
 }
 
 type RetrievalConfig struct {
-	TopKDefault   int     `yaml:"top_k_default"`
-	MinSimilarity float64 `yaml:"min_similarity"`
-	HybridWeight  float64 `yaml:"hybrid_weight"`
+	TopKDefault     int     `yaml:"top_k_default"`
+	MinSimilarity   float64 `yaml:"min_similarity"`
+	HybridWeight    float64 `yaml:"hybrid_weight"`
+	IncludePatterns bool    `yaml:"include_patterns"`
+	MaxPatterns     int     `yaml:"max_patterns"`
 }
 
 type ConsolidationConfig struct {
@@ -274,6 +285,8 @@ type PromptPolishingConfig struct {
 	IncludeFailureLessons  bool   `yaml:"include_failure_lessons"`
 	IncludeFullTraces      bool   `yaml:"include_full_traces"`
 	DeduplicateContext     bool   `yaml:"deduplicate_context"`
+	IncludePatterns        bool   `yaml:"include_patterns"`
+	MaxPatterns            int    `yaml:"max_patterns"`
 }
 
 type PolishResult struct {

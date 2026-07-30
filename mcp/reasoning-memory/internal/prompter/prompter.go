@@ -26,7 +26,10 @@ type Options struct {
 	MaxChars      int
 	ContextCount  int
 	Episodes      []EpisodeContext
+	Patterns      []PatternContext
 }
+
+type PatternContext models.PatternContext
 
 type PromptModel struct {
 	TargetAgent        string                  `json:"target_agent" xml:"target_agent,attr"`
@@ -43,6 +46,7 @@ type PromptModel struct {
 	Warnings           []string                `json:"warnings,omitempty" xml:"warnings>item,omitempty"`
 	LinkedSources      []string                `json:"linked_sources,omitempty" xml:"linked_sources>source,omitempty"`
 	FailedApproaches   []models.FailedApproach `json:"failed_approaches,omitempty" xml:"failed_approaches>item,omitempty"`
+	Patterns           []models.PatternContext `json:"patterns,omitempty" xml:"patterns>pattern,omitempty"`
 }
 
 type PolishResult struct {
@@ -309,6 +313,12 @@ func buildPromptModel(opts Options, target, taskType, language string, warnings 
 			model.Warnings = append(model.Warnings, msg)
 		}
 	}
+	for _, pat := range opts.Patterns {
+		model.Patterns = append(model.Patterns, models.PatternContext(pat))
+		if pat.ConsolidatedPrompt != "" {
+			model.Context = append(model.Context, "Consolidated pattern guidance ("+pat.ID+"):\n"+pat.ConsolidatedPrompt)
+		}
+	}
 
 	switch taskType {
 	case "bug_fix", "debugging":
@@ -440,8 +450,8 @@ func applyBudget(text string, maxChars int) (string, bool) {
 	return strings.TrimRight(cut, " \n") + suffix, true
 }
 
-func BuildXMLEpisodeBlock(episodes []EpisodeContext) string {
-	if len(episodes) == 0 {
+func BuildXMLReasoningMemoryBlock(episodes []EpisodeContext, patterns []PatternContext) string {
+	if len(episodes) == 0 && len(patterns) == 0 {
 		return ""
 	}
 	var b strings.Builder
@@ -471,8 +481,36 @@ func BuildXMLEpisodeBlock(episodes []EpisodeContext) string {
 		}
 		b.WriteString("  </episode>\n")
 	}
+	seenPats := make(map[string]bool)
+	for _, pat := range patterns {
+		pat.ConsolidatedPrompt = security.Text(strings.TrimSpace(pat.ConsolidatedPrompt))
+		pat.MasterThinkingPath = security.Text(strings.TrimSpace(pat.MasterThinkingPath))
+		key := strings.ToLower(strings.Join(strings.Fields(pat.ConsolidatedPrompt), " "))
+		if key == "" || seenPats[key] {
+			continue
+		}
+		seenPats[key] = true
+		fmt.Fprintf(&b, "  <pattern id=\"%s\">\n", escapeXML(pat.ID))
+		if pat.Domain != "" {
+			fmt.Fprintf(&b, "    <domain>%s</domain>\n", escapeXML(pat.Domain))
+		}
+		if len(pat.Tags) > 0 {
+			fmt.Fprintf(&b, "    <tags>%s</tags>\n", escapeXML(strings.Join(pat.Tags, ",")))
+		}
+		if pat.ConsolidatedPrompt != "" {
+			fmt.Fprintf(&b, "    <consolidated_prompt>%s</consolidated_prompt>\n", escapeXML(pat.ConsolidatedPrompt))
+		}
+		if pat.MasterThinkingPath != "" {
+			fmt.Fprintf(&b, "    <master_thinking_path>%s</master_thinking_path>\n", escapeXML(pat.MasterThinkingPath))
+		}
+		b.WriteString("  </pattern>\n")
+	}
 	b.WriteString("</reasoning_memory>")
 	return security.Text(b.String())
+}
+
+func BuildXMLEpisodeBlock(episodes []EpisodeContext) string {
+	return BuildXMLReasoningMemoryBlock(episodes, nil)
 }
 
 func escapeXML(value string) string {
