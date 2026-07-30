@@ -269,7 +269,7 @@ func (es *EpisodeStore) SearchPatterns(query string, domainFilter string, tagsFi
 		FROM patterns_fts f
 		JOIN patterns p ON p.rowid = f.rowid
 		WHERE patterns_fts MATCH ?
-		ORDER BY bm25(patterns_fts) ASC LIMIT ?`, ftsQuery, topK*2)
+		ORDER BY bm25(patterns_fts) ASC LIMIT ?`, ftsQuery, topK*5)
 
 	if err != nil {
 		return es.fallbackSearchPatterns(query, domainFilter, tagsFilter, topK)
@@ -331,13 +331,15 @@ func (es *EpisodeStore) fallbackSearchPatterns(query string, domainFilter string
 	var conditions []string
 	var args []any
 	for _, term := range terms {
-		escaped := strings.ReplaceAll(term, "'", "''")
-		escaped = strings.ReplaceAll(escaped, "\\", "\\\\")
+		escaped := strings.ReplaceAll(term, "\\", "\\\\")
+		escaped = strings.ReplaceAll(escaped, "'", "''")
+		escaped = strings.ReplaceAll(escaped, "%", "\\%")
+		escaped = strings.ReplaceAll(escaped, "_", "\\_")
 		pattern := "%" + escaped + "%"
 		conditions = append(conditions, "(consolidated_prompt LIKE ? ESCAPE '\\' OR master_thinking_path LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')")
 		args = append(args, pattern, pattern, pattern)
 	}
-	q := `SELECT id, created_at, domain, merge_score, sources, consolidated_prompt, master_thinking_path, master_tool_calls, tags FROM patterns WHERE ` + strings.Join(conditions, " OR ") + ` LIMIT 50`
+	q := `SELECT id, created_at, domain, merge_score, sources, consolidated_prompt, master_thinking_path, master_tool_calls, tags FROM patterns WHERE ` + strings.Join(conditions, " OR ") + ` LIMIT 100`
 	rows, err := es.db.Query(q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("fallback search patterns: %w", err)

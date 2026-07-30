@@ -190,4 +190,13 @@ func TestSearchPatterns(t *testing.T) {
 	if pats[0].ID != pid {
 		t.Errorf("expected pattern ID %s, got %s", pid, pats[0].ID)
 	}
+
+	// Test fallback search with LIKE special wildcards (% and _)
+	fallbackPats, err := es.fallbackSearchPatterns("100%_concurrency", "coding", nil, 5)
+	if err != nil {
+		t.Fatalf("fallback search patterns: %v", err)
+	}
+	if len(fallbackPats) != 0 {
+		t.Errorf("expected 0 patterns for non-matching wildcard query, got %d", len(fallbackPats))
+	}
 }

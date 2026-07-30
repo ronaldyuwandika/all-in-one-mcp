@@ -483,9 +483,11 @@ func BuildXMLReasoningMemoryBlock(episodes []EpisodeContext, patterns []PatternC
 	}
 	seenPats := make(map[string]bool)
 	for _, pat := range patterns {
+		pat.ID = security.Text(strings.TrimSpace(pat.ID))
+		pat.Domain = security.Text(strings.TrimSpace(pat.Domain))
 		pat.ConsolidatedPrompt = security.Text(strings.TrimSpace(pat.ConsolidatedPrompt))
 		pat.MasterThinkingPath = security.Text(strings.TrimSpace(pat.MasterThinkingPath))
-		key := strings.ToLower(strings.Join(strings.Fields(pat.ConsolidatedPrompt), " "))
+		key := strings.ToLower(pat.ID)
 		if key == "" || seenPats[key] {
 			continue
 		}
@@ -495,7 +497,15 @@ func BuildXMLReasoningMemoryBlock(episodes []EpisodeContext, patterns []PatternC
 			fmt.Fprintf(&b, "    <domain>%s</domain>\n", escapeXML(pat.Domain))
 		}
 		if len(pat.Tags) > 0 {
-			fmt.Fprintf(&b, "    <tags>%s</tags>\n", escapeXML(strings.Join(pat.Tags, ",")))
+			cleanTags := make([]string, 0, len(pat.Tags))
+			for _, t := range pat.Tags {
+				if ct := security.Text(strings.TrimSpace(t)); ct != "" {
+					cleanTags = append(cleanTags, escapeXML(ct))
+				}
+			}
+			if len(cleanTags) > 0 {
+				fmt.Fprintf(&b, "    <tags>%s</tags>\n", strings.Join(cleanTags, ","))
+			}
 		}
 		if pat.ConsolidatedPrompt != "" {
 			fmt.Fprintf(&b, "    <consolidated_prompt>%s</consolidated_prompt>\n", escapeXML(pat.ConsolidatedPrompt))
