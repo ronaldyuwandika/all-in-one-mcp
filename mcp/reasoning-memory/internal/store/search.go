@@ -14,6 +14,12 @@ import (
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/security"
 )
 
+type SearchOptions struct {
+	MetadataFilter      map[string][]string
+	VerificationTypes   []string
+	VerificationSuccess *bool
+}
+
 type searchRow struct {
 	ID              string
 	Problem         string
@@ -35,7 +41,7 @@ type searchRow struct {
 	DurationSeconds int
 }
 
-func (es *EpisodeStore) SearchLocal(query string, domainFilter, outcomeFilter, repoFilter string, tagsFilter []string, topK int, metadataFilter ...map[string][]string) ([]models.EpisodeSummary, error) {
+func (es *EpisodeStore) SearchLocal(query string, domainFilter, outcomeFilter, repoFilter string, tagsFilter []string, topK int, options ...any) ([]models.EpisodeSummary, error) {
 	query = security.Text(query)
 	domainFilter = security.Text(domainFilter)
 	outcomeFilter = security.Text(outcomeFilter)
@@ -48,12 +54,19 @@ func (es *EpisodeStore) SearchLocal(query string, domainFilter, outcomeFilter, r
 		topK = 5
 	}
 
-	var mf map[string][]string
-	if len(metadataFilter) > 0 {
-		mf = security.Labels(metadataFilter[0])
+	var opts SearchOptions
+	if len(options) > 0 {
+		switch v := options[0].(type) {
+		case SearchOptions:
+			opts = v
+		case map[string][]string:
+			opts.MetadataFilter = v
+		}
+		opts.MetadataFilter = security.Labels(opts.MetadataFilter)
+		opts.VerificationTypes = security.Strings(opts.VerificationTypes)
 	}
 
-	ftsResults, err := es.ftsSearch(query, domainFilter, outcomeFilter, repoFilter, tagsFilter, topK, mf)
+	ftsResults, err := es.ftsSearch(query, domainFilter, outcomeFilter, repoFilter, tagsFilter, topK, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -73,64 +86,36 @@ func (es *EpisodeStore) SearchLocal(query string, domainFilter, outcomeFilter, r
 		return ftsResults, nil
 	}
 
-	ftsByID := make(map[string]*models.EpisodeSummary)
-	for i := range ftsResults {
-		ftsByID[ftsResults[i].ID] = &ftsResults[i]
-	}
-
-	vecScores := make(map[string]float64)
-	for _, vr := range vecResults {
-		vecScores[vr.ID] = vr.Similarity
+	const hybridWeight = 0.5
+	candidates := make(map[string]models.EpisodeSummary, len(ftsResults)+len(vecResults))
+	for _, summary := range ftsResults {
+		summary.LocalScore = math.Round(summary.LocalScore*(1-hybridWeight)*1000) / 1000
+		candidates[summary.ID] = summary
 	}
 	failureMatches, err := es.searchFailedApproaches(query)
 	if err != nil {
 		return nil, err
 	}
-
-	hybridWeight := 0.5
-
-	type scoredResult struct {
-		summary models.EpisodeSummary
-		score   float64
-	}
-	var hybrid []scoredResult
-
 	for _, vr := range vecResults {
 		if vr.Similarity < 0.3 {
 			continue
 		}
-		summary, err := es.GetSummary(vr.ID)
-		if err != nil || summary == nil {
-			continue
-		}
-		if !matchesSearchFilters(summary, domainFilter, outcomeFilter, repoFilter, tagsFilter, mf) {
-			continue
-		}
-		score := vr.Similarity * hybridWeight
-		if existing, ok := ftsByID[vr.ID]; ok {
-			score += existing.LocalScore * (1 - hybridWeight)
-			existing.VectorScore = math.Round(vr.Similarity*1000) / 1000
-			existing.LocalScore = math.Round(score*1000) / 1000
-		} else {
-			summary.LocalScore = math.Round(score*1000) / 1000
-			summary.VectorScore = math.Round(vr.Similarity*1000) / 1000
+		summary, ok := candidates[vr.ID]
+		if !ok {
+			loaded, err := es.GetSummary(vr.ID)
+			if err != nil || loaded == nil || !matchesSearchFilters(loaded, domainFilter, outcomeFilter, repoFilter, tagsFilter, opts) {
+				continue
+			}
+			summary = *loaded
 			summary.FailureMatches = failureMatches[summary.ID]
-			hybrid = append(hybrid, scoredResult{summary: *summary, score: score})
 		}
-
+		summary.VectorScore = math.Round(vr.Similarity*1000) / 1000
+		summary.LocalScore = math.Round((summary.LocalScore+vr.Similarity*hybridWeight)*1000) / 1000
+		candidates[vr.ID] = summary
 	}
-
-	for i := range ftsResults {
-		if _, ok := vecScores[ftsResults[i].ID]; !ok {
-			score := ftsResults[i].LocalScore * (1 - hybridWeight)
-			ftsResults[i].LocalScore = math.Round(score*1000) / 1000
-			ftsResults[i].VectorScore = 0
-			hybrid = append(hybrid, scoredResult{summary: ftsResults[i], score: score})
-		}
-	}
-
-	for _, sr := range hybrid {
-		ftsResults = append(ftsResults, sr.summary)
+	ftsResults = ftsResults[:0]
+	for _, summary := range candidates {
+		ftsResults = append(ftsResults, summary)
 	}
 
 	sort.Slice(ftsResults, func(i, j int) bool {
@@ -153,14 +138,22 @@ func (es *EpisodeStore) SearchLocal(query string, domainFilter, outcomeFilter, r
 	return ftsResults, nil
 }
 
-func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, repoFilter string, tagsFilter []string, topK int, metadataFilter map[string][]string) ([]models.EpisodeSummary, error) {
+func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, repoFilter string, tagsFilter []string, topK int, opts SearchOptions) ([]models.EpisodeSummary, error) {
+	metadataFilter := opts.MetadataFilter
 	queryWords := strings.Fields(strings.ToLower(query))
 
 	ftsRows, err := es.searchFTS(query, repoFilter)
 	if err != nil {
-		return nil, err
+		ftsRows, err = es.fallbackSearch(query, repoFilter)
+		if err != nil {
+			return nil, err
+		}
 	}
 	failureMatches, err := es.searchFailedApproaches(query)
+	if err != nil {
+		return nil, err
+	}
+	verifHits, err := es.searchVerifications(query, repoFilter)
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +169,36 @@ func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, rep
 		if err != nil {
 			return nil, err
 		}
-		ftsRows = append(ftsRows, rows...)
+		for _, r := range rows {
+			if !seenRows[r.ID] {
+				ftsRows = append(ftsRows, r)
+				seenRows[r.ID] = true
+			}
+		}
+	}
+	for id := range verifHits {
+		if seenRows[id] {
+			continue
+		}
+		rows, err := es.loadSearchRows([]string{id})
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range rows {
+			if !seenRows[r.ID] {
+				ftsRows = append(ftsRows, r)
+				seenRows[r.ID] = true
+			}
+		}
+	}
+
+	ids := make([]string, 0, len(ftsRows))
+	for _, row := range ftsRows {
+		ids = append(ids, row.ID)
+	}
+	verificationByID, err := es.verificationSummaries(ids)
+	if err != nil {
+		return nil, err
 	}
 
 	scored := make(map[string]float64)
@@ -296,6 +318,22 @@ func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, rep
 		if matches := failureMatches[r.ID]; len(matches) > 0 {
 			score += 0.15
 		}
+		verification, ok := verificationByID[r.ID]
+		if !ok {
+			verification, err = es.verificationSummary(r.ID)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if !matchesVerificationFilters(verification, opts.VerificationTypes, opts.VerificationSuccess) {
+			continue
+		}
+		if verifHits[r.ID] {
+			score += 0.10
+		}
+		if r.Outcome == models.OutcomeVerifiedSuccess && verification.SuccessfulVerificationCount > 0 {
+			score += 0.05
+		}
 
 		if score > 0 {
 			if existing, ok := scored[r.ID]; !ok || score > existing {
@@ -342,27 +380,35 @@ func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, rep
 				if r.Confidence.Valid {
 					confidencePtr = &r.Confidence.Float64
 				}
+				verifSummary := verificationByID[r.ID]
+				if verifSummary == nil {
+					verifSummary = &models.EpisodeSummary{}
+				}
 				s := models.EpisodeSummary{
-					ID:              r.ID,
-					CreatedAt:       r.CreatedAt,
-					UpdatedAt:       r.UpdatedAt,
-					Problem:         truncate(r.Problem, 200),
-					Domain:          r.Domain,
-					Outcome:         models.EpisodeOutcome(r.Outcome),
-					Tier:            models.MemoryTier(r.Tier),
-					Tags:            tags,
-					Repo:            r.Repo,
-					Project:         r.Project,
-					Provenance:      r.Provenance,
-					Confidence:      confidencePtr,
-					Labels:          labels,
-					StepCount:       len(steps),
-					ToolCount:       len(toolCalls),
-					StepTypes:       stepTypes(steps),
-					ModelID:         r.ModelID,
-					DurationSeconds: r.DurationSeconds,
-					FailureMatches:  failureMatches[r.ID],
-					LocalScore:      math.Round(entry.score*1000) / 1000,
+					ID:                          r.ID,
+					CreatedAt:                   r.CreatedAt,
+					UpdatedAt:                   r.UpdatedAt,
+					Problem:                     truncate(r.Problem, 200),
+					Domain:                      r.Domain,
+					Outcome:                     models.EpisodeOutcome(r.Outcome),
+					Tier:                        models.MemoryTier(r.Tier),
+					Tags:                        tags,
+					Repo:                        r.Repo,
+					Project:                     r.Project,
+					Provenance:                  r.Provenance,
+					Confidence:                  confidencePtr,
+					Labels:                      labels,
+					StepCount:                   len(steps),
+					ToolCount:                   len(toolCalls),
+					StepTypes:                   stepTypes(steps),
+					ModelID:                     r.ModelID,
+					DurationSeconds:             r.DurationSeconds,
+					FailureMatches:              failureMatches[r.ID],
+					VerificationCount:           verifSummary.VerificationCount,
+					SuccessfulVerificationCount: verifSummary.SuccessfulVerificationCount,
+					VerificationTypes:           verifSummary.VerificationTypes,
+					VerificationSummaries:       verifSummary.VerificationSummaries,
+					LocalScore:                  math.Round(entry.score*1000) / 1000,
 				}
 				results = append(results, s)
 				break
@@ -371,6 +417,144 @@ func (es *EpisodeStore) ftsSearch(query string, domainFilter, outcomeFilter, rep
 	}
 
 	return results, nil
+}
+
+func (es *EpisodeStore) verificationSummaries(episodeIDs []string) (map[string]*models.EpisodeSummary, error) {
+	out := make(map[string]*models.EpisodeSummary, len(episodeIDs))
+	if len(episodeIDs) == 0 {
+		return out, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(episodeIDs)), ",")
+	args := make([]any, len(episodeIDs))
+	for i, id := range episodeIDs {
+		args[i] = id
+	}
+	rows, err := es.db.Query(`SELECT episode_id, type, command, result, success, evidence FROM episode_verifications WHERE episode_id IN (`+placeholders+`) ORDER BY episode_id, position`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("batch get verifications: %w", err)
+	}
+	defer rows.Close()
+
+	recordsByEpisode := make(map[string][]models.VerificationRecord)
+	for rows.Next() {
+		var epID string
+		var record models.VerificationRecord
+		var success int
+		if err := rows.Scan(&epID, &record.Type, &record.Command, &record.Result, &success, &record.Evidence); err != nil {
+			return nil, fmt.Errorf("scan batch verification: %w", err)
+		}
+		record.Success = success != 0
+		recordsByEpisode[epID] = append(recordsByEpisode[epID], record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for _, id := range episodeIDs {
+		records := recordsByEpisode[id]
+		summary := &models.EpisodeSummary{VerificationCount: len(records)}
+		types := make(map[string]bool)
+		for _, record := range records {
+			if record.Success {
+				summary.SuccessfulVerificationCount++
+			}
+			types[string(record.Type)] = true
+		}
+		for typ := range types {
+			summary.VerificationTypes = append(summary.VerificationTypes, typ)
+		}
+		sort.Strings(summary.VerificationTypes)
+		sort.SliceStable(records, func(i, j int) bool { return records[i].Success && !records[j].Success })
+		for _, record := range records {
+			if len(summary.VerificationSummaries) == 3 {
+				break
+			}
+			summary.VerificationSummaries = append(summary.VerificationSummaries, models.VerificationSummary{
+				Type: string(record.Type), Success: record.Success, CommandPresent: record.Command != "",
+				ResultExcerpt: truncateRunes(record.Result, 240), EvidenceExcerpt: truncateRunes(record.Evidence, 240),
+			})
+		}
+		out[id] = summary
+	}
+	return out, nil
+}
+
+func (es *EpisodeStore) searchVerifications(query, repoFilter string) (map[string]bool, error) {
+	terms := strings.Fields(query)
+	if len(terms) == 0 {
+		return map[string]bool{}, nil
+	}
+	parts := make([]string, len(terms))
+	for i, term := range terms {
+		parts[i] = fmt.Sprintf(`"%s"`, strings.ReplaceAll(term, `"`, `""`))
+	}
+	var rows *sql.Rows
+	var err error
+	if repoFilter != "" {
+		rows, err = es.db.Query(`SELECT DISTINCT v.episode_id FROM verification_fts x JOIN episode_verifications v ON v.id = x.rowid JOIN episodes e ON e.id = v.episode_id WHERE verification_fts MATCH ? AND LOWER(e.repo) = LOWER(?) ORDER BY e.created_at DESC, e.id ASC LIMIT 50`, strings.Join(parts, " OR "), repoFilter)
+	} else {
+		rows, err = es.db.Query(`SELECT DISTINCT v.episode_id FROM verification_fts x JOIN episode_verifications v ON v.id = x.rowid JOIN episodes e ON e.id = v.episode_id WHERE verification_fts MATCH ? ORDER BY e.created_at DESC, e.id ASC LIMIT 50`, strings.Join(parts, " OR "))
+	}
+	if err != nil {
+		conditions := make([]string, 0, len(terms))
+		args := make([]any, 0, len(terms)*4+1)
+		for _, term := range terms {
+			pattern := "%" + strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(term) + "%"
+			conditions = append(conditions, `(v.type LIKE ? ESCAPE '\' OR v.command LIKE ? ESCAPE '\' OR v.result LIKE ? ESCAPE '\' OR v.evidence LIKE ? ESCAPE '\')`)
+			args = append(args, pattern, pattern, pattern, pattern)
+		}
+		whereClause := strings.Join(conditions, " OR ")
+		if repoFilter != "" {
+			whereClause = fmt.Sprintf("(%s) AND LOWER(e.repo) = LOWER(?)", whereClause)
+			args = append(args, repoFilter)
+		}
+		rows, err = es.db.Query(`SELECT DISTINCT v.episode_id FROM episode_verifications v JOIN episodes e ON e.id = v.episode_id WHERE `+whereClause+` ORDER BY e.created_at DESC, e.id ASC LIMIT 50`, args...)
+		if err != nil {
+			return nil, fmt.Errorf("fallback search verifications: %w", err)
+		}
+	}
+	defer rows.Close()
+	out := make(map[string]bool)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
+func (es *EpisodeStore) verificationSummary(episodeID string) (*models.EpisodeSummary, error) {
+	summaries, err := es.verificationSummaries([]string{episodeID})
+	if err != nil {
+		return nil, err
+	}
+	return summaries[episodeID], nil
+}
+
+func matchesVerificationFilters(summary *models.EpisodeSummary, types []string, success *bool) bool {
+	for _, wanted := range types {
+		found := false
+		for _, typ := range summary.VerificationTypes {
+			if strings.EqualFold(typ, wanted) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	if success != nil {
+		if *success && summary.SuccessfulVerificationCount == 0 {
+			return false
+		}
+		if !*success && summary.VerificationCount == summary.SuccessfulVerificationCount {
+			return false
+		}
+	}
+	return true
 }
 
 func (es *EpisodeStore) searchFailedApproaches(query string) (map[string][]models.FailureMatch, error) {
@@ -486,6 +670,7 @@ func (es *EpisodeStore) searchFTS(query, repoFilter string) ([]searchRow, error)
 		     FROM episodes_fts f
 		     JOIN episodes e ON e.rowid = f.rowid
 		     WHERE episodes_fts MATCH ?
+		     ORDER BY e.created_at DESC, e.id ASC
 		     LIMIT 50`
 		args = append(args, ftsQuery)
 	}
@@ -516,22 +701,25 @@ func (es *EpisodeStore) fallbackSearch(query, repoFilter string) ([]searchRow, e
 	escaped := strings.ReplaceAll(query, "'", "''")
 	escaped = strings.ReplaceAll(escaped, "\\", "\\\\")
 	likePattern := "%" + escaped + "%"
+	verificationMatch := `EXISTS (SELECT 1 FROM episode_verifications v WHERE v.episode_id=e.id AND (v.type LIKE ? ESCAPE '\' OR v.command LIKE ? ESCAPE '\' OR v.result LIKE ? ESCAPE '\' OR v.evidence LIKE ? ESCAPE '\'))`
 	var q string
 	var args []interface{}
 	if repoFilter != "" {
-		q = `SELECT id, problem, thinking_trace, domain, outcome, tier, tags,
-		            repo, labels, steps, tool_calls, created_at, updated_at, project, provenance, confidence, model_id, duration_seconds
-		     FROM episodes
-		     WHERE (problem LIKE ? ESCAPE '\' OR thinking_trace LIKE ? ESCAPE '\')
-		       AND LOWER(repo) = LOWER(?)
+		q = `SELECT e.id, e.problem, e.thinking_trace, e.domain, e.outcome, e.tier, e.tags,
+		            e.repo, e.labels, e.steps, e.tool_calls, e.created_at, e.updated_at, e.project, e.provenance, e.confidence, e.model_id, e.duration_seconds
+		     FROM episodes e
+		     WHERE (e.problem LIKE ? ESCAPE '\' OR e.thinking_trace LIKE ? ESCAPE '\' OR ` + verificationMatch + `)
+		       AND LOWER(e.repo) = LOWER(?)
+		     ORDER BY e.created_at DESC, e.id ASC
 		     LIMIT 50`
-		args = append(args, likePattern, likePattern, repoFilter)
+		args = append(args, likePattern, likePattern, likePattern, likePattern, likePattern, likePattern, repoFilter)
 	} else {
-		q = `SELECT id, problem, thinking_trace, domain, outcome, tier, tags,
-		            repo, labels, steps, tool_calls, created_at, updated_at, project, provenance, confidence, model_id, duration_seconds
-		     FROM episodes WHERE problem LIKE ? ESCAPE '\' OR thinking_trace LIKE ? ESCAPE '\'
+		q = `SELECT e.id, e.problem, e.thinking_trace, e.domain, e.outcome, e.tier, e.tags,
+		            e.repo, e.labels, e.steps, e.tool_calls, e.created_at, e.updated_at, e.project, e.provenance, e.confidence, e.model_id, e.duration_seconds
+		     FROM episodes e WHERE e.problem LIKE ? ESCAPE '\' OR e.thinking_trace LIKE ? ESCAPE '\' OR ` + verificationMatch + `
+		     ORDER BY e.created_at DESC, e.id ASC
 		     LIMIT 50`
-		args = append(args, likePattern, likePattern)
+		args = append(args, likePattern, likePattern, likePattern, likePattern, likePattern, likePattern)
 	}
 
 	rows, err := es.db.Query(q, args...)
@@ -583,7 +771,8 @@ func rankByScore(scored map[string]float64, createdAt map[string]string, topK in
 	return entries
 }
 
-func matchesSearchFilters(summary *models.EpisodeSummary, domainFilter, outcomeFilter, repoFilter string, tagsFilter []string, metadataFilter map[string][]string) bool {
+func matchesSearchFilters(summary *models.EpisodeSummary, domainFilter, outcomeFilter, repoFilter string, tagsFilter []string, opts SearchOptions) bool {
+	metadataFilter := opts.MetadataFilter
 	if domainFilter != "" && summary.Domain != domainFilter {
 		return false
 	}
@@ -622,7 +811,7 @@ func matchesSearchFilters(summary *models.EpisodeSummary, domainFilter, outcomeF
 			return false
 		}
 	}
-	return true
+	return matchesVerificationFilters(summary, opts.VerificationTypes, opts.VerificationSuccess)
 }
 
 func parseTags(jsonStr string) []string {
@@ -655,4 +844,12 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen]
+}
+
+func truncateRunes(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen])
 }

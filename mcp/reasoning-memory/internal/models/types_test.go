@@ -19,6 +19,9 @@ func TestNormalizeFailedApproaches(t *testing.T) {
 	}
 	for _, outcome := range []EpisodeOutcome{OutcomeVerifiedSuccess, OutcomeUnverifiedSuccess, OutcomePartialSuccess, OutcomeFailure, OutcomeAbandoned} {
 		ep := Episode{Problem: "p", Outcome: outcome, FailedApproaches: input}
+		if outcome == OutcomeVerifiedSuccess {
+			ep.Verification = []VerificationRecord{{Type: VerificationTests, Command: "go test", Result: "ok", Success: true}}
+		}
 		if err := ep.Validate(); err != nil {
 			t.Fatalf("outcome %s rejected: %v", outcome, err)
 		}
@@ -42,5 +45,32 @@ func TestNormalizeFailedApproachesValidation(t *testing.T) {
 		if _, err := NormalizeFailedApproaches(tc); err == nil {
 			t.Fatalf("case %d unexpectedly valid", i)
 		}
+	}
+}
+
+func TestNormalizeVerificationRecords(t *testing.T) {
+	input := []VerificationRecord{
+		{Type: VerificationTests, Command: " go test ./... ", Result: " PASS ", Success: true},
+		{Type: VerificationTests, Command: "go test ./...", Result: "PASS", Success: true},
+	}
+	got, err := NormalizeVerificationRecords(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Command != "go test ./..." {
+		t.Fatalf("unexpected normalized verification: %#v", got)
+	}
+}
+
+func TestValidateOutcomeTransition(t *testing.T) {
+	valid := VerificationRecord{Type: VerificationTests, Command: "go test", Result: "ok", Success: true}
+	if err := ValidateOutcomeTransition(&Episode{Outcome: OutcomeUnverifiedSuccess}, &Episode{Outcome: OutcomeVerifiedSuccess, Verification: []VerificationRecord{valid}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateOutcomeTransition(&Episode{Outcome: OutcomeUnverifiedSuccess}, &Episode{Outcome: OutcomeVerifiedSuccess}); err == nil {
+		t.Fatal("expected promotion without evidence to fail")
+	}
+	if err := ValidateOutcomeTransition(&Episode{Outcome: OutcomeVerifiedSuccess, Verification: []VerificationRecord{valid}}, &Episode{Outcome: OutcomeVerifiedSuccess}); err == nil {
+		t.Fatal("expected removal of final evidence to fail")
 	}
 }

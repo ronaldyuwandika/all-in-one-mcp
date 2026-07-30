@@ -289,7 +289,7 @@ func TestAPIPolish(t *testing.T) {
 
 func TestMCPRichEpisodeToolsAndGetArchived(t *testing.T) {
 	req := mcp.CallToolRequest{}
-	req.Params.Arguments = map[string]any{"problem": "mcp rich", "thinking_trace": "trace", "outcome": "verified_success", "confidence": 0.8, "objectives": []any{"obj1"}, "project": "prj"}
+	req.Params.Arguments = map[string]any{"problem": "mcp rich", "thinking_trace": "trace", "outcome": "unverified_success", "confidence": 0.8, "objectives": []any{"obj1"}, "project": "prj"}
 	result, err := handleCapture(es, cfg)(context.Background(), req)
 	if err != nil || result.IsError {
 		t.Fatalf("handleCapture: %v result=%#v", err, result)
@@ -329,7 +329,7 @@ func TestMCPRichEpisodeToolsAndGetArchived(t *testing.T) {
 
 func TestCreateEpisodeAlias(t *testing.T) {
 	req := mcp.CallToolRequest{}
-	req.Params.Arguments = map[string]any{"problem": "alias test", "thinking_trace": "trace", "outcome": "verified_success"}
+	req.Params.Arguments = map[string]any{"problem": "alias test", "thinking_trace": "trace", "outcome": "verified_success", "verification": []any{map[string]any{"type": "tests", "command": "go test ./...", "result": "pass", "success": true}}}
 	result, err := handleCapture(es, cfg)(context.Background(), req)
 	if err != nil || result.IsError {
 		t.Fatalf("handleCapture: %v result=%#v", err, result)

@@ -2,12 +2,141 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/reasoning-memory/internal/models"
 )
+
+func TestVerificationRepoFilteringAndFallbackParity(t *testing.T) {
+	es := testStore(t)
+	for i := 0; i < 60; i++ {
+		repo := "repo-a"
+		if i%2 == 1 {
+			repo = "repo-b"
+		}
+		_, err := es.CreateEpisode(&models.Episode{
+			ID: es.NextID(), Domain: "coding", Outcome: models.OutcomeVerifiedSuccess, Repo: repo,
+			Problem: fmt.Sprintf("prob %d", i), ThinkingTrace: "trace",
+			Verification: []models.VerificationRecord{{Type: models.VerificationTests, Command: "go test", Result: fmt.Sprintf("cross_repo_term_%d", i), Success: true}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	resultsFTS, err := es.SearchLocal("cross_repo_term", "", "", "repo-a", nil, 10)
+	if err != nil || len(resultsFTS) != 10 {
+		t.Fatalf("FTS search repo filter failed: len=%d err=%v", len(resultsFTS), err)
+	}
+	for _, r := range resultsFTS {
+		if !strings.EqualFold(r.Repo, "repo-a") {
+			t.Fatalf("FTS result returned mismatched repo: %s", r.Repo)
+		}
+	}
+
+	for _, trigger := range []string{"episodes_ai", "episodes_ad", "episodes_au", "verification_ai", "verification_ad", "verification_au"} {
+		_, _ = es.db.Exec("DROP TRIGGER IF EXISTS " + trigger)
+	}
+	_, _ = es.db.Exec("DROP TABLE episodes_fts")
+	_, _ = es.db.Exec("DROP TABLE verification_fts")
+
+	resultsFallback, err := es.SearchLocal("cross_repo_term", "", "", "repo-a", nil, 10)
+	if err != nil || len(resultsFallback) != 10 {
+		t.Fatalf("Fallback search repo filter failed: len=%d err=%v", len(resultsFallback), err)
+	}
+	for i := range resultsFallback {
+		if resultsFallback[i].ID != resultsFTS[i].ID {
+			t.Fatalf("FTS and fallback parity mismatch at index %d: fts=%s fallback=%s", i, resultsFTS[i].ID, resultsFallback[i].ID)
+		}
+	}
+}
+
+func TestVerificationOnlyFallbackWithoutFTSTables(t *testing.T) {
+	es := testStore(t)
+	ep := &models.Episode{ID: es.NextID(), Domain: "coding", Outcome: models.OutcomeVerifiedSuccess, Problem: "unrelated fallback", ThinkingTrace: "unrelated trace", Verification: []models.VerificationRecord{
+		{Type: models.VerificationTests, Command: "go test ./...", Result: "dual_fts_missing_verification", Success: true},
+	}}
+	if _, err := es.CreateEpisode(ep); err != nil {
+		t.Fatal(err)
+	}
+	for _, trigger := range []string{"episodes_ai", "episodes_ad", "episodes_au", "verification_ai", "verification_ad", "verification_au"} {
+		_, _ = es.db.Exec("DROP TRIGGER IF EXISTS " + trigger)
+	}
+	if _, err := es.db.Exec("DROP TABLE episodes_fts"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := es.db.Exec("DROP TABLE verification_fts"); err != nil {
+		t.Fatal(err)
+	}
+	results, err := es.SearchLocal("dual_fts_missing_verification", "", "", "", nil, 5)
+	if err != nil || len(results) != 1 || results[0].ID != ep.ID {
+		t.Fatalf("verification fallback mismatch: results=%v err=%v", results, err)
+	}
+}
+
+func TestSearchHybridCandidateDeduplication(t *testing.T) {
+	vs, err := NewVectorStore(t.TempDir(), "mock", "", "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	es, err := NewWithVector(t.TempDir()+"/store.db", vs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer es.Close()
+	ep := &models.Episode{ID: es.NextID(), Domain: "coding", Outcome: models.OutcomeVerifiedSuccess, Problem: "overlap query problem", ThinkingTrace: "overlap query trace", Verification: []models.VerificationRecord{
+		{Type: models.VerificationTests, Command: "go test ./...", Result: "overlap query result", Success: true},
+	}}
+	if _, err := es.CreateEpisode(ep); err != nil {
+		t.Fatal(err)
+	}
+	results, err := es.SearchLocal("overlap query", "", "", "", nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[string]bool)
+	for _, r := range results {
+		if seen[r.ID] {
+			t.Fatalf("duplicate episode ID %s in search results", r.ID)
+		}
+		seen[r.ID] = true
+	}
+}
+
+func TestSearchLocalVerificationEvidence(t *testing.T) {
+	es := testStore(t)
+	ep := &models.Episode{ID: es.NextID(), Domain: "coding", Outcome: models.OutcomeVerifiedSuccess, Problem: "unrelated problem", ThinkingTrace: "unrelated trace", Verification: []models.VerificationRecord{
+		{Type: models.VerificationTests, Command: "go test ./...", Result: strings.Repeat("✓", 300), Success: true, Evidence: "issue 103 regression"},
+		{Type: models.VerificationLint, Command: "go vet ./...", Result: "warning", Success: false},
+	}}
+	if _, err := es.CreateEpisode(ep); err != nil {
+		t.Fatal(err)
+	}
+	results, err := es.SearchLocal("regression", "", "", "", nil, 5, SearchOptions{VerificationTypes: []string{"tests"}, VerificationSuccess: boolPtr(true)})
+	if err != nil || len(results) != 1 {
+		t.Fatalf("results=%v err=%v", results, err)
+	}
+	s := results[0]
+	if s.VerificationCount != 2 || s.SuccessfulVerificationCount != 1 || len(s.VerificationSummaries) != 2 {
+		t.Fatalf("unexpected verification summary: %+v", s)
+	}
+	if s.VerificationSummaries[0].Type != "tests" || len([]rune(s.VerificationSummaries[0].ResultExcerpt)) != 240 {
+		t.Fatalf("successful records must be first and rune-bounded: %+v", s.VerificationSummaries)
+	}
+	if strings.Contains(s.VerificationSummaries[0].ResultExcerpt, "go test") {
+		t.Fatal("summary exposed command")
+	}
+	failed := false
+	results, err = es.SearchLocal("regression", "", "", "", nil, 5, SearchOptions{VerificationSuccess: &failed})
+	if err != nil || len(results) != 1 {
+		t.Fatalf("failed verification filter: results=%v err=%v", results, err)
+	}
+}
+
+func boolPtr(value bool) *bool { return &value }
 
 func TestSearchLocalBasic(t *testing.T) {
 	es := testStore(t)

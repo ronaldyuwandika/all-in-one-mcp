@@ -8,6 +8,16 @@
 
 > Captures, stores, searches, and consolidates LLM reasoning traces for prompt engineering and agent memory.
 
+## Verification Memory (Issue #103)
+
+Verification is structured evidence, not a list of claims. `verification` uses ordered records with canonical types `tests`, `lint`, `builds`, `benchmarks`, `deployments`, `smoke_tests`, `review`, and `observation`; each record contains `type`, optional `command`, `result`, `success`, and optional `evidence`. Executable types require a command, every record requires a result or evidence, and `verified_success` requires at least one valid successful record. Removing the final successful record requires changing the outcome to `unverified_success`; legacy `success` maps to `unverified_success`.
+
+Capture actual commands and bounded result evidence, including `go test ./...`, `go vet ./...`, and `go test -race ./...`. Search supports verification-presence, success, and type filters via `verification_types` (enum of canonical types) and `verification_success` (boolean) in `retrieve_reasoning`; verification matches and verified-success records receive fixed ranking bonuses. Prompt rendering includes bounded verification summaries with command presence and sanitized result/evidence excerpts, never unbounded command transcripts.
+
+Migration converts legacy verification JSON strings or objects into sanitized `observation` records prefixed with `Legacy verification payload converted:` only when structured rows do not already exist. The exact durable phase markers are `verification_backfill_complete`, `schema_migrations_complete`, `graph_migration_complete`, `concept_migration_complete`, and `decision_migration_complete`. Each family is independently retryable and idempotent; its completion marker is written after callback returns, so a later-family failure resumes without rolling back a completed phase. `verification_backfill_complete` is written only after active/archive backfills, outcome correction, and the `verification_fts` rebuild complete in the same transaction. A legacy `verified_success` without valid successful evidence becomes `unverified_success` with an unsuccessful conversion observation.
+
+On startup/migration, a durable `store_metadata` version check (`vector_content_version`) queues active episodes into `vector_reconcile` without replacing existing updates, tombstones, claims, or their per-row `queue_generation`. Producer queue helpers `enqueueVectorReconcileTx`, `enqueueVectorReconcileDB`, and `enqueueVectorDeleteTx` increment `store_metadata.vector_queue_generation` and store the new generation on each inserted or updated row in the same transaction. Migration upserts preserve an existing row's `queue_generation`; on conflict, the only updated column is `migration_version`. Applying a migration version requires the migration target generation to match the current producer generation. Workers claim rows with owner tokens and 30-second expiries, delete only rows they own, release failed claims immediately, and retry expired claims. If the queue remains non-empty after the bounded batch retry budget is exhausted, reconciliation returns `ErrVectorReconciliationPending` to surface pending state during startup or readiness. The applied vector version advances only when the entire queue is empty across migration and normal generations. For diagnostics, inspect `vector_reconcile` fields `migration_version`, `queue_generation`, `claim_owner`, and `claim_expires_at`, then compare `store_metadata.vector_content_version`; active unexpired claims indicate current work, expired claims are retryable, and any pending row prevents version completion. Active verification rows move transactionally to archive rows in position order. Verification rows follow their episode: active rows are deleted with active episodes, archived rows survive normal retention, and permanent archive pruning removes them by foreign-key cascade.
+
 ## Quick Start
 
 From the repository root:
@@ -31,7 +41,8 @@ Episodes retain the original problem and trace while adding structured fields fo
 | `created_at`, `updated_at` | UTC timestamps. Creation initializes both; every successful update preserves `created_at` and advances `updated_at`. |
 | `problem`, `thinking_trace` | Required capture text. |
 | `outcome` | One of `verified_success`, `unverified_success`, `partial_success`, `failure`, or `abandoned`. |
-| `objectives`, `decisions`, `alternatives`, `verification`, `lessons` | Optional string arrays that preserve the reusable parts of an episode without parsing the trace. |
+| `objectives`, `decisions`, `alternatives`, `lessons` | Optional string arrays that preserve reusable parts of an episode without parsing the trace. |
+| `verification` | Optional ordered array of structured verification records. Each record contains `type`, `success`, and optional `command`, `result`, and `evidence`, subject to the validation rules above. |
 | `failed_approaches` | Optional array of failure-memory objects. Each object requires valid UTF-8 and non-blank `approach`, `failure_mode`, `root_cause`, and `lesson`; at most 20 objects are accepted and each field is limited to 2,000 Unicode code points. Exact duplicate objects are removed after whitespace is trimmed. |
 | `repo` | Repository identity used by repository filters. Matching is exact and case-insensitive. When omitted during capture, it is detected from the current Git origin; detection returns the repository basename, or the working-directory basename when no origin is available. |
 | `project` | Optional scope within or across repositories. It is stored independently and does not replace or populate `repo`. |
@@ -56,7 +67,7 @@ Validation requires a non-blank `problem`, a canonical or supported legacy outco
 | `delete_episode` | Delete an active episode | `episode_id` |
 | `record_decision` | Store a decision with rationale, trade-offs, assumptions, evidence, and rejected alternatives | `episode_id`, `title`, `selected`, `rationale` |
 | `retrieve_decisions` | Retrieve repository-scoped decisions | `query`, `repo` |
-| `retrieve_reasoning` | Search episodes using hybrid FTS5 and vector retrieval | `problem` |
+| `retrieve_reasoning` | Search episodes using hybrid FTS5 and vector retrieval (`verification_types` and `verification_success` supported) | `problem` |
 | `inject_reasoning_context` | Get `<reasoning_memory>` XML context for prompt injection | `problem` |
 | `enrich_episode` | Auto-enrich metadata labels for an existing episode | `episode_id` |
 | `consolidate_reasoning` | Cluster, merge, prune, and reindex episodes | — |
@@ -86,7 +97,20 @@ Validation requires a non-blank `problem`, a canonical or supported legacy outco
   "objectives": ["Expose retry attempts"],
   "decisions": ["Use a counter and a trace attribute"],
   "alternatives": ["Log-only instrumentation"],
-  "verification": ["go test ./...", "go test -race ./..."],
+  "verification": [
+    {
+      "type": "tests",
+      "command": "go test ./...",
+      "result": "pass",
+      "success": true
+    },
+    {
+      "type": "tests",
+      "command": "go test -race ./...",
+      "result": "pass",
+      "success": true
+    }
+  ],
   "lessons": ["Keep metric labels bounded"],
   "failed_approaches": [
     {
@@ -139,7 +163,14 @@ The response contains the generated episode ID. Labels are auto-enriched when om
     "objectives": ["Expose retry attempts"],
     "decisions": ["Use a counter and a trace attribute"],
     "alternatives": [],
-    "verification": ["go test ./..."],
+    "verification": [
+      {
+        "type": "tests",
+        "command": "go test ./...",
+        "result": "pass",
+        "success": true
+      }
+    ],
     "lessons": ["Keep metric labels bounded"],
     "tags": ["go", "observability"],
     "labels": {"language": ["go"]},
@@ -161,9 +192,9 @@ The response contains the generated episode ID. Labels are auto-enriched when om
 
 Opening `~/.reasoning-memory/store.db` applies the rich-episode migration automatically. It adds missing rich fields to active and archived episodes, maps persisted `success` to `unverified_success` and `partial` to `partial_success`, backfills missing `updated_at` from `created_at`, and rebuilds FTS5 after those backfills.
 
-When embeddings are configured and initialize successfully, startup uses `NewWithVector`. Creates and updates place pending vector content in the durable SQLite `vector_reconcile` queue as part of the primary transaction, synchronize the configured vector store after commit, and clear completed entries. `NewWithVector` drains remaining entries during initialization, and readiness repeats reconciliation before reporting ready. A full vector reindex runs only when SQLite has episodes and the configured vector collection is empty.
+When embeddings are configured and initialize successfully, startup uses `NewWithVector`. Creates and updates place pending vector content in the durable SQLite `vector_reconcile` queue as part of the primary transaction. Replacement documents include the problem, trace, serialized failed approaches, and bounded verification text containing each included record's `type`, `success`, `result`, and `evidence`; verification commands are omitted. The configured vector store synchronizes after commit and completed entries are cleared. `NewWithVector` drains remaining entries during initialization, and readiness repeats reconciliation before reporting ready. A full vector reindex runs only when SQLite has episodes and the configured vector collection is empty.
 
-Vector reconciliation uses the same durable queue for replacement and deletion. A queue row with empty `problem` and `thinking_trace` is a deletion tombstone; failed deletes remain queued and are retried during vector-enabled startup or readiness. Archive compaction enqueues the tombstone in the same SQLite transaction as removing the active episode.
+Vector reconciliation uses the same durable queue for replacement and deletion. A queue row with empty `problem` and `thinking_trace` is a deletion tombstone; failed deletes remain queued and are retried during vector-enabled startup or readiness. Archive compaction enqueues the tombstone in the same SQLite transaction as removing the active episode. Reconciliation must drain every row through the target queue generation, including migration rows, producer updates, tombstones, and active claims, before advancing `store_metadata.vector_content_version`; any remaining row prevents advancement.
 
 The separate `migrate.py` helper imports legacy episode Markdown and pattern YAML without a record cap. Missing episode values default to current UTC `created_at`, `coding` domain, `unknown` outcome, empty collections/strings, and zero duration. It imports legacy `failed_approaches` into the normalized failure tables. It writes SQLite only; a later vector-enabled startup reindexes imported episodes only when the vector collection is empty.
 
@@ -187,7 +218,7 @@ Stores a decision with its selected approach, rationale, trade-offs, assumptions
 
 ### `retrieve_reasoning`
 
-Hybrid search indexes `problem`, `thinking_trace`, and structured `failed_approaches`. FTS and failure-memory matches are merged with vector candidates, filtered identically, deduplicated by episode ID, and ranked by `vector_score × 0.5 + local_score × 0.5`; ties use newest `created_at`, then ascending ID. Results include `_local_score`, `_vector_score`, and matching `failure_matches` objects (`approach`, `failure_mode`, `root_cause`, `lesson`, `score`) plus `updated_at`, `project`, `provenance`, and `confidence`. FTS5 failures fall back to bounded SQL `LIKE` retrieval.
+Hybrid search indexes episode `problem` and `thinking_trace`, structured `failed_approaches`, and verification `type`, `command`, `result`, and `evidence` through `verification_fts`. Missing or corrupt FTS5 tables fall back to bounded SQL `LIKE` searches over the same fields. Local retrieval combines episode-text admission, verification admission, failure matches, metadata boosts, and verification boosts into one raw local score. With vector results available, `_local_score` is the final combined ranking score: `raw_local_score × 0.5 + vector_similarity × 0.5`; `_vector_score` reports the unweighted similarity. A local-only candidate therefore exposes half its raw local score, while a vector-only candidate contributes half its similarity. Candidates are filtered identically, deduplicated by episode ID, and ties use newest `created_at`, then ascending ID. Results also include matching `failure_matches` objects (`approach`, `failure_mode`, `root_cause`, `lesson`, `score`) plus `updated_at`, `project`, `provenance`, and `confidence`.
 
 ```json
 {
@@ -196,12 +227,14 @@ Hybrid search indexes `problem`, `thinking_trace`, and structured `failed_approa
   "outcome": "verified_success",
   "repo": "my-service",
   "tags": ["concurrency"],
+  "verification_types": ["tests"],
+  "verification_success": true,
   "top_k": 5,
   "metadata_filter": {"language": ["go"], "severity": ["high", "critical"]}
 }
 ```
 
-Legacy outcome filters are normalized using the same mappings as capture. `top_k` defaults to 5 and is capped at 20. `metadata_filter` ORs values within one key and ANDs separate keys.
+Legacy outcome filters are normalized using the same mappings as capture. `top_k` defaults to 5 and is capped at 20. `metadata_filter` ORs values within one key and ANDs separate keys. `verification_types` accepts canonical verification types and requires every requested type to be present. `verification_success: true` requires at least one successful verification record; `false` requires at least one unsuccessful record.
 
 ### `inject_reasoning_context`
 

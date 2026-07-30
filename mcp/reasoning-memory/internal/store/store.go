@@ -72,7 +72,15 @@ func openDatabase(dbPath string) (*sql.DB, error) {
 	return db, nil
 }
 
+const currentVectorContentVersion = 2
+
 func migrate(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin migration tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	ddl := []string{
 		`CREATE TABLE IF NOT EXISTS episodes (
 			id TEXT PRIMARY KEY,
@@ -150,6 +158,20 @@ func migrate(db *sql.DB) error {
 			episode_id UNINDEXED, approach, failure_mode, root_cause, lesson,
 			content='episode_failed_approaches', content_rowid='id'
 		)`,
+		`CREATE TABLE IF NOT EXISTS episode_verifications (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT NOT NULL, position INTEGER NOT NULL,
+			type TEXT NOT NULL, command TEXT NOT NULL DEFAULT '', result TEXT NOT NULL DEFAULT '', success INTEGER NOT NULL DEFAULT 0, evidence TEXT NOT NULL DEFAULT '',
+			UNIQUE(episode_id, position), FOREIGN KEY (episode_id) REFERENCES episodes(id) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS episode_verifications_archive (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, episode_id TEXT NOT NULL, position INTEGER NOT NULL,
+			type TEXT NOT NULL, command TEXT NOT NULL DEFAULT '', result TEXT NOT NULL DEFAULT '', success INTEGER NOT NULL DEFAULT 0, evidence TEXT NOT NULL DEFAULT '',
+			UNIQUE(episode_id, position), FOREIGN KEY (episode_id) REFERENCES episodes_archive(id) ON DELETE CASCADE
+		)`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS verification_fts USING fts5(
+			episode_id UNINDEXED, type, command, result, evidence,
+			content='episode_verifications', content_rowid='id'
+		)`,
 		`CREATE TABLE IF NOT EXISTS compaction_stats (
 			key TEXT PRIMARY KEY,
 			value INTEGER NOT NULL DEFAULT 0
@@ -157,13 +179,13 @@ func migrate(db *sql.DB) error {
 	}
 
 	for _, d := range ddl {
-		if _, err := db.Exec(d); err != nil {
+		if _, err := tx.Exec(d); err != nil {
 			return fmt.Errorf("exec ddl: %w\n%s", err, d)
 		}
 	}
 
 	hasCol := func(name string) bool {
-		if rows, err := db.Query("PRAGMA table_info(episodes)"); err == nil {
+		if rows, err := tx.Query("PRAGMA table_info(episodes)"); err == nil {
 			defer rows.Close()
 			for rows.Next() {
 				var cid int
@@ -180,17 +202,17 @@ func migrate(db *sql.DB) error {
 	}
 
 	if !hasCol("repo") {
-		if _, err := db.Exec("ALTER TABLE episodes ADD COLUMN repo TEXT NOT NULL DEFAULT ''"); err != nil {
+		if _, err := tx.Exec("ALTER TABLE episodes ADD COLUMN repo TEXT NOT NULL DEFAULT ''"); err != nil {
 			return fmt.Errorf("add repo column: %w", err)
 		}
 	}
 	if !hasCol("labels") {
-		if _, err := db.Exec("ALTER TABLE episodes ADD COLUMN labels TEXT NOT NULL DEFAULT '{}'"); err != nil {
+		if _, err := tx.Exec("ALTER TABLE episodes ADD COLUMN labels TEXT NOT NULL DEFAULT '{}'"); err != nil {
 			return fmt.Errorf("add labels column: %w", err)
 		}
 	}
 	if !hasCol("tier") {
-		if _, err := db.Exec("ALTER TABLE episodes ADD COLUMN tier TEXT NOT NULL DEFAULT 'episodic'"); err != nil {
+		if _, err := tx.Exec("ALTER TABLE episodes ADD COLUMN tier TEXT NOT NULL DEFAULT 'episodic'"); err != nil {
 			return fmt.Errorf("add tier column: %w", err)
 		}
 	}
@@ -215,11 +237,11 @@ func migrate(db *sql.DB) error {
 	for _, table := range []string{"episodes", "episodes_archive"} {
 		for _, column := range richColumns {
 			var count int
-			if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?", table, column.name).Scan(&count); err != nil {
+			if err := tx.QueryRow("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?", table, column.name).Scan(&count); err != nil {
 				return fmt.Errorf("inspect %s.%s: %w", table, column.name, err)
 			}
 			if count == 0 {
-				if _, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column.name, column.ddl)); err != nil {
+				if _, err := tx.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column.name, column.ddl)); err != nil {
 					return fmt.Errorf("add %s.%s: %w", table, column.name, err)
 				}
 			}
@@ -227,52 +249,150 @@ func migrate(db *sql.DB) error {
 	}
 	for _, table := range []string{"episodes", "episodes_archive"} {
 		var hasTable int
-		if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&hasTable); err == nil && hasTable > 0 {
-			if _, err := db.Exec("UPDATE " + table + " SET outcome = 'unverified_success' WHERE outcome = 'success'"); err != nil {
+		if err := tx.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", table).Scan(&hasTable); err == nil && hasTable > 0 {
+			if _, err := tx.Exec("UPDATE " + table + " SET outcome = 'unverified_success' WHERE outcome = 'success'"); err != nil {
 				return fmt.Errorf("backfill %s success outcomes: %w", table, err)
 			}
-			if _, err := db.Exec("UPDATE " + table + " SET outcome = 'partial_success' WHERE outcome = 'partial'"); err != nil {
+			if _, err := tx.Exec("UPDATE " + table + " SET outcome = 'partial_success' WHERE outcome = 'partial'"); err != nil {
 				return fmt.Errorf("backfill %s partial outcomes: %w", table, err)
 			}
-			if _, err := db.Exec("UPDATE " + table + " SET updated_at = created_at WHERE updated_at = '' OR updated_at IS NULL"); err != nil {
+			if _, err := tx.Exec("UPDATE " + table + " SET updated_at = created_at WHERE updated_at = '' OR updated_at IS NULL"); err != nil {
 				return fmt.Errorf("backfill %s updated_at: %w", table, err)
 			}
 		}
 	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS store_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)`); err != nil {
+		return fmt.Errorf("create store_metadata: %w", err)
+	}
+	if err := migrateLegacyVerificationsTx(tx, "episodes", "episode_verifications"); err != nil {
+		return err
+	}
+	if err := migrateLegacyVerificationsTx(tx, "episodes_archive", "episode_verifications_archive"); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO store_metadata(key,value) VALUES('verification_migration_phase', 'verification_backfill_complete') ON CONFLICT(key) DO UPDATE SET value=excluded.value`); err != nil {
+		return fmt.Errorf("record verification migration phase: %w", err)
+	}
 	var hasFTS int
-	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'episodes_fts'").Scan(&hasFTS); err == nil && hasFTS > 0 {
-		if _, err := db.Exec("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild')"); err != nil {
+	if err := tx.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'episodes_fts'").Scan(&hasFTS); err == nil && hasFTS > 0 {
+		if _, err := tx.Exec("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild')"); err != nil {
 			return fmt.Errorf("rebuild episodes fts after backfills: %w", err)
 		}
 	}
 	var hasFaFTS int
-	if err := db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'failed_approaches_fts'").Scan(&hasFaFTS); err == nil && hasFaFTS > 0 {
-		if _, err := db.Exec("INSERT INTO failed_approaches_fts(failed_approaches_fts) VALUES('rebuild')"); err != nil {
+	if err := tx.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'failed_approaches_fts'").Scan(&hasFaFTS); err == nil && hasFaFTS > 0 {
+		if _, err := tx.Exec("INSERT INTO failed_approaches_fts(failed_approaches_fts) VALUES('rebuild')"); err != nil {
 			return fmt.Errorf("rebuild failed_approaches fts after backfills: %w", err)
 		}
 	}
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS vector_reconcile (
+	var hasVerifFTS int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'verification_fts'").Scan(&hasVerifFTS); err == nil && hasVerifFTS > 0 {
+		if _, err := tx.Exec("INSERT INTO verification_fts(verification_fts) VALUES('rebuild')"); err != nil {
+			return fmt.Errorf("rebuild verification fts after backfills: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO store_metadata(key,value) VALUES('schema_migrations_phase', 'schema_migrations_complete') ON CONFLICT(key) DO UPDATE SET value=excluded.value`); err != nil {
+		return fmt.Errorf("record schema migration phase: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO store_metadata(key,value) VALUES('verification_migration_phase', 'verification_backfill_complete') ON CONFLICT(key) DO UPDATE SET value=excluded.value`); err != nil {
+		return fmt.Errorf("record verification migration phase: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS vector_reconcile (
 		episode_id TEXT PRIMARY KEY,
 		problem TEXT NOT NULL,
 		thinking_trace TEXT NOT NULL,
-		updated_at TEXT NOT NULL
+		updated_at TEXT NOT NULL,
+		claim_owner TEXT NOT NULL DEFAULT '',
+		claim_expires_at TEXT NOT NULL DEFAULT '',
+		migration_version INTEGER NOT NULL DEFAULT 0,
+		queue_generation INTEGER NOT NULL DEFAULT 0
 	)`); err != nil {
 		return fmt.Errorf("create vector_reconcile: %w", err)
 	}
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS metadata_idx (
+	hasOwnerCol := func() bool {
+		rows, err := tx.Query("PRAGMA table_info(vector_reconcile)")
+		if err != nil {
+			return false
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var cid, notnull, pk int
+			var colName, ctype string
+			var dflt sql.NullString
+			if err := rows.Scan(&cid, &colName, &ctype, &notnull, &dflt, &pk); err == nil && colName == "claim_owner" {
+				return true
+			}
+		}
+		return false
+	}
+	hasMigCol := func() bool {
+		rows, err := tx.Query("PRAGMA table_info(vector_reconcile)")
+		if err != nil {
+			return false
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var cid, notnull, pk int
+			var colName, ctype string
+			var dflt sql.NullString
+			if err := rows.Scan(&cid, &colName, &ctype, &notnull, &dflt, &pk); err == nil && colName == "migration_version" {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasOwnerCol() {
+		if _, err := tx.Exec("ALTER TABLE vector_reconcile ADD COLUMN claim_owner TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("add claim_owner column: %w", err)
+		}
+		if _, err := tx.Exec("ALTER TABLE vector_reconcile ADD COLUMN claim_expires_at TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("add claim_expires_at column: %w", err)
+		}
+	}
+	if !hasMigCol() {
+		if _, err := tx.Exec("ALTER TABLE vector_reconcile ADD COLUMN migration_version INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("add migration_version column: %w", err)
+		}
+	}
+	var hasGen int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM pragma_table_info('vector_reconcile') WHERE name='queue_generation'").Scan(&hasGen); err != nil {
+		return err
+	}
+	if hasGen == 0 {
+		if _, err := tx.Exec("ALTER TABLE vector_reconcile ADD COLUMN queue_generation INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return fmt.Errorf("add queue_generation column: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS store_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)`); err != nil {
+		return fmt.Errorf("create store_metadata: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO store_metadata(key,value) VALUES('vector_queue_generation', '0') ON CONFLICT(key) DO NOTHING`); err != nil {
+		return fmt.Errorf("initialize vector queue generation: %w", err)
+	}
+	if _, err := tx.Exec(`INSERT INTO store_metadata(key,value) VALUES('vector_migration_generation', '0') ON CONFLICT(key) DO NOTHING`); err != nil {
+		return fmt.Errorf("initialize vector migration generation: %w", err)
+	}
+	var vectorVersion int
+	_ = tx.QueryRow(`SELECT CAST(value AS INTEGER) FROM store_metadata WHERE key='vector_content_version'`).Scan(&vectorVersion)
+	if vectorVersion < currentVectorContentVersion {
+		if err := enqueueVectorMigrationTx(context.Background(), tx); err != nil {
+			return fmt.Errorf("queue vector content migration: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS metadata_idx (
 		episode_id TEXT NOT NULL,
 		key TEXT NOT NULL,
 		value TEXT NOT NULL
 	)`); err != nil {
 		return fmt.Errorf("create metadata_idx: %w", err)
 	}
-	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_meta_kv ON metadata_idx(key, value)"); err != nil {
+	if _, err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_meta_kv ON metadata_idx(key, value)"); err != nil {
 		return fmt.Errorf("create idx_meta_kv: %w", err)
 	}
-	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_meta_eid ON metadata_idx(episode_id)"); err != nil {
+	if _, err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_meta_eid ON metadata_idx(episode_id)"); err != nil {
 		return fmt.Errorf("create idx_meta_eid: %w", err)
 	}
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS episode_sources (
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS episode_sources (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		episode_id TEXT NOT NULL,
 		source_url TEXT NOT NULL,
@@ -291,24 +411,20 @@ func migrate(db *sql.DB) error {
 	)`); err != nil {
 		return fmt.Errorf("create episode_sources: %w", err)
 	}
-	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_episode_sources_eid ON episode_sources(episode_id)"); err != nil {
+	if _, err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_episode_sources_eid ON episode_sources(episode_id)"); err != nil {
 		return fmt.Errorf("create idx_episode_sources_eid: %w", err)
 	}
-	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_failed_approaches_eid ON episode_failed_approaches(episode_id)"); err != nil {
+	if _, err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_failed_approaches_eid ON episode_failed_approaches(episode_id)"); err != nil {
 		return fmt.Errorf("create idx_failed_approaches_eid: %w", err)
 	}
-	if _, err := db.Exec("CREATE INDEX IF NOT EXISTS idx_failed_approaches_arch_eid ON episode_failed_approaches_archive(episode_id)"); err != nil {
+	if _, err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_failed_approaches_arch_eid ON episode_failed_approaches_archive(episode_id)"); err != nil {
 		return fmt.Errorf("create idx_failed_approaches_arch_eid: %w", err)
 	}
-
-	if err := migrateGraph(db); err != nil {
-		return fmt.Errorf("migrate graph: %w", err)
+	if _, err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_verifications_eid ON episode_verifications(episode_id)"); err != nil {
+		return fmt.Errorf("create idx_verifications_eid: %w", err)
 	}
-	if err := migrateConcepts(db); err != nil {
-		return fmt.Errorf("migrate concepts: %w", err)
-	}
-	if err := migrateDecisions(db); err != nil {
-		return fmt.Errorf("migrate decisions: %w", err)
+	if _, err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_verifications_arch_eid ON episode_verifications_archive(episode_id)"); err != nil {
+		return fmt.Errorf("create idx_verifications_arch_eid: %w", err)
 	}
 
 	triggers := []string{
@@ -340,14 +456,134 @@ func migrate(db *sql.DB) error {
 			INSERT INTO failed_approaches_fts(rowid, episode_id, approach, failure_mode, root_cause, lesson)
 			VALUES (new.id, new.episode_id, new.approach, new.failure_mode, new.root_cause, new.lesson);
 		END`,
+		`CREATE TRIGGER IF NOT EXISTS verification_ai AFTER INSERT ON episode_verifications BEGIN
+			INSERT INTO verification_fts(rowid, episode_id, type, command, result, evidence)
+			VALUES (new.id, new.episode_id, new.type, new.command, new.result, new.evidence);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS verification_ad AFTER DELETE ON episode_verifications BEGIN
+			INSERT INTO verification_fts(verification_fts, rowid, episode_id, type, command, result, evidence)
+			VALUES ('delete', old.id, old.episode_id, old.type, old.command, old.result, old.evidence);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS verification_au AFTER UPDATE ON episode_verifications BEGIN
+			INSERT INTO verification_fts(verification_fts, rowid, episode_id, type, command, result, evidence)
+			VALUES ('delete', old.id, old.episode_id, old.type, old.command, old.result, old.evidence);
+			INSERT INTO verification_fts(rowid, episode_id, type, command, result, evidence)
+			VALUES (new.id, new.episode_id, new.type, new.command, new.result, new.evidence);
+		END`,
 	}
 	for _, trigger := range triggers {
-		if _, err := db.Exec(trigger); err != nil {
+		if _, err := tx.Exec(trigger); err != nil {
 			return fmt.Errorf("create episodes FTS trigger: %w", err)
 		}
 	}
 
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if err := runMigrationPhase(db, "graph_migration_phase", "graph_migration_complete", migrateGraph); err != nil {
+		return fmt.Errorf("migrate graph: %w", err)
+	}
+	if err := runMigrationPhase(db, "concept_migration_phase", "concept_migration_complete", migrateConcepts); err != nil {
+		return fmt.Errorf("migrate concepts: %w", err)
+	}
+	return runMigrationPhase(db, "decision_migration_phase", "decision_migration_complete", migrateDecisions)
+}
+
+func runMigrationPhase(db *sql.DB, phaseKey, completeValue string, fn func(sqlExecutor) error) error {
+	var current string
+	_ = db.QueryRow("SELECT value FROM store_metadata WHERE key = ?", phaseKey).Scan(&current)
+	if current == completeValue {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("INSERT INTO store_metadata(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", phaseKey, completeValue); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+type sqlExecutor interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func migrateLegacyVerificationsTx(exec sqlExecutor, episodeTable, verificationTable string) error {
+	if (episodeTable != "episodes" && episodeTable != "episodes_archive") || (verificationTable != "episode_verifications" && verificationTable != "episode_verifications_archive") {
+		return fmt.Errorf("invalid verification migration tables")
+	}
+	rows, err := exec.Query(`SELECT id, verification, outcome FROM ` + episodeTable + ` WHERE NOT EXISTS (SELECT 1 FROM ` + verificationTable + ` WHERE episode_id = ` + episodeTable + `.id)`)
+	if err != nil {
+		return fmt.Errorf("query legacy %s verification: %w", episodeTable, err)
+	}
+	type legacyEpisode struct{ id, verification, outcome string }
+	var episodes []legacyEpisode
+	for rows.Next() {
+		var episode legacyEpisode
+		if err := rows.Scan(&episode.id, &episode.verification, &episode.outcome); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan legacy %s verification: %w", episodeTable, err)
+		}
+		episodes = append(episodes, episode)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close legacy %s verification rows: %w", episodeTable, err)
+	}
+
+	for _, episode := range episodes {
+		records := legacyVerificationRecords(episode.verification)
+		for i, record := range records {
+			if _, err := exec.Exec(`INSERT INTO `+verificationTable+` (episode_id, position, type, command, result, success, evidence) VALUES (?, ?, ?, ?, ?, ?, ?)`, episode.id, i, record.Type, record.Command, record.Result, boolToInt(record.Success), record.Evidence); err != nil {
+				return fmt.Errorf("backfill %s verification: %w", episodeTable, err)
+			}
+		}
+		if episode.outcome == models.OutcomeVerifiedSuccess && !models.HasSuccessfulVerification(records) {
+			note := models.VerificationRecord{Type: models.VerificationObservation, Result: security.Text("Legacy verification payload converted: Migration converted verified_success to unverified_success because no valid successful verification evidence was found. Raw: " + truncateRunes(episode.verification, 240)), Success: false}
+			if _, err := exec.Exec(`INSERT INTO `+verificationTable+` (episode_id, position, type, command, result, success, evidence) VALUES (?, ?, ?, '', ?, 0, '')`, episode.id, len(records), note.Type, note.Result); err != nil {
+				return fmt.Errorf("record %s verification correction: %w", episodeTable, err)
+			}
+			if _, err := exec.Exec(`UPDATE `+episodeTable+` SET outcome = ? WHERE id = ?`, models.OutcomeUnverifiedSuccess, episode.id); err != nil {
+				return fmt.Errorf("correct %s verified outcome: %w", episodeTable, err)
+			}
+		}
+	}
 	return nil
+}
+
+func legacyVerificationRecords(raw string) []models.VerificationRecord {
+	if strings.TrimSpace(raw) == "" || strings.TrimSpace(raw) == "[]" || strings.TrimSpace(raw) == "null" {
+		return nil
+	}
+	var values []json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &values); err != nil {
+		values = []json.RawMessage{json.RawMessage(raw)}
+	}
+	records := make([]models.VerificationRecord, 0, len(values))
+	for _, value := range values {
+		var record models.VerificationRecord
+		if err := json.Unmarshal(value, &record); err == nil && record.Type != "" {
+			if normalized, err := models.NormalizeVerificationRecords([]models.VerificationRecord{record}); err == nil {
+				records = append(records, normalized[0])
+				continue
+			}
+		}
+		var text string
+		if err := json.Unmarshal(value, &text); err != nil {
+			text = string(value)
+		}
+		text = security.Text(strings.TrimSpace(text))
+		if text != "" && text != "null" {
+			records = append(records, models.VerificationRecord{Type: models.VerificationObservation, Result: "Legacy verification payload converted: " + truncateRunes(text, 240)})
+		}
+	}
+	return records
 }
 
 func detectGitRepo() string {
@@ -519,6 +755,12 @@ func (es *EpisodeStore) createEpisodeWithSources(ctx context.Context, request *m
 		return "", fmt.Errorf("create episode: %w", err)
 	}
 
+	for i, verification := range ep.Verification {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO episode_verifications (episode_id, position, type, command, result, success, evidence) VALUES (?, ?, ?, ?, ?, ?, ?)`, ep.ID, i, string(verification.Type), verification.Command, verification.Result, boolToInt(verification.Success), verification.Evidence); err != nil {
+			return "", fmt.Errorf("insert verification: %w", err)
+		}
+	}
+
 	if _, err := tx.ExecContext(ctx, "DELETE FROM metadata_idx WHERE episode_id = ?", ep.ID); err != nil {
 		return "", fmt.Errorf("delete metadata_idx: %w", err)
 	}
@@ -534,6 +776,11 @@ func (es *EpisodeStore) createEpisodeWithSources(ctx context.Context, request *m
 	}
 
 	for _, source := range sources {
+		source.Summary = security.Text(source.Summary)
+		source.Warning = security.Text(source.Warning)
+		source.Instructions = security.Strings(source.Instructions)
+		source.AcceptanceCriteria = security.Strings(source.AcceptanceCriteria)
+		source.Constraints = security.Strings(source.Constraints)
 		instructionsJSON, _ := json.Marshal(source.Instructions)
 		acceptanceJSON, _ := json.Marshal(source.AcceptanceCriteria)
 		constraintsJSON, _ := json.Marshal(source.Constraints)
@@ -559,7 +806,7 @@ func (es *EpisodeStore) createEpisodeWithSources(ctx context.Context, request *m
 	}
 
 	if es.vec != nil && es.vec.Enabled() {
-		if verr := es.vec.AddEpisode(ctx, ep.ID, ep.Problem, ep.ThinkingTrace+FailedApproachesText(ep.FailedApproaches)); verr != nil {
+		if verr := es.vec.AddEpisode(ctx, ep.ID, ep.Problem, VectorContentText(ep)); verr != nil {
 			if derr := es.DeleteEpisode(ep.ID); derr != nil {
 				return "", errors.Join(
 					fmt.Errorf("add episode vector: %w", verr),
@@ -593,6 +840,28 @@ func insertFailedApproaches(ctx context.Context, tx *sql.Tx, table, episodeID st
 	return nil
 }
 
+func (es *EpisodeStore) getVerifications(table, episodeID string) ([]models.VerificationRecord, error) {
+	if table != "episode_verifications" && table != "episode_verifications_archive" {
+		return nil, fmt.Errorf("invalid verifications table %q", table)
+	}
+	rows, err := es.db.Query(`SELECT type, command, result, success, evidence FROM `+table+` WHERE episode_id = ? ORDER BY position`, episodeID)
+	if err != nil {
+		return nil, fmt.Errorf("get verifications: %w", err)
+	}
+	defer rows.Close()
+	var values []models.VerificationRecord
+	for rows.Next() {
+		var value models.VerificationRecord
+		var success int
+		if err := rows.Scan(&value.Type, &value.Command, &value.Result, &success, &value.Evidence); err != nil {
+			return nil, fmt.Errorf("scan verification: %w", err)
+		}
+		value.Success = success != 0
+		values = append(values, value)
+	}
+	return values, rows.Err()
+}
+
 func (es *EpisodeStore) getFailedApproaches(table, episodeID string) ([]models.FailedApproach, error) {
 	if table != "episode_failed_approaches" && table != "episode_failed_approaches_archive" {
 		return nil, fmt.Errorf("invalid failed approaches table %q", table)
@@ -621,6 +890,33 @@ func FailedApproachesText(values []models.FailedApproach) string {
 	return b.String()
 }
 
+func VectorContentText(ep *models.Episode) string {
+	if ep == nil {
+		return ""
+	}
+	return ep.ThinkingTrace + FailedApproachesText(ep.FailedApproaches) + VerificationText(ep.Verification)
+}
+
+func VerificationText(values []models.VerificationRecord) string {
+	var b strings.Builder
+	for i, value := range values {
+		if i == 3 {
+			break
+		}
+		typ := security.Text(string(value.Type))
+		result := security.Text(value.Result)
+		evidence := security.Text(value.Evidence)
+		fmt.Fprintf(&b, "\nVerification: type=%s success=%t", typ, value.Success)
+		if result != "" {
+			fmt.Fprintf(&b, " result=%s", truncateRunes(result, 240))
+		}
+		if evidence != "" {
+			fmt.Fprintf(&b, " evidence=%s", truncateRunes(evidence, 240))
+		}
+	}
+	return b.String()
+}
+
 func decodePersistedJSON(episodeID, field, raw string, destination any) error {
 	if err := json.Unmarshal([]byte(raw), destination); err != nil {
 		return fmt.Errorf("decode episode %s field %s: %w", episodeID, field, err)
@@ -628,49 +924,213 @@ func decodePersistedJSON(episodeID, field, raw string, destination any) error {
 	return nil
 }
 
+func nextVectorQueueGeneration(ctx context.Context, tx *sql.Tx) (int64, error) {
+	if _, err := tx.ExecContext(ctx, `UPDATE store_metadata SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key='vector_queue_generation'`); err != nil {
+		return 0, err
+	}
+	var generation int64
+	if err := tx.QueryRowContext(ctx, `SELECT CAST(value AS INTEGER) FROM store_metadata WHERE key='vector_queue_generation'`).Scan(&generation); err != nil {
+		return 0, err
+	}
+	return generation, nil
+}
+
+func enqueueVectorReconcileTx(ctx context.Context, tx *sql.Tx, episodeID, problem, thinkingTrace string) error {
+	generation, err := nextVectorQueueGeneration(ctx, tx)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO vector_reconcile (episode_id, problem, thinking_trace, updated_at, queue_generation) VALUES (?, ?, ?, ?, ?) ON CONFLICT(episode_id) DO UPDATE SET problem=excluded.problem, thinking_trace=excluded.thinking_trace, updated_at=excluded.updated_at, queue_generation=excluded.queue_generation`, episodeID, problem, thinkingTrace, time.Now().UTC().Format(time.RFC3339), generation)
+	return err
+}
+
+func enqueueVectorMigrationTx(ctx context.Context, tx *sql.Tx) error {
+	generation, err := nextVectorQueueGeneration(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO store_metadata(key,value) VALUES('vector_migration_generation', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, fmt.Sprintf("%d", generation)); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO vector_reconcile (episode_id, problem, thinking_trace, updated_at, migration_version, queue_generation)
+		SELECT id, problem, '', updated_at, ?, ? FROM episodes WHERE true
+		ON CONFLICT(episode_id) DO UPDATE SET migration_version=max(vector_reconcile.migration_version, excluded.migration_version)`, currentVectorContentVersion, generation)
+	return err
+}
+
+func enqueueVectorReconcileDB(ctx context.Context, db *sql.DB, episodeID, problem, thinkingTrace string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := enqueueVectorReconcileTx(ctx, tx, episodeID, problem, thinkingTrace); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func deleteVectorReconcileDB(ctx context.Context, db *sql.DB, episodeID string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := deleteVectorReconcileTx(ctx, tx, episodeID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func deleteVectorReconcileTx(ctx context.Context, tx *sql.Tx, episodeID string) error {
+	if _, err := nextVectorQueueGeneration(ctx, tx); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, "DELETE FROM vector_reconcile WHERE episode_id = ?", episodeID)
+	return err
+}
+
+var ErrVectorReconciliationPending = errors.New("vector reconciliation pending")
+
 func (es *EpisodeStore) ReconcileVectorStore(ctx context.Context) error {
+	var vectorVersion int
+	_ = es.db.QueryRowContext(ctx, "SELECT CAST(value AS INTEGER) FROM store_metadata WHERE key='vector_content_version'").Scan(&vectorVersion)
+	if vectorVersion >= currentVectorContentVersion {
+		var pending int
+		if err := es.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM vector_reconcile").Scan(&pending); err == nil && pending == 0 {
+			return nil
+		}
+	}
+	for attempt := 0; attempt < 10; attempt++ {
+		if err := es.reconcileVectorBatch(ctx); err != nil {
+			return err
+		}
+		var applied int
+		_ = es.db.QueryRowContext(ctx, "SELECT CAST(value AS INTEGER) FROM store_metadata WHERE key='vector_content_version'").Scan(&applied)
+		if applied >= currentVectorContentVersion {
+			var remaining int
+			if err := es.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM vector_reconcile").Scan(&remaining); err == nil && remaining == 0 {
+				return nil
+			}
+		}
+	}
+	return ErrVectorReconciliationPending
+}
+
+func (es *EpisodeStore) reconcileVectorBatch(ctx context.Context) error {
 	if es.vec == nil || !es.vec.Enabled() {
 		return nil
 	}
-	rows, err := es.db.QueryContext(ctx, "SELECT episode_id, problem, thinking_trace FROM vector_reconcile ORDER BY updated_at ASC")
+	ownerID := fmt.Sprintf("%d_%d", os.Getpid(), time.Now().UnixNano())
+	now := time.Now().UTC()
+	nowStr := now.Format(time.RFC3339)
+	expiresStr := now.Add(30 * time.Second).Format(time.RFC3339)
+
+	rows, err := es.db.QueryContext(ctx, "SELECT episode_id, problem, thinking_trace FROM vector_reconcile WHERE claim_owner = '' OR claim_expires_at < ? ORDER BY updated_at ASC LIMIT 50", nowStr)
 	if err != nil {
 		return fmt.Errorf("query vector_reconcile: %w", err)
 	}
-	defer rows.Close()
 	type pendingItem struct {
 		id            string
 		problem       string
 		thinkingTrace string
 	}
-	var pending []pendingItem
+	var candidates []pendingItem
 	for rows.Next() {
 		var item pendingItem
 		if err := rows.Scan(&item.id, &item.problem, &item.thinkingTrace); err != nil {
+			_ = rows.Close()
 			return fmt.Errorf("scan vector_reconcile: %w", err)
 		}
-		pending = append(pending, item)
+		candidates = append(candidates, item)
 	}
+	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close vector_reconcile rows: %w", err)
+
+	var claimed []pendingItem
+	for _, item := range candidates {
+		res, err := es.db.ExecContext(ctx, "UPDATE vector_reconcile SET claim_owner = ?, claim_expires_at = ? WHERE episode_id = ? AND (claim_owner = '' OR claim_expires_at < ?)", ownerID, expiresStr, item.id, nowStr)
+		if err != nil {
+			continue
+		}
+		if rowsAffected, err := res.RowsAffected(); err == nil && rowsAffected == 1 {
+			claimed = append(claimed, item)
+		}
 	}
-	for _, item := range pending {
+
+	var reconciliationErrs []error
+	for _, item := range claimed {
 		var verr error
 		if item.problem == "" && item.thinkingTrace == "" {
 			verr = es.vec.DeleteEpisode(ctx, item.id)
 		} else {
-			verr = es.vec.ReplaceEpisode(ctx, item.id, item.problem, item.thinkingTrace)
+			ep, getErr := es.GetEpisode(item.id)
+			if getErr != nil || ep == nil {
+				verr = es.vec.DeleteEpisode(ctx, item.id)
+			} else {
+				verr = es.vec.ReplaceEpisode(ctx, ep.ID, ep.Problem, VectorContentText(ep))
+			}
 		}
 		if verr != nil {
-			return fmt.Errorf("reconcile vector episode %s: %w", item.id, verr)
-		}
-		if _, err := es.db.ExecContext(ctx, "DELETE FROM vector_reconcile WHERE episode_id = ?", item.id); err != nil {
-			return fmt.Errorf("clear vector_reconcile %s: %w", item.id, err)
+			reconciliationErrs = append(reconciliationErrs, fmt.Errorf("reconcile vector episode %s: %w", item.id, verr))
+			_, _ = es.db.ExecContext(ctx, "UPDATE vector_reconcile SET claim_owner = '', claim_expires_at = '' WHERE episode_id = ? AND claim_owner = ?", item.id, ownerID)
+		} else {
+			if _, err := es.db.ExecContext(ctx, "DELETE FROM vector_reconcile WHERE episode_id = ? AND claim_owner = ?", item.id, ownerID); err != nil {
+				reconciliationErrs = append(reconciliationErrs, fmt.Errorf("clear vector_reconcile %s: %w", item.id, err))
+			}
 		}
 	}
-	return nil
+
+	if len(reconciliationErrs) == 0 {
+		for attempt := 0; attempt < 5; attempt++ {
+			tx, err := es.db.BeginTx(ctx, nil)
+			if err != nil {
+				if strings.Contains(err.Error(), "database is locked") {
+					time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+					continue
+				}
+				return err
+			}
+			var targetGen int64
+			_ = tx.QueryRowContext(ctx, "SELECT CAST(value AS INTEGER) FROM store_metadata WHERE key='vector_migration_generation'").Scan(&targetGen)
+			var currentGen int64
+			_ = tx.QueryRowContext(ctx, "SELECT CAST(value AS INTEGER) FROM store_metadata WHERE key='vector_queue_generation'").Scan(&currentGen)
+
+			var relCount int
+			if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM vector_reconcile WHERE migration_version = ? OR queue_generation > ?", currentVectorContentVersion, targetGen).Scan(&relCount); err != nil {
+				_ = tx.Rollback()
+				return err
+			}
+
+			if targetGen > 0 && relCount == 0 && currentGen == targetGen {
+				if _, err := tx.ExecContext(ctx, `INSERT INTO store_metadata(key,value) VALUES('vector_content_version', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, currentVectorContentVersion); err != nil {
+					_ = tx.Rollback()
+					if strings.Contains(err.Error(), "database is locked") {
+						time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+						continue
+					}
+					return fmt.Errorf("record vector content version: %w", err)
+				}
+			} else if targetGen > 0 && currentGen != targetGen {
+				if err := enqueueVectorMigrationTx(ctx, tx); err != nil {
+					_ = tx.Rollback()
+					return fmt.Errorf("refresh migration target: %w", err)
+				}
+			}
+
+			if err := tx.Commit(); err != nil {
+				if strings.Contains(err.Error(), "database is locked") {
+					time.Sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
+					continue
+				}
+				return err
+			}
+			break
+		}
+	}
+	return errors.Join(reconciliationErrs...)
 }
 
 func (es *EpisodeStore) GetEpisode(id string) (*models.Episode, error) {
@@ -725,24 +1185,31 @@ func (es *EpisodeStore) getEpisodeFrom(table, id string) (*models.Episode, error
 		"objectives":   {objectivesJSON, &ep.Objectives},
 		"decisions":    {decisionsJSON, &ep.Decisions},
 		"alternatives": {alternativesJSON, &ep.Alternatives},
-		"verification": {verificationJSON, &ep.Verification},
-		"lessons":      {lessonsJSON, &ep.Lessons},
-		"steps":        {stepsJSON, &ep.Steps},
-		"tool_calls":   {toolCallsJSON, &ep.ToolCalls},
+
+		"lessons":    {lessonsJSON, &ep.Lessons},
+		"steps":      {stepsJSON, &ep.Steps},
+		"tool_calls": {toolCallsJSON, &ep.ToolCalls},
 	} {
 		if err := decodePersistedJSON(ep.ID, field, item.raw, item.destination); err != nil {
 			return nil, err
 		}
 	}
 	failedTable := "episode_failed_approaches"
+	verifTable := "episode_verifications"
 	if table == "episodes_archive" {
 		failedTable = "episode_failed_approaches_archive"
+		verifTable = "episode_verifications_archive"
 	}
 	failed, err := es.getFailedApproaches(failedTable, ep.ID)
 	if err != nil {
 		return nil, err
 	}
 	ep.FailedApproaches = failed
+	verifRecords, err := es.getVerifications(verifTable, ep.ID)
+	if err != nil {
+		return nil, err
+	}
+	ep.Verification = verifRecords
 	security.Episode(&ep)
 	return &ep, nil
 }
@@ -816,6 +1283,14 @@ func (es *EpisodeStore) GetSummary(id string) (*models.EpisodeSummary, error) {
 		return nil, err
 	}
 	summary.ToolCount = len(toolCalls)
+	verifSummary, err := es.verificationSummary(summary.ID)
+	if err != nil {
+		return nil, err
+	}
+	summary.VerificationCount = verifSummary.VerificationCount
+	summary.SuccessfulVerificationCount = verifSummary.SuccessfulVerificationCount
+	summary.VerificationTypes = verifSummary.VerificationTypes
+	summary.VerificationSummaries = verifSummary.VerificationSummaries
 	security.Summary(&summary)
 
 	return &summary, nil
@@ -915,6 +1390,9 @@ func (es *EpisodeStore) UpdateEpisode(ctx context.Context, request *models.Episo
 	if err != nil {
 		return fmt.Errorf("get existing episode before update: %w", err)
 	}
+	if err := models.ValidateOutcomeTransition(oldEp, ep); err != nil {
+		return err
+	}
 	tx, err := es.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin update episode tx: %w", err)
@@ -946,11 +1424,17 @@ func (es *EpisodeStore) UpdateEpisode(ctx context.Context, request *models.Episo
 	if err := insertFailedApproaches(ctx, tx, "episode_failed_approaches", ep.ID, ep.FailedApproaches); err != nil {
 		return err
 	}
-	vectorTrace := ep.ThinkingTrace + FailedApproachesText(ep.FailedApproaches)
+	if _, err := tx.ExecContext(ctx, "DELETE FROM episode_verifications WHERE episode_id = ?", ep.ID); err != nil {
+		return fmt.Errorf("replace verifications: %w", err)
+	}
+	for i, verification := range ep.Verification {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO episode_verifications (episode_id, position, type, command, result, success, evidence) VALUES (?, ?, ?, ?, ?, ?, ?)`, ep.ID, i, string(verification.Type), verification.Command, verification.Result, boolToInt(verification.Success), verification.Evidence); err != nil {
+			return fmt.Errorf("insert verification: %w", err)
+		}
+	}
+	vectorTrace := VectorContentText(ep)
 	if es.vec != nil && es.vec.Enabled() {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO vector_reconcile (episode_id, problem, thinking_trace, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(episode_id) DO UPDATE SET problem=excluded.problem, thinking_trace=excluded.thinking_trace, updated_at=excluded.updated_at`,
-			ep.ID, ep.Problem, vectorTrace, ep.UpdatedAt.Format(time.RFC3339),
-		); err != nil {
+		if err := enqueueVectorReconcileTx(ctx, tx, ep.ID, ep.Problem, vectorTrace); err != nil {
 			return fmt.Errorf("insert vector_reconcile: %w", err)
 		}
 	}
@@ -961,7 +1445,7 @@ func (es *EpisodeStore) UpdateEpisode(ctx context.Context, request *models.Episo
 		if verr := es.vec.ReplaceEpisode(ctx, ep.ID, ep.Problem, vectorTrace); verr != nil {
 			var compensation []error
 			if oldEp != nil {
-				oldVectorTrace := oldEp.ThinkingTrace + FailedApproachesText(oldEp.FailedApproaches)
+				oldVectorTrace := VectorContentText(oldEp)
 				if err := es.restoreEpisodeDB(ctx, oldEp); err != nil {
 					compensation = append(compensation, fmt.Errorf("restore previous episode database: %w", err))
 				} else if _, err := es.db.ExecContext(ctx, `UPDATE vector_reconcile SET problem=?, thinking_trace=?, updated_at=? WHERE episode_id=?`, oldEp.Problem, oldVectorTrace, time.Now().UTC().Format(time.RFC3339), oldEp.ID); err != nil {
@@ -1012,6 +1496,14 @@ func (es *EpisodeStore) restoreEpisodeDB(ctx context.Context, ep *models.Episode
 	if err := insertFailedApproaches(ctx, tx, "episode_failed_approaches", ep.ID, ep.FailedApproaches); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM episode_verifications WHERE episode_id = ?", ep.ID); err != nil {
+		return err
+	}
+	for i, verification := range ep.Verification {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO episode_verifications (episode_id, position, type, command, result, success, evidence) VALUES (?, ?, ?, ?, ?, ?, ?)`, ep.ID, i, string(verification.Type), verification.Command, verification.Result, boolToInt(verification.Success), verification.Evidence); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
@@ -1030,7 +1522,7 @@ func (es *EpisodeStore) DeleteEpisode(id string) error {
 	if _, err := tx.Exec("DELETE FROM episode_failed_approaches WHERE episode_id = ?", id); err != nil {
 		return fmt.Errorf("delete episode failed approaches: %w", err)
 	}
-	if _, err := tx.Exec("DELETE FROM vector_reconcile WHERE episode_id = ?", id); err != nil {
+	if err := deleteVectorReconcileTx(context.Background(), tx, id); err != nil {
 		return fmt.Errorf("delete vector_reconcile: %w", err)
 	}
 	if _, err := tx.Exec("DELETE FROM episodes WHERE id = ?", id); err != nil {
@@ -1041,9 +1533,7 @@ func (es *EpisodeStore) DeleteEpisode(id string) error {
 	}
 	if es.vec != nil && es.vec.Enabled() {
 		if verr := es.vec.DeleteEpisode(context.Background(), id); verr != nil {
-			if _, err := es.db.Exec(`INSERT INTO vector_reconcile (episode_id, problem, thinking_trace, updated_at) VALUES (?, '', '', ?) ON CONFLICT(episode_id) DO UPDATE SET problem='', thinking_trace='', updated_at=excluded.updated_at`,
-				id, time.Now().UTC().Format(time.RFC3339),
-			); err != nil {
+			if err := enqueueVectorReconcileDB(context.Background(), es.db, id, "", ""); err != nil {
 				return errors.Join(
 					fmt.Errorf("delete episode vector: %w", verr),
 					fmt.Errorf("enqueue vector deletion reconciliation: %w", err),
