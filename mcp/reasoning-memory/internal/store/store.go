@@ -1176,8 +1176,11 @@ func boolToInt(b bool) int {
 }
 
 func (es *EpisodeStore) ReindexFTS5() error {
-	if _, err := es.db.Exec("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild')"); err != nil {
-		return fmt.Errorf("reindex episodes fts5: %w", err)
+	var hasEpFTS int
+	if err := es.db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'episodes_fts'").Scan(&hasEpFTS); err == nil && hasEpFTS > 0 {
+		if _, err := es.db.Exec("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild')"); err != nil {
+			return fmt.Errorf("reindex episodes fts5: %w", err)
+		}
 	}
 	var hasFaFTS int
 	if err := es.db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'failed_approaches_fts'").Scan(&hasFaFTS); err == nil && hasFaFTS > 0 {
