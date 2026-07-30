@@ -1176,9 +1176,20 @@ func boolToInt(b bool) int {
 }
 
 func (es *EpisodeStore) ReindexFTS5() error {
-	_, err := es.db.Exec("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild')")
-	if err != nil {
-		return fmt.Errorf("reindex fts5: %w", err)
+	if _, err := es.db.Exec("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild')"); err != nil {
+		return fmt.Errorf("reindex episodes fts5: %w", err)
+	}
+	var hasFaFTS int
+	if err := es.db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'failed_approaches_fts'").Scan(&hasFaFTS); err == nil && hasFaFTS > 0 {
+		if _, err := es.db.Exec("INSERT INTO failed_approaches_fts(failed_approaches_fts) VALUES('rebuild')"); err != nil {
+			return fmt.Errorf("reindex failed_approaches fts5: %w", err)
+		}
+	}
+	var hasPatFTS int
+	if err := es.db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'patterns_fts'").Scan(&hasPatFTS); err == nil && hasPatFTS > 0 {
+		if _, err := es.db.Exec("INSERT INTO patterns_fts(patterns_fts) VALUES('rebuild')"); err != nil {
+			return fmt.Errorf("reindex patterns fts5: %w", err)
+		}
 	}
 	return nil
 }

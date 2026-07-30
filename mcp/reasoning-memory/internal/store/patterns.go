@@ -332,7 +332,6 @@ func (es *EpisodeStore) fallbackSearchPatterns(query string, domainFilter string
 	var args []any
 	for _, term := range terms {
 		escaped := strings.ReplaceAll(term, "\\", "\\\\")
-		escaped = strings.ReplaceAll(escaped, "'", "''")
 		escaped = strings.ReplaceAll(escaped, "%", "\\%")
 		escaped = strings.ReplaceAll(escaped, "_", "\\_")
 		pattern := "%" + escaped + "%"
