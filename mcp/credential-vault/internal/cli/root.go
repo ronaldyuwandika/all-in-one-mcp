@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault-go/internal/config"
-	vaultcrypto "github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault-go/internal/crypto"
-	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault-go/internal/tui"
-	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault-go/internal/vault"
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault/internal/config"
+	vaultcrypto "github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault/internal/crypto"
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault/internal/tui"
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault/internal/vault"
 	"github.com/spf13/cobra"
 )
 
@@ -32,7 +32,7 @@ func NewRoot() *cobra.Command {
 		}
 		return vault.New(expand(c.VaultDir), newCrypt()), nil
 	}
-	root.AddCommand(statusCmd(open), getCmd(open), setCmd(open), scanCmd(open), restoreCmd(open), compactCmd(open), auditCmd(open), statsCmd(open), doctorCmd(open), dashboardCmd(open), exportCmd(open), importCmd(open), clearCmd(open), migrateStdinCmd(open))
+	root.AddCommand(statusCmd(open), getCmd(open), setCmd(open), scanCmd(open), redactCmd(open), restoreCmd(open), compactCmd(open), auditCmd(open), statsCmd(open), doctorCmd(open), dashboardCmd(open), exportCmd(open), importCmd(open), importBackupCmd(open), recoverCmd(open), listBackupNamesCmd(open), clearCmd(open), migrateStdinCmd(open))
 	return root
 }
 
@@ -130,8 +130,7 @@ func setCmd(o opener) *cobra.Command {
 	}}
 }
 func scanCmd(o opener) *cobra.Command {
-	var noRedact bool
-	cmd := &cobra.Command{Use: "scan [PATH]", Args: cobra.MaximumNArgs(1), RunE: func(c *cobra.Command, a []string) error {
+	return &cobra.Command{Use: "scan [PATH]", Args: cobra.MaximumNArgs(1), RunE: func(c *cobra.Command, a []string) error {
 		root := "."
 		if len(a) > 0 {
 			root = a[0]
@@ -140,14 +139,25 @@ func scanCmd(o opener) *cobra.Command {
 		if e != nil {
 			return e
 		}
-		found, e := v.ScanDir(root, !noRedact)
+		found, e := v.DetectDir(root)
 		if e == nil {
 			fmt.Fprintf(c.OutOrStdout(), "found %d credentials\n", len(found))
 		}
 		return e
 	}}
-	cmd.Flags().BoolVar(&noRedact, "no-redact", false, "detect without rewriting files")
-	return cmd
+}
+func redactCmd(o opener) *cobra.Command {
+	return &cobra.Command{Use: "redact PATH", Args: cobra.ExactArgs(1), RunE: func(c *cobra.Command, a []string) error {
+		v, e := o()
+		if e != nil {
+			return e
+		}
+		found, e := v.RedactDir(a[0])
+		if e == nil {
+			fmt.Fprintf(c.OutOrStdout(), "redacted %d credentials\n", len(found))
+		}
+		return e
+	}}
 }
 func restoreCmd(o opener) *cobra.Command {
 	return &cobra.Command{Use: "restore", Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error {
@@ -156,9 +166,7 @@ func restoreCmd(o opener) *cobra.Command {
 			return e
 		}
 		n, e := v.Restore()
-		if e == nil {
-			fmt.Fprintf(c.OutOrStdout(), "restored %d files\n", n)
-		}
+		fmt.Fprintf(c.OutOrStdout(), "restored %d files\n", n)
 		return e
 	}}
 }
@@ -271,6 +279,53 @@ func importCmd(o opener) *cobra.Command {
 		}
 		return v.Import(a[0])
 	}}
+}
+func importBackupCmd(o opener) *cobra.Command {
+	return &cobra.Command{Use: "import-backup FILE NAME...", Args: cobra.MinimumNArgs(2), Short: "Selectively import specific credentials from an encrypted raw vault backup", RunE: func(c *cobra.Command, a []string) error {
+		v, e := o()
+		if e != nil {
+			return e
+		}
+		imported, skipped, e := v.ImportBackupCredentials(a[0], a[1:])
+		if e == nil {
+			fmt.Fprintf(c.OutOrStdout(), "imported %d credentials (%d skipped)\n", imported, skipped)
+		}
+		return e
+	}}
+}
+
+func recoverCmd(o opener) *cobra.Command {
+	return &cobra.Command{Use: "recover FILE NAME...", Args: cobra.MinimumNArgs(2), Short: "Recover specified credentials from a raw vault payload file into a clean target vault", RunE: func(c *cobra.Command, a []string) error {
+		v, e := o()
+		if e != nil {
+			return e
+		}
+		n, e := v.RecoverCredentials(a[0], a[1:])
+		if e == nil {
+			fmt.Fprintf(c.OutOrStdout(), "recovered %d credentials into clean vault\n", n)
+		}
+		return e
+	}}
+}
+
+func listBackupNamesCmd(o opener) *cobra.Command {
+	var limit int
+	cmd := &cobra.Command{Use: "list-backup-names FILE", Args: cobra.ExactArgs(1), Short: "List credential names from an encrypted raw vault backup without reading secret values", RunE: func(c *cobra.Command, a []string) error {
+		v, e := o()
+		if e != nil {
+			return e
+		}
+		names, e := v.ListCredentialNames(a[0], limit)
+		if e != nil {
+			return e
+		}
+		for _, name := range names {
+			fmt.Fprintln(c.OutOrStdout(), name)
+		}
+		return nil
+	}}
+	cmd.Flags().IntVar(&limit, "limit", 100, "maximum names to list (0 for all)")
+	return cmd
 }
 func clearCmd(o opener) *cobra.Command {
 	return &cobra.Command{Use: "chat-clear", Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error {

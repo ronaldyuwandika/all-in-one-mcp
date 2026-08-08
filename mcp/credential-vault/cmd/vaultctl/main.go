@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault-go/internal/cli"
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault/internal/cli"
 )
 
 func main() {

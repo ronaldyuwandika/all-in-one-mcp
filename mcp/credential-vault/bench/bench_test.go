@@ -9,19 +9,29 @@ import (
 	"strings"
 	"testing"
 
-	vaultcrypto "github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault-go/internal/crypto"
-	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault-go/internal/vault"
+	"github.com/zalando/go-keyring"
+
+	vaultcrypto "github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault/internal/crypto"
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault/internal/vault"
 )
 
 type keys struct{ key []byte }
 
 func (k *keys) Get() ([]byte, error) {
 	if k.key == nil {
-		return nil, errors.New("missing")
+		return nil, keyring.ErrNotFound
 	}
 	return k.key, nil
 }
 func (k *keys) Set(v []byte) error { k.key = bytes.Clone(v); return nil }
+func TestBenchmarkKeyStoreMissingUsesKeyringSentinel(t *testing.T) {
+	var k keys
+	_, err := k.Get()
+	if !errors.Is(err, keyring.ErrNotFound) {
+		t.Fatalf("missing key error=%v, want keyring.ErrNotFound", err)
+	}
+}
+
 func BenchmarkEncrypt(b *testing.B) {
 	c := vaultcrypto.New(&keys{})
 	payload := bytes.Repeat([]byte("x"), 1024)

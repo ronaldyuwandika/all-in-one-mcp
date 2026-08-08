@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	vaultcrypto "github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault-go/internal/crypto"
+	vaultcrypto "github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault/internal/crypto"
 	"github.com/ronaldyuwandika/all-in-one-mcp/pkg/secretdetect"
 )
 
@@ -24,6 +24,7 @@ var ErrNotFound = errors.New("credential not found")
 const (
 	maxVaultBytes      = 256 << 20
 	maxFileBackupBytes = 64 << 20
+	maxScanFileBytes   = 2 << 20
 )
 
 type Credential struct {
@@ -38,6 +39,7 @@ type FileBackup struct {
 type Data struct {
 	Credentials map[string]Credential `json:"credentials"`
 	Files       map[string]FileBackup `json:"files"`
+	ScanRoots   []string              `json:"scan_roots,omitempty"`
 	CreatedAt   time.Time             `json:"created_at"`
 	LastScan    time.Time             `json:"last_scan"`
 }
@@ -60,7 +62,7 @@ func Default() (*Vault, error) {
 	if err != nil {
 		return nil, err
 	}
-	return New(filepath.Join(home, ".credential-vault-go"), vaultcrypto.New(vaultcrypto.SystemKeyStore{})), nil
+	return New(filepath.Join(home, ".credential-vault"), vaultcrypto.New(vaultcrypto.SystemKeyStore{})), nil
 }
 func (v *Vault) vaultPath() string { return filepath.Join(v.dir, "vault.json") }
 func (v *Vault) AuditPath() string { return filepath.Join(v.dir, "audit.jsonl") }
@@ -114,6 +116,9 @@ func (v *Vault) saveUnlocked(data Data) error {
 	token, err := v.crypt.Encrypt(raw)
 	if err != nil {
 		return fmt.Errorf("encrypt vault: %w", err)
+	}
+	if len(token) > maxVaultBytes {
+		return fmt.Errorf("vault data exceeds %d bytes", maxVaultBytes)
 	}
 	tmp := v.vaultPath() + ".tmp"
 	if err = os.WriteFile(tmp, []byte(token), 0o600); err != nil {
@@ -227,17 +232,38 @@ func MaskText(text string) string {
 func Detect(text string) map[string]string {
 	return secretdetect.DetectValues(text)
 }
+func (v *Vault) DetectDir(root string) (map[string]string, error) {
+	return v.scanDir(root, false)
+}
+
 func (v *Vault) ScanDir(root string, redact bool) (map[string]string, error) {
+	return v.scanDir(root, redact)
+}
+
+func (v *Vault) RedactDir(root string) (map[string]string, error) {
+	return v.scanDir(root, true)
+}
+
+func (v *Vault) scanDir(root string, redact bool) (map[string]string, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	d, err := v.loadUnlocked()
-	if err != nil {
-		return nil, err
+	d := emptyData()
+	if redact {
+		var err error
+		d, err = v.loadUnlocked()
+		if err != nil {
+			return nil, err
+		}
 	}
 	found := map[string]string{}
+	maskedFiles := map[string]string{}
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve scan root: %w", err)
+	}
+	absRoot, err = filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return nil, fmt.Errorf("resolve scan root symlinks: %w", err)
 	}
 	safeRoot, err := os.OpenRoot(absRoot)
 	if err != nil {
@@ -261,17 +287,20 @@ func (v *Vault) ScanDir(root string, redact bool) (map[string]string, error) {
 		if e != nil {
 			return nil
 		}
-		info, e := safeRoot.Stat(rel)
-		if e != nil || info.Size() > 2<<20 {
+		if redact && isVaultInternalPath(path, v.dir) {
+			return nil
+		}
+		info, e := safeRoot.Lstat(rel)
+		if e != nil || !info.Mode().IsRegular() || info.Size() > maxScanFileBytes {
 			return nil
 		}
 		file, e := safeRoot.Open(rel)
 		if e != nil {
 			return nil
 		}
-		raw, e := io.ReadAll(io.LimitReader(file, (2<<20)+1))
-		_ = file.Close()
-		if e != nil || strings.IndexByte(string(raw), 0) >= 0 {
+		raw, e := io.ReadAll(io.LimitReader(file, maxScanFileBytes+1))
+		closeErr := file.Close()
+		if e != nil || closeErr != nil || len(raw) > maxScanFileBytes || strings.IndexByte(string(raw), 0) >= 0 {
 			return nil
 		}
 		hits := Detect(string(raw))
@@ -283,19 +312,7 @@ func (v *Vault) ScanDir(root string, redact bool) (map[string]string, error) {
 				return nil
 			}
 			d.Files[path] = FileBackup{Content: string(raw), Mode: info.Mode()}
-			masked := MaskText(string(raw))
-			output, openErr := safeRoot.OpenFile(rel, os.O_WRONLY|os.O_TRUNC, info.Mode())
-			if openErr != nil {
-				return openErr
-			}
-			_, e = io.WriteString(output, masked)
-			closeErr := output.Close()
-			if e != nil {
-				return e
-			}
-			if closeErr != nil {
-				return closeErr
-			}
+			maskedFiles[path] = MaskText(string(raw))
 		}
 		for k, val := range hits {
 			name := rel + "." + k
@@ -307,9 +324,41 @@ func (v *Vault) ScanDir(root string, redact bool) (map[string]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scan directory: %w", err)
 	}
+	if !redact {
+		return found, nil
+	}
 	d.LastScan = time.Now().UTC()
+	d.ScanRoots = appendUniqueRoot(d.ScanRoots, absRoot)
 	if err = v.saveUnlocked(d); err != nil {
 		return nil, err
+	}
+	for path, masked := range maskedFiles {
+		rel, e := filepath.Rel(absRoot, path)
+		if e != nil {
+			return nil, e
+		}
+		tmp, e := os.CreateTemp(absRoot, ".credential-vault-redact-*")
+		if e != nil {
+			return nil, e
+		}
+		tmpName := tmp.Name()
+		if e = tmp.Chmod(d.Files[path].Mode.Perm()); e == nil {
+			_, e = io.WriteString(tmp, masked)
+		}
+		if e == nil {
+			e = tmp.Sync()
+		}
+		closeErr := tmp.Close()
+		if e == nil {
+			e = closeErr
+		}
+		if e == nil {
+			e = safeRoot.Rename(filepath.Base(tmpName), rel)
+		}
+		if e != nil {
+			_ = os.Remove(tmpName)
+			return nil, e
+		}
 	}
 	return found, v.auditUnlocked(AuditEntry{Action: "scan", Purpose: root})
 }
@@ -328,30 +377,43 @@ func (v *Vault) RedactFile(path string) error {
 	}
 	defer root.Close()
 	name := filepath.Base(absPath)
+	info, err := root.Lstat(name)
+	if err != nil {
+		return fmt.Errorf("stat redaction target: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return errors.New("redaction target is not a regular file")
+	}
+	if info.Size() > maxScanFileBytes {
+		return fmt.Errorf("redaction target exceeds %d bytes", maxScanFileBytes)
+	}
 	file, err := root.Open(name)
 	if err != nil {
 		return fmt.Errorf("read redaction target: %w", err)
 	}
-	raw, err := io.ReadAll(io.LimitReader(file, (2<<20)+1))
-	_ = file.Close()
+	raw, err := io.ReadAll(io.LimitReader(file, maxScanFileBytes+1))
+	closeErr := file.Close()
 	if err != nil {
 		return fmt.Errorf("read redaction target: %w", err)
 	}
-	info, err := root.Stat(name)
-	if err != nil {
-		return fmt.Errorf("stat redaction target: %w", err)
+	if closeErr != nil {
+		return fmt.Errorf("close redaction target: %w", closeErr)
+	}
+	if len(raw) > maxScanFileBytes {
+		return fmt.Errorf("redaction target exceeds %d bytes", maxScanFileBytes)
 	}
 	d, err := v.loadUnlocked()
 	if err != nil {
 		return err
 	}
 	d.Files[absPath] = FileBackup{Content: string(raw), Mode: info.Mode()}
+	d.ScanRoots = appendUniqueRoot(d.ScanRoots, filepath.Dir(absPath))
 	output, err := root.OpenFile(name, os.O_WRONLY|os.O_TRUNC, info.Mode())
 	if err != nil {
 		return fmt.Errorf("open redaction target: %w", err)
 	}
 	_, err = io.WriteString(output, MaskText(string(raw)))
-	closeErr := output.Close()
+	closeErr = output.Close()
 	if err != nil {
 		return fmt.Errorf("write redaction target: %w", err)
 	}
@@ -372,18 +434,140 @@ func (v *Vault) Restore() (int, error) {
 		paths = append(paths, p)
 	}
 	sort.Strings(paths)
+	if len(d.ScanRoots) == 0 && len(paths) > 0 {
+		return 0, errors.New("restore refused: encrypted backups have no approved roots; re-redact files with the current vault")
+	}
+	targets := make(map[string]restoreTarget, len(paths))
 	for _, p := range paths {
-		b := d.Files[p]
-		if err = os.WriteFile(p, []byte(b.Content), b.Mode); err != nil {
-			return 0, fmt.Errorf("restore %s: %w", p, err)
+		targets[p], err = validateRestoreFile(p, d.ScanRoots)
+		if err != nil {
+			return 0, fmt.Errorf("validate restore %s: %w", p, err)
+		}
+	}
+	for i, p := range paths {
+		if err = restoreFile(targets[p], d.Files[p]); err != nil {
+			return i, fmt.Errorf("restored %d files before %s: %w", i, p, err)
 		}
 	}
 	n := len(paths)
 	d.Files = map[string]FileBackup{}
 	if err = v.saveUnlocked(d); err != nil {
-		return 0, err
+		return n, fmt.Errorf("restored %d files but could not save vault: %w", n, err)
 	}
-	return n, v.auditUnlocked(AuditEntry{Action: "restore"})
+	if err = v.auditUnlocked(AuditEntry{Action: "restore"}); err != nil {
+		return n, fmt.Errorf("restored %d files but could not audit restore: %w", n, err)
+	}
+	return n, nil
+}
+
+func appendUniqueRoot(roots []string, root string) []string {
+	for _, existing := range roots {
+		if existing == root {
+			return roots
+		}
+	}
+	return append(roots, root)
+}
+
+func withinRoot(root, path string) bool {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "."
+}
+
+func isVaultInternalPath(path, vaultDir string) bool {
+	path = filepath.Clean(path)
+	if strings.HasPrefix(filepath.Base(path), ".credential-vault-") {
+		return true
+	}
+	absVaultDir, err := filepath.Abs(vaultDir)
+	if err != nil {
+		return false
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(absVaultDir); resolveErr == nil {
+		absVaultDir = resolved
+	}
+	return withinRoot(absVaultDir, path) || path == filepath.Join(absVaultDir, "vault.json") || path == filepath.Join(absVaultDir, "audit.jsonl")
+}
+
+type restoreTarget struct {
+	dir  string
+	name string
+}
+
+func validateRestoreFile(path string, roots []string) (restoreTarget, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil || absPath != filepath.Clean(path) || filepath.Base(absPath) == "." {
+		return restoreTarget{}, errors.New("legacy backup path is not an approved absolute file path")
+	}
+	realDir, err := filepath.EvalSymlinks(filepath.Dir(absPath))
+	if err != nil {
+		return restoreTarget{}, fmt.Errorf("resolve restore directory: %w", err)
+	}
+	realPath := filepath.Join(realDir, filepath.Base(absPath))
+	approved := false
+	for _, root := range roots {
+		absRoot, rootErr := filepath.Abs(root)
+		if rootErr != nil {
+			continue
+		}
+		realRoot, rootErr := filepath.EvalSymlinks(absRoot)
+		if rootErr == nil && withinRoot(realRoot, realPath) {
+			approved = true
+			break
+		}
+	}
+	if !approved {
+		return restoreTarget{}, errors.New("restore target is outside approved scan roots")
+	}
+	root, err := os.OpenRoot(realDir)
+	if err != nil {
+		return restoreTarget{}, fmt.Errorf("open restore directory: %w", err)
+	}
+	defer root.Close()
+	name := filepath.Base(realPath)
+	if info, statErr := root.Lstat(name); statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return restoreTarget{}, statErr
+	} else if statErr == nil && !info.Mode().IsRegular() {
+		return restoreTarget{}, errors.New("restore target is not a regular file")
+	}
+	return restoreTarget{dir: realDir, name: name}, nil
+}
+
+func restoreFile(target restoreTarget, backup FileBackup) error {
+	root, err := os.OpenRoot(target.dir)
+	if err != nil {
+		return fmt.Errorf("open restore directory: %w", err)
+	}
+	defer root.Close()
+	if info, statErr := root.Lstat(target.name); statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+		return statErr
+	} else if statErr == nil && !info.Mode().IsRegular() {
+		return errors.New("restore target is not a regular file")
+	}
+	tmp, err := os.CreateTemp(target.dir, ".credential-vault-restore-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err = tmp.Chmod(backup.Mode.Perm()); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err = tmp.WriteString(backup.Content); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	return root.Rename(filepath.Base(tmpName), target.name)
 }
 
 func (v *Vault) Compact() error {

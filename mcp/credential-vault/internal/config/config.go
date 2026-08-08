@@ -21,7 +21,7 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	v := viper.New()
-	v.SetDefault("vault_dir", filepath.Join(home, ".credential-vault-go"))
+	v.SetDefault("vault_dir", filepath.Join(home, ".credential-vault"))
 	v.SetDefault("scan_targets", []string{"."})
 	v.SetDefault("dashboard_interval_seconds", 2)
 	v.SetEnvPrefix("CREDENTIAL_VAULT")

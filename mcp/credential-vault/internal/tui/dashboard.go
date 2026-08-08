@@ -7,7 +7,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault-go/internal/vault"
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault/internal/vault"
 )
 
 type tickMsg time.Time
@@ -38,7 +38,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "shift+tab", "left":
 			m.tab = (m.tab + 3) % 4
 		case "s":
-			_, m.err = m.vault.ScanDir(".", true)
+			_, m.err = m.vault.DetectDir(".")
+		case "R":
+			_, m.err = m.vault.RedactDir(".")
 		case "r":
 			_, m.err = m.vault.Restore()
 		case "e":
@@ -77,6 +79,10 @@ func (m *Model) refresh() {
 	case 3:
 		s, e := m.vault.Stats()
 		m.err = e
+		if e != nil {
+			fmt.Fprintf(&b, "Vault bytes: %d\nSystem status: unavailable\nRecovery: run vaultctl compact after confirming file backups are no longer needed\n", s.VaultFileSizeBytes)
+			break
+		}
 		fmt.Fprintf(&b, "Credentials: %d\nVault bytes: %d\nAudit entries: %d\nKeychain accessible: %t\n", s.TotalCredentials, s.VaultFileSizeBytes, s.AuditEntriesTotal, s.KeychainAccessible)
 	}
 	m.body = b.String()
@@ -86,7 +92,7 @@ func (m Model) View() string {
 	if m.err != nil {
 		errText = "\nError: " + m.err.Error()
 	}
-	return m.body + errText + "\n\n[tab] next  [s] scan  [r] restore  [e] export  [q] quit\n"
+	return m.body + errText + "\n\n[tab] next  [s] detect  [R] redact  [r] restore  [e] export  [q] quit\n"
 }
 func Run(v *vault.Vault, interval time.Duration) error {
 	_, err := tea.NewProgram(New(v, interval), tea.WithAltScreen()).Run()

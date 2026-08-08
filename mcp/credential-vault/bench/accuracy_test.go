@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault-go/internal/vault"
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault/internal/vault"
 )
 
 func TestDetectionAccuracy(t *testing.T) {

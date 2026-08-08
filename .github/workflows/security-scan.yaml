@@ -20,10 +20,10 @@ jobs:
         with:
           filters: |
             python:
-              - 'mcp/credential-vault/**'
               - 'mcp/pr-reviewer/**'
             go:
               - 'mcp/reasoning-memory/**'
+              - 'mcp/credential-vault/**'
               - '**/go.mod'
               - '**/go.sum'
 
@@ -42,7 +42,7 @@ jobs:
         id: bandit
         run: |
           exitcode=0
-          bandit -r mcp/credential-vault mcp/pr-reviewer --exclude mcp/pr-reviewer/.venv --skip B101,B105,B110,B112,B603,B607,B404 > /tmp/bandit-output.txt 2>&1 || exitcode=$?
+          bandit -r mcp/pr-reviewer --exclude mcp/pr-reviewer/.venv --skip B101,B105,B110,B112,B603,B607,B404 > /tmp/bandit-output.txt 2>&1 || exitcode=$?
           echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
           exit $exitcode
       - name: Post bandit report
@@ -94,22 +94,31 @@ jobs:
   go-security:
     needs: changes
     if: ${{ needs.changes.outputs.go == 'true' }}
+    strategy:
+      matrix:
+        module: [reasoning-memory, credential-vault]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: mcp/reasoning-memory/go.mod
+          go-version-file: mcp/${{ matrix.module }}/go.mod
+          cache-dependency-path: mcp/${{ matrix.module }}/go.sum
       - name: Install gosec
         run: go install github.com/securego/gosec/v2/cmd/gosec@v2.22.2
       - name: Run gosec
         id: gosec
-        working-directory: mcp/reasoning-memory
-        continue-on-error: true
+        working-directory: mcp/${{ matrix.module }}
         run: |
-          gosec -fmt=json -exclude-dir=bench ./... > /tmp/gosec-output.json 2>&1
+          set +e
+          gosec -fmt=json -exclude-dir=bench ./... > /tmp/gosec-output.json 2>/tmp/gosec-stderr.txt
           exitcode=$?
+          set -e
           echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
+          test -x "$(command -v gosec)"
+          test -s /tmp/gosec-output.json
+          python3 -c 'import json; json.load(open("/tmp/gosec-output.json", encoding="utf-8"))'
+          exit "$exitcode"
       - name: Post gosec report
         uses: actions/github-script@v9
         if: always() && github.event_name == 'pull_request'
@@ -130,7 +139,7 @@ jobs:
               }));
             } catch { issues = []; }
             const exitcode = parseInt('${{ steps.gosec.outputs.exitcode }}');
-            const pass = exitcode === 0 || issues.length === 0;
+            const pass = exitcode === 0;
             const sevCounts = {};
             issues.forEach(iss => { const s = iss.severity || 'Unknown'; sevCounts[s] = (sevCounts[s] || 0) + 1; });
             let body = pass
@@ -140,7 +149,7 @@ jobs:
               body += `\n<details>\n<summary>🔍 Findings</summary>\n\n`;
               body += '| File | Line | Severity | Rule | Detail |\n|------|------|----------|------|--------|\n';
               issues.slice(0, 25).forEach(iss => {
-                const file = iss.file.replace('mcp/reasoning-memory/', '');
+                const file = iss.file.replace('mcp/${{ matrix.module }}/', '');
                 body += `| \`${file}\` | ${iss.line} | ${iss.severity || 'N/A'} | \`${iss.rule}\` | ${iss.message} |\n`;
               });
               if (issues.length > 25) body += `| ... | | | | *${issues.length - 25} more* |\n`;
@@ -153,7 +162,6 @@ jobs:
               repo: context.repo.repo,
               body
             });
-
   repo-scan:
     runs-on: ubuntu-latest
     steps:

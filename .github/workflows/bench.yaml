@@ -4,7 +4,7 @@ on:
   pull_request:
     paths:
       - 'mcp/reasoning-memory/**'
-      - 'mcp/credential-vault-go/**'
+      - 'mcp/credential-vault/**'
   schedule:
     # Weekly accuracy test (every Sunday at midnight)
     - cron: '0 0 * * 0'
@@ -17,18 +17,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
-          cache-dependency-path: mcp/credential-vault-go/go.sum
+          go-version-file: mcp/credential-vault/go.mod
+          cache-dependency-path: mcp/credential-vault/go.sum
       - name: Test accuracy and race safety
-        working-directory: mcp/credential-vault-go
+        working-directory: mcp/credential-vault
         run: GOWORK=off go test -race -count=1 ./...
       - name: Run credential-vault benchmarks
-        working-directory: mcp/credential-vault-go
+        working-directory: mcp/credential-vault
         run: GOWORK=off go test -bench=. -benchmem ./bench/... | tee bench/results/latest.txt
       - uses: actions/upload-artifact@v4
         with:
           name: credential-vault-benchmark-reports
-          path: mcp/credential-vault-go/bench/results/
+          path: mcp/credential-vault/bench/results/
 
   benchmark:
     runs-on: ubuntu-latest
@@ -39,7 +39,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: mcp/reasoning-memory/go.mod
           cache-dependency-path: mcp/reasoning-memory/go.sum
 
       - name: Install dependencies (Current)
@@ -65,7 +65,7 @@ jobs:
           cd mcp/reasoning-memory
           # Run percentiles and generate reports
           go test -v -run="TestMeasurePercentiles" ./bench/... | tee bench/bench_current.txt | go run ./bench/report/gen_reports.go
-          
+
           # Run accuracy/effectiveness tests
           go test -v -run="TestRetrievalRelevance|TestConsolidationQuality|TestPolishAccuracy" ./bench/...
 
