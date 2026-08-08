@@ -39,7 +39,7 @@ func TestScanReturnsMetadataWithoutCredentialValues(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	secret := "ghp_" + strings.Repeat("x", 24)
-	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("GITHUB_TOKEN=[REDACTED], 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("GITHUB_TOKEN="+secret), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	keys := &testKeys{}
@@ -81,7 +81,7 @@ func TestMCPToolListCompatibility(t *testing.T) {
 func TestMCPScanHandlerDoesNotTouchKeychain(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("TOKEN=[REDACTED]+strings.Repeat("x", 24)), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("TOKEN=ghp_"+strings.Repeat("x", 24)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	keys := &testKeys{}

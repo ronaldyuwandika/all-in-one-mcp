@@ -97,7 +97,7 @@ func TestDetectDoesNotTouchVaultOrAudit(t *testing.T) {
 	root := t.TempDir()
 	secret := "ghp_" + strings.Repeat("z", 24)
 	p := filepath.Join(root, ".env")
-	if err := os.WriteFile(p, []byte("TOKEN=[REDACTED], 0o600); err != nil {
+	if err := os.WriteFile(p, []byte("TOKEN="+secret), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := v.DetectDir(root); err != nil {
@@ -113,7 +113,7 @@ func TestDetectDoesNotTouchVaultOrAudit(t *testing.T) {
 		t.Fatalf("audit was touched: %v", err)
 	}
 	got, err := os.ReadFile(p)
-	if err != nil || string(got) != "TOKEN=[REDACTED] {
+	if err != nil || string(got) != "TOKEN="+secret {
 		t.Fatalf("target changed: %q, %v", got, err)
 	}
 }
@@ -125,7 +125,7 @@ func TestRedactDirSkipsVaultInternals(t *testing.T) {
 	root := filepath.Dir(vaultDir)
 	secret := "ghp_" + strings.Repeat("q", 24)
 	p := filepath.Join(root, "target.env")
-	if err := os.WriteFile(p, []byte("TOKEN=[REDACTED], 0o600); err != nil {
+	if err := os.WriteFile(p, []byte("TOKEN="+secret), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := v.Set("chat.keep", "value", "test"); err != nil {
@@ -185,7 +185,7 @@ func TestRedactFileRejectsOversizeAndSymlink(t *testing.T) {
 		t.Fatal("oversized file changed")
 	}
 	regular := filepath.Join(root, "regular.env")
-	if err := os.WriteFile(regular, []byte("TOKEN=[REDACTED]+strings.Repeat("x", 24)), 0o600); err != nil {
+	if err := os.WriteFile(regular, []byte("TOKEN=ghp_"+strings.Repeat("x", 24)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	link := filepath.Join(root, "link.env")

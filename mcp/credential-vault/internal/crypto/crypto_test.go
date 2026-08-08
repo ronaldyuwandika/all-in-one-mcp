@@ -32,7 +32,7 @@ func TestEncryptRoundTrip(t *testing.T) {
 	if string(plain) != "secret" {
 		t.Fatalf("got %q", plain)
 	}
-	if token=[REDACTED] "secret" {
+	if token == "secret" {
 		t.Fatal("ciphertext exposed plaintext")
 	}
 }
