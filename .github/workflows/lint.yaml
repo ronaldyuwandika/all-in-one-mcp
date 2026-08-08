@@ -23,6 +23,7 @@ jobs:
               - 'mcp/pr-reviewer/**'
             go:
               - 'mcp/reasoning-memory/**'
+              - 'mcp/credential-vault/**'
               - '**/go.mod'
               - '**/go.sum'
 
@@ -41,7 +42,7 @@ jobs:
         id: ruff
         run: |
           exitcode=0
-          ruff check mcp/credential-vault mcp/pr-reviewer --exclude mcp/pr-reviewer/.venv > /tmp/ruff-output.txt 2>&1 || exitcode=$?
+          ruff check mcp/pr-reviewer --exclude mcp/pr-reviewer/.venv > /tmp/ruff-output.txt 2>&1 || exitcode=$?
           echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
           exit $exitcode
       - name: Post ruff report
@@ -86,16 +87,26 @@ jobs:
   go-lint:
     needs: changes
     if: ${{ needs.changes.outputs.go == 'true' }}
+    strategy:
+      matrix:
+        module: [reasoning-memory, credential-vault]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version-file: mcp/reasoning-memory/go.mod
+          go-version-file: mcp/${{ matrix.module }}/go.mod
+          cache-dependency-path: mcp/${{ matrix.module }}/go.sum
+      - name: Validate module without mutation
+        working-directory: mcp/${{ matrix.module }}
+        run: |
+          GOWORK=off go mod verify
+          GOWORK=off go test -race -count=1 ./...
+          GOWORK=off go vet ./...
       - name: Run golangci-lint
         id: golangci
         uses: golangci/golangci-lint-action@v7
         with:
           version: v2.12.2
-          working-directory: mcp/reasoning-memory
+          working-directory: mcp/${{ matrix.module }}
           args: ./...

@@ -1,4 +1,4 @@
-module github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault-go
+module github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault
 
 go 1.25.0
 

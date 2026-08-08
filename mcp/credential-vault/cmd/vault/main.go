@@ -3,8 +3,8 @@ package main
 import (
 	"log"
 
-	vaultmcp "github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault-go/internal/mcp"
-	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault-go/internal/vault"
+	vaultmcp "github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault/internal/mcp"
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault/internal/vault"
 )
 
 func main() {

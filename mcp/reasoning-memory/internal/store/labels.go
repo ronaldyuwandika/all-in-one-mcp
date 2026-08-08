@@ -152,7 +152,7 @@ func detectEntities(text string) []string {
 
 	toolRefs := []*regexp.Regexp{
 		regexp.MustCompile(`\b(ctx_read|ctx_search|ctx_shell|ctx_edit|ctx_overview|ctx_knowledge|ctx_session|ctx_tree)\b`),
-		regexp.MustCompile(`\b(vault_get|vault_set|vault_scan|run_safe|vault_mask)\b`),
+		regexp.MustCompile(`\b(vault_get|vault_set|vault_scan|vault_redact|vault_restore|vault_mask)\b`),
 		regexp.MustCompile(`\b(grafana_api|query_prometheus|query_loki|get_dashboard|search_dashboards)\b`),
 		regexp.MustCompile(`\b(kubectl|helm|docker|terraform|ansible|packer)\b`),
 		regexp.MustCompile(`\b(git |gh |git push|git commit|git merge|git rebase|git checkout)\b`),

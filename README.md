@@ -36,8 +36,8 @@ make run-pr-reviewer         # Automated PR/MR review
 
 | MCP | Lang | Transport | Interfaces | Status |
 |-----|------|-----------|------------|--------|
-| [reasoning-memory](./mcp/reasoning-memory) | Go 1.24 | stdio | MCP (5 tools) | ✅ Stable |
-| [credential-vault](./mcp/credential-vault-go) | Go 1.24 | stdio | MCP (9 tools) + CLI + TUI | ✅ Stable |
+| [reasoning-memory](./mcp/reasoning-memory) | Go 1.25 | stdio | MCP (5 tools) | ✅ Stable |
+| [credential-vault](./mcp/credential-vault) | Go 1.25 | stdio | MCP (9 tools) + CLI + TUI | ✅ Stable |
 | [pr-reviewer](./mcp/pr-reviewer) | Python 3.12 | stdio + HTTP | MCP (5 tools) + Webhook | ✅ Stable |
 
 ---
@@ -48,7 +48,7 @@ make run-pr-reviewer         # Automated PR/MR review
 graph TB
     subgraph "Monorepo"
         MW[go.work / pyproject] --> RM[mcp/reasoning-memory]
-MW --> CV[mcp/credential-vault-go]
+MW --> CV[mcp/credential-vault]
         MW --> PR[mcp/pr-reviewer]
     end
     RM -->|stdio| MCP_C[MCP Client]
@@ -79,7 +79,7 @@ make lint-all                 # Run linters
 make bench-all                # Run Go benchmarks
 ```
 
-> **Prerequisites:** Go 1.24+, Python 3.12+, `make`  
+> **Prerequisites:** Go 1.25+, Python 3.12+, `make`
 > Run `make setup` once to install all tooling dependencies automatically.
 
 ---
@@ -96,7 +96,7 @@ Each server ships with a commented example config. Copy and adjust:
 
 ```bash
 cp mcp/reasoning-memory/config.example.yaml ~/.reasoning-memory/config.yaml
-cp mcp/credential-vault-go/config.example.yaml ~/.config/vaultctl/config.yaml
+cp mcp/credential-vault/config.example.yaml ~/.config/vaultctl/config.yaml
 cp mcp/pr-reviewer/config.example.yaml     ~/.config/reviewerctl/config.yaml
 ```
 
@@ -109,13 +109,13 @@ Latest benchmark results (run `make bench-all` to regenerate):
 | Benchmark | p50 | p99 |
 |-----------|-----|-----|
 | Reasoning Memory — semantic search | see results | [→](./mcp/reasoning-memory/bench/results/search.md) |
-| Credential Vault — encrypt/decrypt, scan, redact, mask, audit | run locally | [→](./mcp/credential-vault-go/bench/results/) |
+| Credential Vault — encrypt/decrypt, scan, redact, mask, audit | run locally | [→](./mcp/credential-vault/bench/results/) |
 | PR Reviewer — diff parse | see results | [→](./mcp/pr-reviewer/bench/results/diff-parse.md) |
 
 Full result files:
 
 - [Reasoning Memory Search](./mcp/reasoning-memory/bench/results/search.md)
-- [Credential Vault Benchmarks](./mcp/credential-vault-go/bench/results/)
+- [Credential Vault Benchmarks](./mcp/credential-vault/bench/results/)
 - [PR Reviewer Diff Parse](./mcp/pr-reviewer/bench/results/diff-parse.md)
 
 ---

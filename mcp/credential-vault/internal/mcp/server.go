@@ -4,18 +4,18 @@ package mcp
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os/exec"
+	"errors"
 	"sort"
-	"time"
 
 	sdk "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
-	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault-go/internal/vault"
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault/internal/vault"
 )
 
-func Serve(v *vault.Vault) error {
-	s := server.NewMCPServer("credentials-vault", "1.0.0", server.WithInstructions("Local-only credential broker. Store and fetch secrets with vault_set/vault_get; use vault_mask or run_safe before returning command output. Never send credential values to network tools."))
+func Serve(v *vault.Vault) error { return server.ServeStdio(newServer(v)) }
+
+func newServer(v *vault.Vault) *server.MCPServer {
+	s := server.NewMCPServer("credentials-vault", "1.0.0", server.WithInstructions("Local-only credential broker. Store and fetch secrets with vault_set/vault_get; use vault_mask before returning command output. Never send credential values to network tools."))
 	add := func(t sdk.Tool, h server.ToolHandlerFunc) { s.AddTool(t, h) }
 	add(sdk.NewTool("vault_status", sdk.WithDescription("List local credential metadata without values")), jsonHandler(func(_ map[string]any) (any, error) { return v.Stats() }))
 	add(sdk.NewTool("vault_get", sdk.WithDescription("Retrieve a local credential and audit the purpose"), sdk.WithString("name", sdk.Required()), sdk.WithString("purpose", sdk.Required())), textHandler(func(a map[string]any) (string, error) { return v.Get(str(a, "name"), str(a, "purpose")) }))
@@ -25,30 +25,22 @@ func Serve(v *vault.Vault) error {
 	}))
 	add(sdk.NewTool("vault_chat_clear", sdk.WithDescription("Remove credentials supplied through chat")), jsonHandler(func(_ map[string]any) (any, error) { n, e := v.ClearChat(); return map[string]int{"cleared": n}, e }))
 	add(sdk.NewTool("vault_mask", sdk.WithDescription("Redact credential patterns from text"), sdk.WithString("text", sdk.Required())), textHandler(func(a map[string]any) (string, error) { return vault.MaskText(str(a, "text")), nil }))
-	add(sdk.NewTool("vault_scan", sdk.WithDescription("Scan a local directory and optionally redact detected credentials"), sdk.WithString("path"), sdk.WithBoolean("redact")), jsonHandler(func(a map[string]any) (any, error) {
+	add(sdk.NewTool("vault_scan", sdk.WithDescription("Detect credential patterns in a scoped local directory without changing files or vault state; redact=true is rejected for compatibility"), sdk.WithString("path"), sdk.WithBoolean("redact")), jsonHandler(func(a map[string]any) (any, error) {
+		if redact, supplied := a["redact"].(bool); supplied && redact {
+			return nil, errors.New("vault_scan redact=true is no longer supported; call vault_redact with an explicit path")
+		}
 		p := str(a, "path")
 		if p == "" {
 			p = "."
 		}
-		redact, supplied := a["redact"].(bool)
-		if !supplied {
-			redact = true
-		}
-		return scan(v, p, redact)
+		return scan(v, p)
 	}))
-	add(sdk.NewTool("vault_restore", sdk.WithDescription("Restore files from encrypted local backups")), jsonHandler(func(_ map[string]any) (any, error) { n, e := v.Restore(); return map[string]int{"restored": n}, e }))
+	add(sdk.NewTool("vault_redact", sdk.WithDescription("Redact detected credentials in a scoped local directory and save encrypted backups"), sdk.WithString("path", sdk.Required())), jsonHandler(func(a map[string]any) (any, error) {
+		return scanAndRedact(v, str(a, "path"))
+	}))
+	add(sdk.NewTool("vault_restore", sdk.WithDescription("Restore files from encrypted local backups")), restoreHandler(v))
 	add(sdk.NewTool("vault_audit", sdk.WithDescription("Read local credential access audit entries")), jsonHandler(func(_ map[string]any) (any, error) { return v.Audit(50) }))
-	add(sdk.NewTool("run_safe", sdk.WithDescription("Run a local command and mask secrets in combined output"), sdk.WithString("command", sdk.Required())), textHandler(func(a map[string]any) (string, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-		defer cancel()
-		out, e := exec.CommandContext(ctx, "/bin/sh", "-c", str(a, "command")).CombinedOutput() // #nosec G204 -- run_safe intentionally executes the caller's local command and masks output.
-		masked := vault.MaskText(string(out))
-		if e != nil {
-			return masked, fmt.Errorf("command failed: %w", e)
-		}
-		return masked, nil
-	}))
-	return server.ServeStdio(s)
+	return s
 }
 
 type scanResult struct {
@@ -56,8 +48,8 @@ type scanResult struct {
 	Credentials []string `json:"credentials"`
 }
 
-func scan(v *vault.Vault, path string, redact bool) (scanResult, error) {
-	found, err := v.ScanDir(path, redact)
+func scan(v *vault.Vault, path string) (scanResult, error) {
+	found, err := v.DetectDir(path)
 	if err != nil {
 		return scanResult{}, err
 	}
@@ -68,6 +60,37 @@ func scan(v *vault.Vault, path string, redact bool) (scanResult, error) {
 	}
 	sort.Strings(names)
 	return scanResult{Count: len(names), Credentials: names}, nil
+}
+
+func scanAndRedact(v *vault.Vault, path string) (scanResult, error) {
+	found, err := v.RedactDir(path)
+	if err != nil {
+		return scanResult{}, err
+	}
+	names := make([]string, 0, len(found))
+	for name := range found {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return scanResult{Count: len(names), Credentials: names}, nil
+}
+
+func restoreHandler(v *vault.Vault) server.ToolHandlerFunc {
+	return func(_ context.Context, r sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		n, err := v.Restore()
+		result := map[string]any{"restored": n}
+		if err != nil {
+			result["error"] = err.Error()
+		}
+		raw, marshalErr := json.Marshal(result)
+		if marshalErr != nil {
+			return sdk.NewToolResultError(marshalErr.Error()), nil
+		}
+		if err != nil {
+			return sdk.NewToolResultError(string(raw)), nil
+		}
+		return sdk.NewToolResultText(string(raw)), nil
+	}
 }
 
 func str(a map[string]any, k string) string { s, _ := a[k].(string); return s }

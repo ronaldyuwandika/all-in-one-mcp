@@ -1,6 +1,6 @@
 # Credential Vault Go
 
-[![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](https://go.dev/) [![MCP](https://img.shields.io/badge/MCP-stdio-blue)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/license-MIT-green)](../../LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://go.dev/) [![MCP](https://img.shields.io/badge/MCP-stdio-blue)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/license-MIT-green)](../../LICENSE)
 
 Local encrypted credential storage and controlled access for Codex and other MCP clients. Secrets are encrypted with AES-256-GCM, the master key is held by the operating-system keyring under `com.credential-vault.go`, and every read is purpose-audited.
 
@@ -10,7 +10,7 @@ Local encrypted credential storage and controlled access for Codex and other MCP
 - Encrypts the vault and file backups with authenticated AES-256-GCM.
 - Stores the 256-bit master key in macOS Keychain through `go-keyring`.
 - Redacts originals while preserving file modes, then restores from encrypted backups.
-- Masks secrets in arbitrary output and offers timeout-bounded `run_safe` execution.
+- Masks secrets in arbitrary output.
 - Records append-only JSONL audit events with mode `0600`.
 - Provides a stdio MCP server, Cobra CLI, and Bubble Tea dashboard.
 - Exports and imports encrypted vault bundles.
@@ -21,9 +21,9 @@ The keyring library supports macOS, Linux Secret Service, and Windows Credential
 
 ```bash
 make install-mcp-credential-vault
-./mcp/credential-vault-go/vaultctl scan ~/.config
-./mcp/credential-vault-go/vaultctl dashboard
-./mcp/credential-vault-go/vault
+./mcp/credential-vault/vaultctl scan ~/.config
+./mcp/credential-vault/vaultctl dashboard
+./mcp/credential-vault/vault
 ```
 
 ## Interfaces
@@ -43,10 +43,10 @@ make install-mcp-credential-vault
 | `vault_set` | `name`, `value` | Encrypt a credential supplied locally |
 | `vault_chat_clear` | — | Remove chat-origin credentials |
 | `vault_mask` | `text` | Redact recognized secrets |
-| `vault_scan` | optional `path`, `redact` | Scan a local directory |
+| `vault_scan` | optional `path` | Detect credential patterns without changing files or vault state; legacy `redact=true` is rejected |
+| `vault_redact` | `path` | Redact a scoped directory and save encrypted backups |
 | `vault_restore` | — | Restore encrypted file backups |
 | `vault_audit` | — | Read recent audit entries |
-| `run_safe` | `command` | Run locally and mask combined output |
 
 ## CLI reference
 
@@ -54,7 +54,8 @@ make install-mcp-credential-vault
 vaultctl status
 vaultctl get <name> --purpose "deploy" --quiet
 vaultctl set <name>                  # reads the value from stdin
-vaultctl scan [path] [--no-redact]
+vaultctl scan [path]
+vaultctl redact PATH
 vaultctl restore
 vaultctl audit --limit 50
 vaultctl stats --format json
@@ -62,6 +63,9 @@ vaultctl doctor --format json
 vaultctl dashboard --interval 2s
 vaultctl export backup.json
 vaultctl import backup.json
+vaultctl import-backup backup.json.bak NAME...
+vaultctl list-backup-names backup.json.bak --limit 100
+vaultctl recover NAME...
 vaultctl chat-clear
 ```
 
@@ -77,12 +81,14 @@ python3 scripts/migrate_credential_vault.py \
 
 The migration re-encrypts credential values, file backups, and audit records locally. It is additive: existing Go records are retained, and the legacy vault remains available as a rollback source until you explicitly remove it.
 
+For a large raw `vault.json` backup, use `list-backup-names` to inspect names, then `import-backup FILE NAME...` to import only explicitly selected missing credentials. The command streams authenticated decryption, ignores file backups and audit records, and never prints credential values. If the current vault is oversized, `recover NAME...` streams the current vault into a clean vault containing only the named credentials; make a copy of `vault.json` before recovery.
+
 ## Configuration
 
 The optional file is `~/.config/vaultctl/config.yaml`; flags override environment, environment overrides file, and file overrides defaults.
 
 ```yaml
-vault_dir: ~/.credential-vault-go
+vault_dir: ~/.credential-vault
 scan_targets:
   - .
 dashboard_interval_seconds: 2
@@ -128,7 +134,8 @@ Measured results are environment-dependent, so this README does not claim synthe
 - Shared findings contain only type, byte range, confidence, and a truncated SHA-256 fingerprint; they never contain the detected value.
 - High-entropy detection is intentionally conservative to reduce false positives. Git hashes, UUIDs, ordinary checksums, and low-diversity identifiers are excluded.
 - Directory scans skip files larger than 2 MiB, binary files, `.git`, and `node_modules`.
-- `run_safe` invokes `/bin/sh -c`; only run trusted commands. Its output is local and masked, but the child command may itself access the network.
+- Detection is read-only; redaction and restore are explicit mutation operations with scoped roots.
+- Legacy encrypted backups without approved scan roots are refused instead of restored implicitly.
 - A user who can access the unlocked host keyring can decrypt the vault.
 - Key rotation and real-time filesystem watching are not implemented.
 

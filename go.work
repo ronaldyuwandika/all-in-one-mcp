@@ -4,7 +4,7 @@ go 1.25.0
 // Add new Go modules here as they are introduced.
 use ./mcp/reasoning-memory
 
-use ./mcp/credential-vault-go
+use ./mcp/credential-vault
 
 use ./pkg/secretdetect
 

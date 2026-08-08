@@ -5,13 +5,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault-go/internal/vault"
+	"github.com/ronaldyuwandika/all-in-one-mcp/mcp/credential-vault/internal/vault"
 )
 
 func TestDetectionAccuracy(t *testing.T) {
 	positives := make([]string, 0, 500)
 	for i := 0; i < 500; i++ {
-		positives = append(positives, fmt.Sprintf("SERVICE_%03d_API_TOKEN=%s%03d", i, "ghp_"+strings.Repeat("x", 24), i))
+		positives = append(positives, fmt.Sprintf("SERVICE_%03d_API_TOKEN=[REDACTED], i, "ghp_"+strings.Repeat("x", 24), i))
 	}
 	benign := make([]string, 0, 1000)
 	for i := 0; i < 1000; i++ {
