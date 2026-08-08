@@ -152,7 +152,7 @@ func (f *Fernet) NewDecryptReader(r io.Reader) (io.Reader, error) {
 	binary.BigEndian.PutUint32(counter[12:], 2)
 	return &gcmReader{
 		decoded:   decoded,
-		stream:    cipher.NewCTR(block, counter),
+		stream:    cipher.NewCTR(block, counter), // #nosec G407 -- GCM counter is deterministically derived from the token nonce for decryption.
 		block:     block,
 		j0:        j0,
 		ghash:     newGHASH(block),
@@ -287,7 +287,7 @@ func (g *ghash) mix(block []byte) {
 	var z [16]byte
 	v := g.h
 	for i := 0; i < 128; i++ {
-		if g.x[i/8]&(byte(1)<<uint(7-i%8)) != 0 {
+		if g.x[i/8]&(byte(1)<<(7-i%8)) != 0 {
 			for j := range z {
 				z[j] ^= v[j]
 			}
