@@ -172,7 +172,7 @@ type gcmReader struct {
 	plain         []byte
 	readBuf       []byte
 	keystream     []byte
-	ciphertextLen int64
+	ciphertextLen uint64
 	sourceEOF     bool
 	verified      bool
 	err           error
@@ -199,7 +199,7 @@ func (r *gcmReader) Read(p []byte) (int, error) {
 				ciphertext := data[:cut]
 				r.pending = append(r.pending[:0], data[cut:]...)
 				r.ghash.Write(ciphertext)
-				r.ciphertextLen += int64(len(ciphertext))
+				r.ciphertextLen += uint64(len(ciphertext))
 				plain := make([]byte, len(ciphertext))
 				r.stream.XORKeyStream(plain, ciphertext)
 				r.plain = append(r.plain, plain...)
@@ -268,14 +268,14 @@ func (g *ghash) Write(data []byte) {
 	}
 }
 
-func (g *ghash) Sum(length int64) []byte {
+func (g *ghash) Sum(length uint64) []byte {
 	if len(g.buf) > 0 {
 		var block [16]byte
 		copy(block[:], g.buf)
 		g.mix(block[:])
 	}
 	var lengths [16]byte
-	binary.BigEndian.PutUint64(lengths[8:], uint64(length)*8)
+	binary.BigEndian.PutUint64(lengths[8:], length*8)
 	g.mix(lengths[:])
 	return bytes.Clone(g.x[:])
 }
