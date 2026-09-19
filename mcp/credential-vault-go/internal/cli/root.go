@@ -32,8 +32,31 @@ func NewRoot() *cobra.Command {
 		}
 		return vault.New(expand(c.VaultDir), newCrypt()), nil
 	}
-	root.AddCommand(statusCmd(open), getCmd(open), setCmd(open), scanCmd(open), restoreCmd(open), compactCmd(open), auditCmd(open), statsCmd(open), doctorCmd(open), dashboardCmd(open), exportCmd(open), importCmd(open), clearCmd(open), migrateStdinCmd(open))
+	root.AddCommand(statusCmd(open), getCmd(open), setCmd(open), scanCmd(open), restoreCmd(open), compactCmd(open), auditCmd(open), statsCmd(open), doctorCmd(open), dashboardCmd(open), exportCmd(open), importCmd(open), clearCmd(open), migrateStdinCmd(open), maskCmd())
 	return root
+}
+
+func maskCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "mask [TEXT]",
+		Short: "Mask sensitive credentials from stdin or argument",
+		Args:  cobra.ArbitraryArgs,
+		RunE: func(c *cobra.Command, args []string) error {
+			var text string
+			if len(args) > 0 {
+				text = strings.Join(args, " ")
+			} else {
+				raw, err := io.ReadAll(c.InOrStdin())
+				if err != nil {
+					return err
+				}
+				text = string(raw)
+			}
+			masked := vault.MaskText(text)
+			_, err := fmt.Fprint(c.OutOrStdout(), masked)
+			return err
+		},
+	}
 }
 
 func migrateStdinCmd(o opener) *cobra.Command {

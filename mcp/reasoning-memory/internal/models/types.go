@@ -367,3 +367,67 @@ type StatsResult struct {
 	ArchivedTotal      int         `json:"archived_total"`
 	PrunedTotal        int         `json:"pruned_total"`
 }
+
+// ExtractSteps parses a thinking trace into structured reasoning steps.
+func ExtractSteps(thinkingTrace string) []Step {
+	lines := strings.Split(strings.TrimSpace(thinkingTrace), "\n")
+	var steps []Step
+	var current *Step
+
+	stepTypes := map[string]string{
+		"decide": "decision", "choose": "decision", "pick": "decision", "select": "decision",
+		"option": "option_generation", "alternative": "option_generation", "consider": "option_generation", "approach": "option_generation",
+		"implement": "implementation", "write": "implementation", "code": "implementation", "edit": "implementation", "create": "implementation",
+		"verify": "verification", "test": "verification", "check": "verification", "validate": "verification",
+		"error": "error", "bug": "error", "issue": "error", "problem": "error", "fail": "error",
+	}
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		stepType := "analysis"
+		lower := strings.ToLower(line)
+		for key, st := range stepTypes {
+			if strings.Contains(lower, key) {
+				stepType = st
+				break
+			}
+		}
+
+		if len(line) > 0 && line[0] >= '0' && line[0] <= '9' && len(line) > 3 && line[1] == '.' {
+			if current != nil {
+				steps = append(steps, *current)
+			}
+			current = &Step{
+				ID:      fmt.Sprintf("s%d", len(steps)+1),
+				Type:    stepType,
+				Content: line,
+			}
+		} else if current != nil {
+			current.Content += "\n" + line
+		} else {
+			current = &Step{
+				ID:      fmt.Sprintf("s%d", len(steps)+1),
+				Type:    stepType,
+				Content: line,
+			}
+		}
+	}
+
+	if current != nil {
+		steps = append(steps, *current)
+	}
+
+	if len(steps) == 0 {
+		trace := thinkingTrace
+		if len(trace) > 500 {
+			trace = trace[:500]
+		}
+		steps = append(steps, Step{ID: "s1", Type: "analysis", Content: trace})
+	}
+
+	return steps
+}

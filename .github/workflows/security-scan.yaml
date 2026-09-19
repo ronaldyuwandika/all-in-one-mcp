@@ -20,10 +20,11 @@ jobs:
         with:
           filters: |
             python:
-              - 'mcp/credential-vault/**'
               - 'mcp/pr-reviewer/**'
             go:
               - 'mcp/reasoning-memory/**'
+              - 'mcp/credential-vault-go/**'
+              - 'pkg/secretdetect/**'
               - '**/go.mod'
               - '**/go.sum'
 
@@ -42,7 +43,7 @@ jobs:
         id: bandit
         run: |
           exitcode=0
-          bandit -r mcp/credential-vault mcp/pr-reviewer --exclude mcp/pr-reviewer/.venv --skip B101,B105,B110,B112,B603,B607,B404 > /tmp/bandit-output.txt 2>&1 || exitcode=$?
+          bandit -r mcp/pr-reviewer --exclude mcp/pr-reviewer/.venv --skip B101,B105,B110,B112,B603,B607,B404 > /tmp/bandit-output.txt 2>&1 || exitcode=$?
           echo "exitcode=$exitcode" >> "$GITHUB_OUTPUT"
           exit $exitcode
       - name: Post bandit report

@@ -1,3 +1,7 @@
+# Node & TypeScript
+node_modules/
+plugins/dist/
+
 # Python
 __pycache__/
 *.py[cod]
