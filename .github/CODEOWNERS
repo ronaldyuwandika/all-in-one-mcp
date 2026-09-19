@@ -3,8 +3,9 @@
 
 # MCP modules
 /mcp/reasoning-memory/ @ronaldyuwandika
-/mcp/credential-vault/ @ronaldyuwandika
+/mcp/credential-vault-go/ @ronaldyuwandika
 /mcp/pr-reviewer/ @ronaldyuwandika
+/plugins/ @ronaldyuwandika
 
 # Infrastructure
 /Makefile @ronaldyuwandika

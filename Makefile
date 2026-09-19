@@ -2,19 +2,19 @@ REPO_ROOT := $(shell git rev-parse --show-toplevel 2>/dev/null || echo ".")
 PYTHON := python3
 RUFF := ruff
 
-MCP_DIRS := reasoning-memory credential-vault pr-reviewer
+MCP_DIRS := reasoning-memory credential-vault-go pr-reviewer
 
-.PHONY: all setup build install install-mcp-% validate lint lint-all lint-check test test-all test-reasoning-memory test-credential-vault test-pr-reviewer test-secretdetect clean distclean bench-reasoning-memory bench-credential-vault bench-go bench-all run-mcp-reasoning-memory run-mcp-credential-vault run-mcp-pr-reviewer
+.PHONY: all setup build install install-mcp-% validate lint lint-all lint-check test test-all test-reasoning-memory test-credential-vault test-credential-vault-go test-pr-reviewer test-secretdetect setup-plugins build-plugins lint-plugins test-plugins clean distclean bench-reasoning-memory bench-credential-vault bench-go bench-all run-mcp-reasoning-memory run-mcp-credential-vault run-mcp-pr-reviewer
 
-all: setup
+all: setup setup-plugins build-plugins
 
-# ── Build & Install (Go binaries) ────────────────────────────────────────────
+# ── Build & Install (Go binaries & TypeScript plugins) ───────────────────────────
 
 BIN_DIR := $(REPO_ROOT)/bin
 REASONING_MEMORY_BIN := $(BIN_DIR)/reasoning-memory
 INSTALL_BIN_DIR := $(HOME)/mcp/bin
 
-build: $(REASONING_MEMORY_BIN)
+build: $(REASONING_MEMORY_BIN) build-plugins
 
 $(REASONING_MEMORY_BIN):
 	@echo "→ Building reasoning-memory..."
@@ -38,7 +38,8 @@ install-mcp-reasoning-memory:
 	cd $(REPO_ROOT)/mcp/reasoning-memory && go build -o $(INSTALL_BIN_DIR)/reasoning-memory .
 	@echo "✓ Installed: $(INSTALL_BIN_DIR)/reasoning-memory"
 
-install-mcp-credential-vault:
+install-mcp-credential-vault: install-mcp-credential-vault-go
+install-mcp-credential-vault-go:
 	@echo "→ Installing credential-vault (Go)..."
 	@mkdir -p $(INSTALL_BIN_DIR)
 	cd $(REPO_ROOT)/mcp/credential-vault-go && GOWORK=off go build -o $(INSTALL_BIN_DIR)/vault ./cmd/vault && GOWORK=off go build -o $(INSTALL_BIN_DIR)/vaultctl ./cmd/vaultctl
@@ -51,6 +52,22 @@ install-mcp-pr-reviewer:
 		$(PYTHON) -m venv .venv && \
 		.venv/bin/pip install --quiet --upgrade pip && \
 		.venv/bin/pip install --quiet -e ".[dev]"
+
+setup-plugins:
+	@echo "→ Setting up TypeScript plugins..."
+	cd $(REPO_ROOT)/plugins && npm install
+
+build-plugins:
+	@echo "→ Building TypeScript plugins..."
+	cd $(REPO_ROOT)/plugins && npm run build
+
+lint-plugins:
+	@echo "→ Linting TypeScript plugins..."
+	cd $(REPO_ROOT)/plugins && npm run lint
+
+test-plugins:
+	@echo "→ Running TypeScript plugin tests..."
+	cd $(REPO_ROOT)/plugins && npm test
 
 # ── Validate ─────────────────────────────────────────────────────────────────
 
@@ -66,7 +83,7 @@ validate:
 			if [ -f $(REPO_ROOT)/mcp/$$dir/main.go ]; then \
 				echo "  ✓ mcp/$$dir/main.go"; \
 			fi; \
-		elif [ $$dir = "credential-vault" ]; then \
+		elif [ $$dir = "credential-vault-go" ] || [ $$dir = "credential-vault" ]; then \
 			if [ -f $(REPO_ROOT)/mcp/credential-vault-go/go.mod ]; then \
 				echo "  ✓ mcp/credential-vault-go/go.mod"; \
 			else \
@@ -92,9 +109,10 @@ validate:
 
 lint:
 	@echo "→ Running linters..."
-	cd $(REPO_ROOT)/mcp/reasoning-memory && golangci-lint run ./... || true
+	cd $(REPO_ROOT)/mcp/reasoning-memory && golangci-lint run ./...
 	cd $(REPO_ROOT)/mcp/credential-vault-go && GOWORK=off golangci-lint run ./...
 	$(RUFF) check $(REPO_ROOT)/mcp/pr-reviewer --fix
+	$(MAKE) lint-plugins
 	@echo "✓ Lint complete"
 
 lint-all: lint
@@ -104,13 +122,14 @@ lint-check:
 	cd $(REPO_ROOT)/mcp/reasoning-memory && golangci-lint run ./...
 	cd $(REPO_ROOT)/mcp/credential-vault-go && GOWORK=off golangci-lint run ./...
 	$(RUFF) check $(REPO_ROOT)/mcp/pr-reviewer
+	$(MAKE) lint-plugins
 	@echo "✓ Lint check complete"
 
 # ── Test ─────────────────────────────────────────────────────────────────────
 
 .PHONY: test test-all test-reasoning-memory test-credential-vault test-pr-reviewer test-secretdetect
 
-test: test-reasoning-memory test-credential-vault test-pr-reviewer test-secretdetect
+test: test-reasoning-memory test-credential-vault test-pr-reviewer test-secretdetect test-plugins
 test-all: test
 
 test-reasoning-memory:
@@ -119,6 +138,7 @@ test-reasoning-memory:
 
 test-mcp-reasoning-memory: test-reasoning-memory
 
+test-credential-vault-go: test-credential-vault
 test-credential-vault:
 	@echo "→ Running credential-vault tests..."
 	cd $(REPO_ROOT)/mcp/credential-vault-go && GOWORK=off go test -race -count=1 ./...
@@ -165,6 +185,7 @@ clean:
 	@echo "→ Cleaning up..."
 	@rm -rf $(BIN_DIR)
 	@rm -rf $(REPO_ROOT)/mcp/reasoning-memory/reasoning-memory
+	@rm -rf $(REPO_ROOT)/plugins/dist
 	@for dir in pr-reviewer; do \
 		rm -rf $(REPO_ROOT)/mcp/$$dir/.venv; \
 		rm -rf $(REPO_ROOT)/mcp/$$dir/__pycache__; \
@@ -179,4 +200,6 @@ distclean: clean
 	rm -rf $(REPO_ROOT)/*.egg-info
 	rm -rf $(REPO_ROOT)/dist
 	rm -rf $(REPO_ROOT)/build
+	rm -rf $(REPO_ROOT)/plugins/node_modules
 	@echo "✓ Distclean complete"
+

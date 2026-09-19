@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "reasoning-memory": {
+      "command": "/Users/ronald.dimas/mcp/bin/reasoning-memory",
+      "args": [
+        "serve"
+      ],
+      "enabled": true
+    },
+    "credentials_vault": {
+      "command": "/Users/ronald.dimas/mcp/bin/vault",
+      "args": [],
+      "enabled": true
+    },
+    "pr-reviewer": {
+      "command": "/Users/ronald.dimas/projects/ronaldyuwandika/all-in-one-mcp/mcp/pr-reviewer/.venv/bin/python3",
+      "args": [
+        "/Users/ronald.dimas/projects/ronaldyuwandika/all-in-one-mcp/mcp/pr-reviewer/server.py"
+      ],
+      "env": {
+        "PYTHONPATH": "/Users/ronald.dimas/projects/ronaldyuwandika/all-in-one-mcp/mcp/pr-reviewer"
+      },
+      "enabled": true
+    }
+  }
+}

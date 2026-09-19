@@ -1,6 +1,6 @@
 # Credential Vault Go
 
-[![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?logo=go)](https://go.dev/) [![MCP](https://img.shields.io/badge/MCP-stdio-blue)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/license-MIT-green)](../../LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go)](https://go.dev/) [![MCP](https://img.shields.io/badge/MCP-stdio-blue)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/license-MIT-green)](../../LICENSE)
 
 Local encrypted credential storage and controlled access for Codex and other MCP clients. Secrets are encrypted with AES-256-GCM, the master key is held by the operating-system keyring under `com.credential-vault.go`, and every read is purpose-audited.
 
@@ -19,12 +19,16 @@ The keyring library supports macOS, Linux Secret Service, and Windows Credential
 
 ## Quick start
 
+From the repository root:
+
 ```bash
-make install-mcp-credential-vault
-./mcp/credential-vault-go/vaultctl scan ~/.config
-./mcp/credential-vault-go/vaultctl dashboard
-./mcp/credential-vault-go/vault
+make install-mcp-credential-vault-go
+~/mcp/bin/vaultctl scan ~/.config
+~/mcp/bin/vaultctl dashboard
+~/mcp/bin/vault
 ```
+
+The active module path is `mcp/credential-vault-go`; the previous `mcp/credential-vault` path has been retired. The compatibility Make target `install-mcp-credential-vault` still delegates to `install-mcp-credential-vault-go`.
 
 ## Interfaces
 
@@ -54,6 +58,7 @@ make install-mcp-credential-vault
 vaultctl status
 vaultctl get <name> --purpose "deploy" --quiet
 vaultctl set <name>                  # reads the value from stdin
+vaultctl mask [text]                 # reads stdin when text is omitted
 vaultctl scan [path] [--no-redact]
 vaultctl restore
 vaultctl audit --limit 50
@@ -64,6 +69,17 @@ vaultctl export backup.json
 vaultctl import backup.json
 vaultctl chat-clear
 ```
+
+### Stream masking
+
+`vaultctl mask` applies the shared deterministic secret detector to an argument or stdin and writes the masked text to stdout. The OpenCode plugin uses stdin streaming so tool output is not passed as a command-line argument or written to a temporary file.
+
+```bash
+printf '%s' 'Authorization: Bearer example-token' | vaultctl mask
+printf '%s' 'api_key=example-secret' | vaultctl mask > masked-output.txt
+```
+
+Input is preserved except for detected credential values, and no trailing newline is added unless it was present in the input. Pattern matching is best-effort; do not treat masking as a substitute for preventing secrets from entering logs.
 
 ## Migrating the Python vault
 

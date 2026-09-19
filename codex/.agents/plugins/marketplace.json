@@ -1,0 +1,20 @@
+{
+  "name": "all-in-one-local",
+  "interface": {
+    "displayName": "All-in-One Local Marketplace"
+  },
+  "plugins": [
+    {
+      "name": "all-in-one",
+      "source": {
+        "source": "local",
+        "path": "./plugins/all-in-one"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

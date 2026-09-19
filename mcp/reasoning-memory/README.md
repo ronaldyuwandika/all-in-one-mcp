@@ -409,7 +409,7 @@ Strategy `auto` → found 1 merge candidate, merged into pattern `pat-re-2026071
 | 1 | `capture_reasoning_episode` | `{"problem": "Fix a nil pointer dereference...", "outcome": "verified_success", "tags": ["go","nil-pointer","http-handler"]}` | `re-20260714-003` |
 | 2 | `capture_reasoning_episode` | `{"problem": "Design a rate limiter middleware...", "outcome": "verified_success", "tags": ["go","middleware","rate-limiter","concurrency"]}` | `re-20260714-004` |
 | 3 | `enrich_episode` | `{"episode_id": "re-20260714-003"}` | `Enriched re-20260714-003: {"language":["go"],"framework":["net/http"],"severity":["high"],"tag":["go","nil-pointer","http-handler"],"domain":["coding"],"outcome":["verified_success"]}` |
-| 4 | `retrieve_reasoning` | `{"problem": "How to handle nil pointers in Go HTTP handlers", "top_k": 5, "metadata_filter": {"language": ["go"]}}` | Top result: `re-20260714-003` (score 1.267, labels boosted) |
+| 4 | `retrieve_reasoning` | `{"problem": "How to handle nil pointers in Go HTTP handlers", "top_k": 5, "metadata_filter": {"language": ["go"]}}` | Top result: `re-20260714-003` (score 1.017, labels boosted) |
 | 5 | `inject_reasoning_context` | `{"problem": "Go middleware design patterns", "top_k": 3}` | `<reasoning_memory>` XML with 3 episodes |
 | 6 | `polish_prompt` | `{"raw_prompt": "build a dockerfile for my go service", "skill_name": "docker-expert"}` | `coding` task type, skill injected, 1 context episode appended |
 | 7 | `consolidate_reasoning` | `{"strategy": "auto"}` | Merged 1 pair → `pat-re-20260714-002-re-20260714-001` (score 1.567), index rebuilt: 8 eps, 1 pattern |
@@ -424,14 +424,52 @@ Strategy `auto` → found 1 merge candidate, merged into pattern `pat-re-2026071
 
 ## CLI Commands
 
+Running `reasoning-memory` without a subcommand still starts the stdio MCP server. `reasoning-memory serve` is the explicit equivalent, so existing MCP client configurations remain compatible.
+
 | Command | Description |
 |---------|-------------|
-| `reasoning-memory` | Start MCP server (stdio) |
-| `reasoning-memory dashboard` | Launch TUI dashboard |
+| `reasoning-memory` or `reasoning-memory serve` | Start the MCP stdio server |
+| `reasoning-memory inject` | Retrieve matching episodes and patterns as a `<reasoning_memory>` XML block |
+| `reasoning-memory retrieve` | Search episode summaries with optional domain, outcome, repository, and tag filters |
+| `reasoning-memory capture` | Capture an episode from flags, plain-text stdin, or JSON stdin |
+| `reasoning-memory polish` | Structure a prompt and optionally inject matching memory and skill rules |
+| `reasoning-memory dashboard` | Launch the TUI dashboard |
 | `reasoning-memory stats` | Show statistics (JSON) |
 | `reasoning-memory stats --format table` | Show statistics (table) |
 | `reasoning-memory stats --by-label language=go` | List episodes with a specific label |
 | `reasoning-memory doctor` | Run health checks |
+
+### Headless plugin bridge
+
+The OpenCode plugin uses the four headless subcommands below. All accept input from stdin, avoiding temporary prompt or episode files. Add `--json` for machine-readable output.
+
+```bash
+# Return {"context", "episode_count", "pattern_count"}
+printf '%s' 'Go retry patterns' | reasoning-memory inject --top-k 3 --json
+
+# Return an array of episode summaries
+printf '%s' 'database timeout handling' \
+  | reasoning-memory retrieve --domain coding --tags go,sqlite --top-k 5 --json
+
+# Capture a complete episode from JSON stdin
+printf '%s' '{"problem":"Fix timeout handling","thinking_trace":"Compared deadlines and retries","outcome":"success","tags":["go","timeouts"]}' \
+  | reasoning-memory capture --json
+
+# Return the full prompt-polishing result as JSON
+printf '%s' 'add retries to this worker' \
+  | reasoning-memory polish --agent codex --skill golang-service --include-context=true --json
+```
+
+Input precedence is flags, positional arguments where supported, then stdin: explicit CLI flags override corresponding JSON fields or positional arguments. When flags are not passed, JSON fields (including `problem`, `outcome`, `domain`, `tier`, and `tags`) are preserved, falling back to defaults (domain `coding`, outcome `success`, tier `episodic`) only when omitted or empty. In non-interactive or flag-only invocations without piped stdin, `capture` executes immediately without waiting for stdin. `capture` also accepts a plain-text problem description on stdin. Without `--json`, `inject` prints XML, `retrieve` prints a summary list, `capture` prints the created episode ID, and `polish` prints the polished prompt.
+
+Important options:
+
+| Subcommand | Options |
+|---|---|
+| `inject` | `--problem`, `--top-k` (maximum 10), `--include-traces`, `--json` |
+| `retrieve` | `--problem`, `--domain`, `--outcome`, `--repo`, `--tags`, `--top-k` (maximum 20), `--json` |
+| `capture` | `--problem`, `--thinking-trace`, `--outcome`, `--domain`, `--tags`, `--repo`, `--tier`, `--model`, `--duration`, `--json` |
+| `polish` | `--prompt`, `--agent`, `--domain`, `--repo`, `--skill`, `--format`, `--top-k`, `--include-context`, `--json` |
 
 ## Configuration
 
@@ -520,11 +558,18 @@ mcp/reasoning-memory/
 
 ## Testing
 
-Run quick unit tests locally (runs in short mode to skip heavy data generation benchmarks):
+Run the full unit and package test suite from the repository root:
 
 ```bash
 make test-reasoning-memory
-# Or directly:
+```
+
+`make test-reasoning-memory` delegates to `make -C mcp/reasoning-memory test`, executing `go test -v -count=1 ./...` across all packages.
+
+To run quick unit tests in short mode (skipping heavy data generation and benchmark tests that check `testing.Short()`):
+
+```bash
+# From mcp/reasoning-memory:
 go test -v -count=1 -short ./...
 ```
 
@@ -557,9 +602,10 @@ make bench-reasoning-memory
 ## Accuracy & Effectiveness
 
 | Metric | Value | Method |
-| Retrieval nDCG@10 (hybrid) | 0.5453 | 200 labeled query/episode pairs |
-| Prompt polish task detection | 87.5% | 200 held-out test prompts |
-| Consolidation quality | 4.2 / 5 | Human evaluation (50 merged clusters) |
+|---|---|---|
+| Retrieval nDCG@10 (hybrid) | 0.5508 | 200 labeled query/episode pairs |
+| Prompt polish task detection | 99.00% | 100 test prompts |
+| Consolidation quality | [Pending] / 🟡 PENDING EVALUATION | Human evaluation (50 rated patterns, target >3.5 / 5.0) |
 
 ## Prompt Engineering Guide
 
@@ -642,7 +688,7 @@ Go
 
 ## Limitations
 
-- Vector search requires an embedding provider (OpenAI, Gemini, or local Ollama). Set `embedding.enabled: false` for FTS5-only mode.
+- Vector search requires an embedding provider (`openai`, `openai-compat`, or local `ollama`; test-only `mock`). Set `embedding.enabled: false` for FTS5-only mode.
 - SQLite WAL mode limits concurrent writers — lock contention possible with simultaneous MCP clients.
 - No built-in authentication — use transport-level auth (e.g. stdio for local, SSH tunnel for remote).
 - Consolidation is CPU-intensive (1.8s for 1k episodes with `auto` strategy).

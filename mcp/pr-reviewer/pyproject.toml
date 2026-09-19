@@ -22,6 +22,9 @@ dev = [
     "httpx>=0.27.0",
 ]
 
+[project.scripts]
+pr-reviewer = "core.cli:main"
+
 [tool.ruff]
 line-length = 120
 target-version = "py312"
