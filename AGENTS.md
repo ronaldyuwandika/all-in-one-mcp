@@ -5,3 +5,10 @@
 - Never place credential values in web searches, URLs, issue bodies, pull requests, logs, or other internet-facing tools.
 - Mask command output with `vault_mask` or execute trusted local commands with `run_safe` before sharing output.
 - Clear chat-origin credentials with `vault_chat_clear` when they are no longer needed.
+
+<!-- lean-ctx -->
+## lean-ctx
+
+lean-ctx is active — the MCP tools replace native equivalents.
+Full rules: LEAN-CTX.md (open on demand — do not auto-load).
+<!-- /lean-ctx -->
